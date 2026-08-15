@@ -312,7 +312,8 @@ def generate_ppt(outline: str = None, input_path: str = None,
         if progress:
             progress.update(100, f"处理失败: {e}")
 
-    if options.get("model_call"):
+    # 内容生成层的调用（last_call）优先；仅当未生成时回退到改写层的记录
+    if "model_call" not in result and options.get("model_call"):
         result["model_call"] = options["model_call"]
     return result
 

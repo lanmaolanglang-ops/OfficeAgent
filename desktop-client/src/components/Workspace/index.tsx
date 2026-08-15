@@ -4,7 +4,7 @@ import { ArrowRight, Bot, FileText, Presentation, Sheet, Sparkles, User } from '
 import FileUploader from './FileUploader';
 import TaskTimeline, { type TimelineStep } from './TaskTimeline';
 import ChatInput from './ChatInput';
-import { useChatStore, useTaskStore } from '../../stores';
+import { useChatStore, useTaskStore, useSettingsStore } from '../../stores';
 import type { Task, AgentType } from '../../types';
 import heroAsset from '../../assets/hero.png';
 
@@ -30,13 +30,17 @@ export default function Workspace({ title = '工作台', subtitle = '智能办�
   const navigate = useNavigate();
   const { messages, sending, sendMessage, setAgent } = useChatStore();
   const { tasks, loadTasks } = useTaskStore();
+  const defaultAgent = useSettingsStore((s) => s.settings.default_agent);
   const [localSteps, setLocalSteps] = useState<TimelineStep[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
+  // 工作台（agent='auto'）使用用户设置的默认 Agent，其余页面用各自的 Agent
+  const effectiveAgent: AgentType = agent === 'auto' ? (defaultAgent ?? 'auto') : agent;
+
   useEffect(() => { const interval = setInterval(() => { loadTasks(); }, 2000); return () => clearInterval(interval); }, [loadTasks]);
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
-  // 页面切换时同步当前 Agent 模式（Dashboard 为 auto）
-  useEffect(() => { setAgent(agent); }, [agent, setAgent]);
+  // 页面切换时同步当前 Agent 模式
+  useEffect(() => { setAgent(effectiveAgent); }, [effectiveAgent, setAgent]);
 
   const currentTask = tasks.find(t => t.status === 'processing' || t.status === 'pending');
   const displaySteps = currentTask ? taskToSteps(currentTask) : localSteps;

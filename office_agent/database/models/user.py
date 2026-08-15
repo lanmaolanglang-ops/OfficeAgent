@@ -27,7 +27,6 @@ class User(Base, TimestampMixin):
     # 关系
     files = relationship("File", back_populates="owner", lazy="dynamic")
     tasks = relationship("Task", back_populates="user", lazy="dynamic")
-    memories = relationship("Memory", back_populates="user", lazy="dynamic")
 
     def __repr__(self):
         return f"<User {self.username}>"

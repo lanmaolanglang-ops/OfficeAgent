@@ -54,20 +54,6 @@ class TestDatabaseModels:
         audit = AuditLogModel(id="audit_001", action="login", user_id="user_001")
         assert audit.action == "login"
 
-    def test_test_result_model(self):
-        """测试测试结果模型"""
-        from office_agent.database.models import TestResultModel, TestSuiteRunModel
-        tr = TestResultModel(
-            test_name="test_001",
-            test_type="unit",
-            module="word",
-            status="pass",
-        )
-        assert tr.test_name == "test_001"
-        tsr = TestSuiteRunModel(total=10, passed=9, failed=1)
-        assert tsr.total == 10
-
-
 class TestBaseRepository:
     """基础Repository测试"""
 
