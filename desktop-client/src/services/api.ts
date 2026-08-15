@@ -1,0 +1,385 @@
+import type {
+  HealthResponse,
+  Task,
+  ChatRequest,
+  ChatResponse,
+  CreateTaskRequest,
+  UploadedFile,
+  FileVersionInfo,
+} from '../types';
+
+const DEFAULT_BASE_URL = 'http://127.0.0.1:8765';
+
+// 允许的文件扩展名
+export const ALLOWED_EXTENSIONS = [
+  '.docx', '.doc',
+  '.pptx', '.ppt',
+  '.xlsx', '.xls',
+  '.pdf',
+  '.txt', '.md', '.csv', '.json',
+  '.png', '.jpg', '.jpeg', '.gif', '.bmp',
+];
+
+// 最大文件大小 50MB
+export const MAX_FILE_SIZE = 50 * 1024 * 1024;
+
+// 检查文件是否允许上传
+export function isAllowedFile(filename: string): boolean {
+  const ext = '.' + filename.split('.').pop()?.toLowerCase();
+  return ALLOWED_EXTENSIONS.includes(ext);
+}
+
+// 格式化文件大小
+export function formatFileSize(bytes: number): string {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+}
+
+function getBaseUrl(): string {
+  try {
+    return localStorage.getItem('backend_url') || DEFAULT_BASE_URL;
+  } catch {
+    return DEFAULT_BASE_URL;
+  }
+}
+
+function getBackendError(payload: unknown, fallback: string): string {
+  if (payload && typeof payload === 'object') {
+    const body = payload as Record<string, unknown>;
+    if (typeof body.detail === 'string') return body.detail;
+    if (typeof body.message === 'string') return body.message;
+  }
+  return fallback;
+}
+
+async function request<T>(
+  path: string,
+  options: RequestInit = {}
+): Promise<T> {
+  const url = `${getBaseUrl()}${path}`;
+  const response = await fetch(url, {
+    headers: {
+      'Content-Type': 'application/json',
+      ...options.headers,
+    },
+    ...options,
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => 'Unknown error');
+    let message = errorText;
+    try {
+      message = getBackendError(JSON.parse(errorText), errorText);
+    } catch {
+      // Keep the Backend response text when it is not JSON.
+    }
+    throw new Error(`HTTP ${response.status}: ${message}`);
+  }
+
+  return response.json();
+}
+
+// 健康检查 - /health 端点直接返回状态对象，不是 {success, data} 格式
+export async function checkHealth(): Promise<HealthResponse> {
+  const url = `${getBaseUrl()}/health`;
+  const response = await fetch(url);
+  // 503 = 后端在线但整体降级；只有网络失败/非 503 错误才视为不可达
+  if (!response.ok && response.status !== 503) {
+    throw new Error(`HTTP ${response.status}`);
+  }
+  const data = await response.json();
+  // 适配两种格式：直接返回 或 {success, data} 包装
+  if (data.success !== undefined) {
+    return data as HealthResponse;
+  }
+  return { success: data.status === 'healthy', data } as HealthResponse;
+}
+// 模型配置状态（GET/POST /api/settings/model）
+export interface ModelSettingsStatus {
+  configured: boolean;
+  provider?: string;
+  model?: string;
+  api_key_mask?: string;
+}
+
+// 获取当前本地模型配置状态
+export async function getModelSettings(): Promise<ModelSettingsStatus> {
+  return await request<ModelSettingsStatus>('/api/settings/model');
+}
+
+// 保存本地模型配置（API Key 仅写入后端 ~/.office_agent/models.json）
+export async function saveModelSettings(payload: {
+  provider: string;
+  model: string;
+  api_key: string;
+  base_url?: string;
+}): Promise<ModelSettingsStatus> {
+  return await request<ModelSettingsStatus>('/api/settings/model', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+// 上传文件（支持进度回调）
+export async function uploadFile(
+  file: File,
+  onProgress?: (progress: number) => void
+): Promise<UploadedFile> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    const formData = new FormData();
+    formData.append('file', file);
+
+    xhr.upload.addEventListener('progress', (e) => {
+      if (e.lengthComputable && onProgress) {
+        const progress = Math.round((e.loaded / e.total) * 100);
+        onProgress(progress);
+      }
+    });
+
+    xhr.addEventListener('load', () => {
+      let result: Record<string, unknown>;
+      try {
+        result = JSON.parse(xhr.responseText) as Record<string, unknown>;
+      } catch {
+        reject(new Error(`上传失败: Backend返回了无效响应 (HTTP ${xhr.status})`));
+        return;
+      }
+
+      if (xhr.status < 200 || xhr.status >= 300) {
+        reject(new Error(`上传失败: ${getBackendError(result, `HTTP ${xhr.status}`)}`));
+        return;
+      }
+
+      const data = (result.data && typeof result.data === 'object'
+        ? result.data
+        : result) as Record<string, unknown>;
+      const fileId = data.file_id;
+      if (result.success === false || typeof fileId !== 'string' || !fileId) {
+        reject(new Error(`上传失败: ${getBackendError(result, 'Backend未返回file_id')}`));
+        return;
+      }
+
+      const filename = typeof data.filename === 'string' ? data.filename : file.name;
+      const fileType = typeof data.file_type === 'string' ? data.file_type : file.type;
+      const size = typeof data.size === 'number' ? data.size : file.size;
+      resolve({
+        file_id: fileId,
+        filename,
+        file_type: fileType,
+        size,
+        uploaded_at: typeof data.uploaded_at === 'string' ? data.uploaded_at : new Date().toISOString(),
+        id: fileId,
+        name: filename,
+        type: fileType,
+      });
+    });
+
+    xhr.addEventListener('error', () => {
+      reject(new Error('Upload failed: Network error'));
+    });
+
+    xhr.addEventListener('abort', () => {
+      reject(new Error('Upload aborted'));
+    });
+
+    xhr.open('POST', `${getBaseUrl()}/api/file/upload`);
+    xhr.send(formData);
+  });
+}
+
+export async function uploadFiles(files: File[]): Promise<UploadedFile[]> {
+  return Promise.all(files.map((f) => uploadFile(f)));
+}
+
+// 创建任务
+export async function createTask(req: CreateTaskRequest): Promise<Task> {
+  const taskTypeMap: Record<string, string> = {
+    word: 'word_format',
+    ppt: 'ppt_generate',
+    excel: 'excel_analyze',
+    workflow: 'workflow',
+  };
+
+  const backendReq = {
+    task_type: taskTypeMap[req.type] || req.type,
+    instruction: req.input,
+    file_ids: req.files,
+    options: req.options,
+  };
+
+  const result = await request<{ success: boolean; data?: Record<string, unknown> }>(
+    '/api/task/create',
+    {
+      method: 'POST',
+      body: JSON.stringify(backendReq),
+    }
+  );
+
+  const data = result.data || {};
+  return mapBackendTask(data);
+}
+
+// 获取任务
+export async function getTask(taskId: string): Promise<Task> {
+  const result = await request<{ success: boolean; data?: Record<string, unknown> }>(
+    `/api/task/${taskId}`
+  );
+  return mapBackendTask(result.data || {});
+}
+
+// 列出任务
+export async function listTasks(params?: {
+  status?: string;
+  page?: number;
+  page_size?: number;
+}): Promise<Task[]> {
+  const query = new URLSearchParams();
+  if (params?.status) query.set('status', params.status);
+  if (params?.page) query.set('page', String(params.page));
+  if (params?.page_size) query.set('page_size', String(params.page_size));
+
+  const qs = query.toString();
+  const path = qs ? `/api/task/?${qs}` : '/api/task/';
+
+  const result = await request<{
+    success: boolean;
+    data?: { tasks?: Array<Record<string, unknown>> };
+  }>(path);
+
+  return (result.data?.tasks || []).map(mapBackendTask);
+}
+
+// 取消任务
+export async function cancelTask(taskId: string): Promise<void> {
+  await request(`/api/task/${taskId}/cancel`, { method: 'POST' });
+}
+
+// 发送聊天消息
+export async function sendChatMessage(req: ChatRequest): Promise<ChatResponse> {
+  const result = await request<{
+    success: boolean;
+    data?: Record<string, unknown>;
+  }>('/api/chat', {
+    method: 'POST',
+    body: JSON.stringify({
+      message: req.message,
+      agent_hint: req.agent,
+      file_ids: req.file_ids,
+      conversation_id: req.conversation_id,
+      context: {
+        ...(req.model_config ? { model_config: req.model_config } : {}),
+        ...(req.history ? { history: req.history } : {}),
+      },
+    }),
+  });
+
+  const data = result.data || {};
+  return {
+    response: (data.response as string) || (data.message as string) || '',
+    task_id: data.task_id as string | undefined,
+    conversation_id: data.conversation_id as string | undefined,
+    agent: data.agent as string | undefined,
+    is_follow_up: data.is_follow_up as boolean | undefined,
+    parent_task_id: data.parent_task_id as string | undefined,
+    revision_mode: data.revision_mode as ChatResponse['revision_mode'],
+    revision_number: data.revision_number as number | undefined,
+  };
+}
+
+// 获取文件下载URL
+export function getFileUrl(fileId: string): string {
+  return `${getBaseUrl()}/api/file/download/${fileId}`;
+}
+
+export async function listFileVersions(fileId: string): Promise<FileVersionInfo[]> {
+  const result = await request<{ data?: { versions?: FileVersionInfo[] } }>(
+    `/api/file/${fileId}/versions`
+  );
+  return result.data?.versions || [];
+}
+
+export async function restoreFileVersion(fileId: string, version: number): Promise<UploadedFile> {
+  const result = await request<{ data?: UploadedFile }>(
+    `/api/file/${fileId}/versions/${version}/restore`, { method: 'POST' }
+  );
+  if (!result.data) throw new Error('版本恢复失败');
+  return result.data;
+}
+
+// 列出文件
+export async function listFiles(params?: {
+  file_type?: string;
+  page?: number;
+  page_size?: number;
+}): Promise<UploadedFile[]> {
+  const query = new URLSearchParams();
+  if (params?.file_type) query.set('file_type', params.file_type);
+  if (params?.page) query.set('page', String(params.page));
+  if (params?.page_size) query.set('page_size', String(params.page_size));
+
+  const qs = query.toString();
+  const path = qs ? `/api/file/?${qs}` : '/api/file/';
+
+  const result = await request<{
+    success: boolean;
+    data?: { files?: Array<Record<string, unknown>> };
+  }>(path);
+
+  return (result.data?.files || []).map((f) => ({
+    file_id: (f.file_id as string) || (f.id as string) || '',
+    filename: (f.filename as string) || (f.name as string) || '',
+    file_type: (f.file_type as string) || '',
+    size: (f.size as number) || 0,
+    id: (f.file_id as string) || (f.id as string) || '',
+    name: (f.filename as string) || (f.name as string) || '',
+    type: (f.file_type as string) || '',
+    uploaded_at: (f.upload_time as string) || (f.created_at as string) || new Date().toISOString(),
+  }));
+}
+
+// 删除文件
+export async function deleteFile(fileId: string): Promise<void> {
+  await request(`/api/file/${fileId}`, { method: 'DELETE' });
+}
+
+// 映射后端任务数据到前端Task
+function mapBackendTask(data: Record<string, unknown>): Task {
+  const statusMap: Record<string, Task['status']> = {
+    pending: 'pending',
+    queued: 'pending',
+    running: 'processing',
+    processing: 'processing',
+    success: 'completed',
+    completed: 'completed',
+    failed: 'failed',
+    error: 'failed',
+    cancelled: 'cancelled',
+    canceled: 'cancelled',
+  };
+
+  const backendStatus = (data.status as string) || 'pending';
+  const status = statusMap[backendStatus] || 'pending';
+  const progress = (data.progress as number) ?? (status === 'completed' ? 1 : 0);
+
+  return {
+    id: (data.task_id as string) || (data.id as string) || '',
+    type: (data.task_type as string) || 'unknown',
+    agent: (data.agent as string) || 'auto',
+    status,
+    progress,
+    current_step: data.current_step as string | undefined,
+    steps: [],
+    result: data.result as Task['result'],
+    output_files: data.output_files as Task['output_files'],
+    error: data.error as string | undefined,
+    created_at: (data.created_at as string) || new Date().toISOString(),
+    started_at: data.started_at as string | undefined,
+    completed_at: data.completed_at as string | undefined,
+    parent_task_id: data.parent_task_id as string | undefined,
+    revision_number: (data.revision_number as number) || 1,
+  };
+}

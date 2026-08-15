@@ -1,0 +1,86 @@
+{
+  "doc_6fa83377711c": {
+    "id": "doc_6fa83377711c",
+    "title": "中文论文格式规范",
+    "doc_type": "word_spec",
+    "source_path": "",
+    "tags": [
+      "论文",
+      "学术",
+      "默认"
+    ],
+    "metadata": {},
+    "created_at": "2026-07-31T10:29:23.060844",
+    "chunk_count": 1
+  },
+  "doc_56690c63443c": {
+    "id": "doc_56690c63443c",
+    "title": "公文格式规范",
+    "doc_type": "word_spec",
+    "source_path": "",
+    "tags": [
+      "公文",
+      "行政",
+      "默认"
+    ],
+    "metadata": {},
+    "created_at": "2026-07-31T10:29:23.063506",
+    "chunk_count": 1
+  },
+  "doc_1888c977818f": {
+    "id": "doc_1888c977818f",
+    "title": "商务PPT设计规范",
+    "doc_type": "ppt_spec",
+    "source_path": "",
+    "tags": [
+      "商务",
+      "PPT",
+      "默认"
+    ],
+    "metadata": {},
+    "created_at": "2026-07-31T10:29:23.065965",
+    "chunk_count": 1
+  },
+  "doc_155907ed402d": {
+    "id": "doc_155907ed402d",
+    "title": "答辩PPT规范",
+    "doc_type": "ppt_spec",
+    "source_path": "",
+    "tags": [
+      "答辩",
+      "学术",
+      "默认"
+    ],
+    "metadata": {},
+    "created_at": "2026-07-31T10:29:23.068666",
+    "chunk_count": 1
+  },
+  "doc_fa3ecb84decf": {
+    "id": "doc_fa3ecb84decf",
+    "title": "财务计算规则",
+    "doc_type": "excel_rule",
+    "source_path": "",
+    "tags": [
+      "财务",
+      "计算",
+      "默认"
+    ],
+    "metadata": {},
+    "created_at": "2026-07-31T10:29:23.071355",
+    "chunk_count": 1
+  },
+  "doc_ad9a9d3d2b51": {
+    "id": "doc_ad9a9d3d2b51",
+    "title": "销售分析指标",
+    "doc_type": "excel_rule",
+    "source_path": "",
+    "tags": [
+      "销售",
+      "分析",
+      "默认"
+    ],
+    "metadata": {},
+    "created_at": "2026-07-31T10:29:23.074020",
+    "chunk_count": 1
+  }
+}

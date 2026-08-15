@@ -1,0 +1,46 @@
+name: Office Agent CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.10', '3.11', '3.12']
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e ".[dev]"
+
+    - name: Lint with ruff (advisory)
+      run: |
+        ruff check office_agent/ --select=E,F --ignore=E501 || true
+
+    - name: Run tests
+      run: |
+        python -m pytest tests/ -v --tb=short -m "not slow"
+
+    - name: Coverage report
+      run: |
+        python -m pytest tests/ --cov=office_agent --cov-report=xml --cov-report=term -m "not slow" || true
+
+    - name: Upload coverage
+      uses: codecov/codecov-action@v4
+      if: matrix.python-version == '3.12'
+      with:
+        file: ./coverage.xml
+        fail_ci_if_error: false

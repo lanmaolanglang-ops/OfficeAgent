@@ -1,0 +1,53 @@
+# === Python ===
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.pytest_cache/
+.pytest_*/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.coverage.*
+
+# === 虚拟环境 ===
+.venv/
+venv/
+env/
+ENV/
+
+# === 环境与密钥 ===
+.env
+.env.production
+.env.local
+*.local
+
+# === 构建产物 ===
+build/
+dist/
+release/
+.release-test/
+*.spec.bak
+test_output/
+warn-*.txt
+
+# === Node / 前端（desktop-client） ===
+node_modules/
+vendor/
+desktop-client/dist/
+desktop-client/src-tauri/target/
+*.tsbuildinfo
+
+# === 桌面运行时数据 ===
+*.log
+logs/
+*.db
+*.sqlite3
+.DS_Store
+Thumbs.db
+
+# === IDE ===
+.idea/
+.vscode/
+*.swp

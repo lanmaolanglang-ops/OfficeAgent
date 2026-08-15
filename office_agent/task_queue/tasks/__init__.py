@@ -1,0 +1,147 @@
+"""
+任务定义
+
+所有任务函数统一签名：
+    def task_func(..., progress=None, _task_id=None, **kwargs):
+        progress.update(20, "步骤描述")
+        return {"status": "success", ...}
+
+任务不直接操作数据库，通过 Service 层调用 Agent。
+"""
+import os
+import time
+import logging
+from .word_tasks import process_word, format_document, convert_word
+from .ppt_tasks import generate_ppt, design_ppt
+from .excel_tasks import analyze_excel, generate_chart, process_data
+from .file_tasks import (
+    process_upload, convert_format, cleanup_temp_files, system_health_check,
+)
+from .rag_tasks import (
+    index_document, chunk_and_embed, refresh_knowledge_base, search_knowledge,
+)
+
+logger = logging.getLogger("office_agent.tasks.general")
+
+
+def process_general(instruction: str = "", input_path: str = None,
+                    options: dict = None, progress=None, _task_id: str = None,
+                    **kwargs) -> dict:
+    """
+    通用任务处理 - 由 orchestrator 路由
+    根据指令内容分发到具体的 Word/PPT/Excel 处理器
+    """
+    options = options or {}
+    result = {"status": "success", "output_files": [], "message": ""}
+
+    try:
+        if progress:
+            progress.update(5, "理解任务需求")
+
+        msg = instruction.lower()
+        # Follow-up instructions may omit "Word/Excel/PPT" entirely. Use the
+        # attached file extension before falling back to keyword matching.
+        ext = os.path.splitext(input_path or "")[1].lower()
+        if ext in (".docx", ".doc"):
+            return process_word(input_path=input_path, instruction=instruction,
+                                options=options, progress=progress, _task_id=_task_id)
+        if ext in (".pptx", ".ppt"):
+            return generate_ppt(outline=instruction, input_path=input_path,
+                                options=options, progress=progress, _task_id=_task_id)
+        if ext in (".xlsx", ".xls", ".csv"):
+            return analyze_excel(input_path=input_path, instruction=instruction,
+                                 options=options, progress=progress, _task_id=_task_id)
+
+        # 路由到具体处理器
+        if any(k in msg for k in ["ppt", "pptx", "演示", "幻灯片", "汇报"]):
+            if progress:
+                progress.update(20, "正在生成PPT...")
+            return generate_ppt(
+                outline=instruction,
+                input_path=input_path,
+                options=options,
+                progress=progress,
+                _task_id=_task_id,
+            )
+        elif any(k in msg for k in ["word", "文档", "docx", "doc", "排版", "格式"]):
+            if not input_path:
+                if progress:
+                    progress.update(100, "请先上传文件")
+                result["status"] = "failed"
+                result["error"] = "Word处理需要先上传文档文件"
+                return result
+            if progress:
+                progress.update(20, "正在处理Word文档...")
+            return process_word(
+                input_path=input_path,
+                instruction=instruction,
+                options=options,
+                progress=progress,
+                _task_id=_task_id,
+            )
+        elif any(k in msg for k in ["excel", "xlsx", "xls", "表格", "数据分析"]):
+            if not input_path:
+                if progress:
+                    progress.update(100, "请先上传文件")
+                result["status"] = "failed"
+                result["error"] = "Excel处理需要先上传表格文件"
+                return result
+            if progress:
+                progress.update(20, "正在分析Excel...")
+            return analyze_excel(
+                input_path=input_path,
+                instruction=instruction,
+                options=options,
+                progress=progress,
+                _task_id=_task_id,
+            )
+        else:
+            # 未知任务类型
+            if progress:
+                progress.update(30, "分析任务类型")
+                time.sleep(0.5)
+                progress.update(60, "处理中")
+                time.sleep(0.5)
+                progress.update(100, "完成")
+            result["message"] = f"已收到指令：{instruction[:100]}"
+            logger.info(f"通用任务 {_task_id}: {instruction[:100]}")
+
+    except Exception as e:
+        logger.error(f"通用任务 {_task_id} 失败: {e}")
+        result["status"] = "failed"
+        from ...security.error_sanitizer import sanitize_error
+        result["error"] = sanitize_error(e)
+        if progress:
+            progress.update(100, f"处理失败: {e}")
+
+    return result
+
+
+# 任务注册表（供 LocalWorker 使用）
+TASK_REGISTRY = {
+    # General
+    "general.process": process_general,
+    # Word
+    "word.process": process_word,
+    "word.format": format_document,
+    "word.convert": convert_word,
+    # PPT
+    "ppt.generate": generate_ppt,
+    "ppt.design": design_ppt,
+    # Excel
+    "excel.analyze": analyze_excel,
+    "excel.chart": generate_chart,
+    "excel.process": process_data,
+    # File
+    "file.process_upload": process_upload,
+    "file.convert": convert_format,
+    "file.cleanup": cleanup_temp_files,
+    "file.health_check": system_health_check,
+    # RAG
+    "rag.index": index_document,
+    "rag.embed": chunk_and_embed,
+    "rag.refresh": refresh_knowledge_base,
+    "rag.search": search_knowledge,
+}
+
+__all__ = ["TASK_REGISTRY"]
