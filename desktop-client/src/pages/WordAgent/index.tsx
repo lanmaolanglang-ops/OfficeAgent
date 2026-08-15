@@ -12,5 +12,5 @@ export default function WordAgentPage() {
     return () => stopPolling();
   }, [startPolling, stopPolling, loadTasks]);
 
-  return <Workspace title="Word Agent" subtitle="智能文档处理 · 排版 · 翻译 · 润色" />;
+  return <Workspace title="Word Agent" subtitle="智能文档处理 · 排版 · 翻译 · 润色" agent="word" />;
 }

@@ -12,5 +12,5 @@ export default function PPTAgentPage() {
     return () => stopPolling();
   }, [startPolling, stopPolling, loadTasks]);
 
-  return <Workspace title="PPT Agent" subtitle="智能演示文稿 · 生成 · 美化 · 模板" />;
+  return <Workspace title="PPT Agent" subtitle="智能演示文稿 · 生成 · 美化 · 模板" agent="ppt" />;
 }

@@ -90,26 +90,8 @@ def create_storage_backend(config: StorageConfig) -> StorageBackend:
     """根据配置创建存储后端"""
     if config.storage_type == "local":
         return LocalStorage(config.local_path)
-    elif config.storage_type == "minio":
-        from .minio_storage import MinioStorage
-        return MinioStorage(
-            endpoint=config.minio_endpoint,
-            access_key=config.minio_access_key,
-            secret_key=config.minio_secret_key,
-            bucket=config.minio_bucket,
-            secure=config.minio_secure,
-        )
-    elif config.storage_type == "s3":
-        from .s3_storage import S3Storage
-        return S3Storage(
-            bucket=config.s3_bucket,
-            aws_access_key_id=config.s3_access_key,
-            aws_secret_access_key=config.s3_secret_key,
-            region=config.s3_region,
-            endpoint_url=config.s3_endpoint_url,
-        )
     else:
-        raise ValueError(f"不支持的存储类型: {config.storage_type}")
+        raise ValueError(f"不支持的存储类型: {config.storage_type}（当前仅支持 local）")
 
 
 class FileInfo:
@@ -361,7 +343,6 @@ class StorageService:
         """
         获取文件的本地路径
 
-        注意：如果是远程存储（MinIO/S3），会下载到临时目录。
         Agent 应优先使用 download_to_file 指定工作目录。
         """
         session = self._get_session()

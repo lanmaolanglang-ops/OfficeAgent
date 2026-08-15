@@ -254,9 +254,8 @@ def create_app() -> FastAPI:
         # 初始化任务队列 Worker
         try:
             from office_agent.task_queue import init_worker
-            from office_agent.task_queue.config import config
             init_worker()
-            logger.info(f"任务队列: {config.MODE} 模式")
+            logger.info("任务队列: local 线程池模式")
         except Exception as e:
             logger.warning(f"任务队列初始化失败: {e}", exc_info=True)
 

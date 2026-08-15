@@ -1,5 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { Paperclip, SlidersHorizontal, ArrowUp } from 'lucide-react';
+import { useChatStore } from '../../stores';
+import type { AgentType } from '../../types';
 
 interface ChatInputProps {
   onSend: (message: string) => void;
@@ -8,9 +10,17 @@ interface ChatInputProps {
   disabled?: boolean;
 }
 
+const AGENT_OPTIONS: { value: AgentType; label: string }[] = [
+  { value: 'auto', label: '自动识别' },
+  { value: 'word', label: 'Word 排版' },
+  { value: 'ppt', label: 'PPT 生成' },
+  { value: 'excel', label: 'Excel 分析' },
+];
+
 export default function ChatInput({ onSend, onAttach, placeholder, disabled }: ChatInputProps) {
   const [input, setInput] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const { currentAgent, setAgent } = useChatStore();
 
   useEffect(() => {
     if (textareaRef.current) {
@@ -44,6 +54,16 @@ export default function ChatInput({ onSend, onAttach, placeholder, disabled }: C
           <div className="flex items-center gap-1">
             <button onClick={onAttach} className="composer-tool" title="添加附件"><Paperclip className="w-4 h-4" /></button>
             <button className="composer-tool" title="任务选项"><SlidersHorizontal className="w-4 h-4" /></button>
+            <select
+              value={currentAgent}
+              onChange={(e) => setAgent(e.target.value as AgentType)}
+              className="composer-agent-select"
+              title="选择处理方式"
+            >
+              {AGENT_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
           </div>
           <button onClick={handleSubmit} disabled={!input.trim() || disabled} className="send-button" title="发送">
             <ArrowUp className="w-[17px] h-[17px]" />

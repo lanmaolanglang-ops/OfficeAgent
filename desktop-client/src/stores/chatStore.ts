@@ -34,6 +34,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   sendMessage: async (content: string) => {
+    // 在插入占位消息之前快照历史，避免把“正在理解…”占位内容发给后端
+    const history = get().messages
+      .filter((m) => m.role === 'user' || (m.role === 'assistant' && m.task_status !== 'pending'))
+      .slice(-10)
+      .map((m) => ({ role: m.role, content: m.content }));
     const explicitFileIds = [...useFileStore.getState().attachedFileIds];
     const attachedFileIds = explicitFileIds.length > 0
       ? explicitFileIds
@@ -77,7 +82,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         agent: get().currentAgent,
         file_ids: attachedFileIds,
         conversation_id: get().conversationId,
-        history: get().messages.slice(-10).map((m) => ({ role: m.role, content: m.content })),
+        history,
         model_config: modelConfig,
       });
 

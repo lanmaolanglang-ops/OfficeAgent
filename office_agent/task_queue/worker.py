@@ -1,9 +1,7 @@
 """
 Worker 抽象层
 
-自动选择后端：
-- 如果 Celery + Redis 可用，使用 Celery Worker
-- 否则使用本地线程池 Worker（零依赖，开发模式）
+使用本地线程池 Worker（零外部依赖）。
 
 统一接口：
     worker.submit(task_name, args, kwargs, priority, task_id)
@@ -242,7 +240,7 @@ class LocalWorker:
             result_json = json.dumps(result, ensure_ascii=False, default=str)
             valid_ids, skipped = self._valid_output_file_ids(result.get("output_files"))
             if skipped:
-                logger.warning(f"?? {task_id} ????????? file_id ??????: {skipped}")
+                logger.warning(f"任务 {task_id} 有 {len(skipped)} 个无效 file_id 已跳过: {skipped}")
             output_file_ids = json.dumps(valid_ids, ensure_ascii=False) if valid_ids else None
             if valid_ids:
                 try:
@@ -397,45 +395,6 @@ class LocalWorker:
         logger.info("LocalWorker 已关闭")
 
 
-class CeleryWorker:
-    """
-    Celery Worker 封装
-
-    生产环境使用 Redis + Celery，支持多机部署。
-    """
-
-    def __init__(self):
-        from .celery_app import celery_app
-        if celery_app is None:
-            raise RuntimeError("Celery 未安装，请使用 LocalWorker 或安装 celery+redis")
-        self.app = celery_app
-
-    def submit(self, task_name: str, args: tuple = (), kwargs: dict = None,
-               priority: str = "normal", task_id: str = None) -> str:
-        """提交任务到 Celery"""
-        kwargs = kwargs or {}
-        if task_id:
-            kwargs["_task_id"] = task_id
-
-        # 选择队列
-        queue = priority if priority in ("high", "normal", "low") else "normal"
-
-        # 发送任务
-        async_result = self.app.send_task(
-            task_name,
-            args=args,
-            kwargs=kwargs,
-            queue=queue,
-            task_id=task_id,
-            priority=config.TASK_QUEUES.get(priority, {}).get("priority", 5),
-        )
-        return async_result.id
-
-    def revoke(self, task_id: str):
-        """取消任务"""
-        self.app.control.revoke(task_id, terminate=True)
-
-
 # 全局 Worker 实例
 _worker_instance = None
 _worker_lock = threading.Lock()
@@ -447,13 +406,5 @@ def get_worker():
     if _worker_instance is None:
         with _worker_lock:
             if _worker_instance is None:
-                if config.MODE == "celery":
-                    try:
-                        _worker_instance = CeleryWorker()
-                        logger.info("使用 Celery Worker")
-                    except Exception as e:
-                        logger.warning(f"Celery 初始化失败，回退到 LocalWorker: {e}")
-                        _worker_instance = LocalWorker()
-                else:
-                    _worker_instance = LocalWorker()
+                _worker_instance = LocalWorker()
     return _worker_instance

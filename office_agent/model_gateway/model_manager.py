@@ -9,6 +9,12 @@ import hashlib
 from pathlib import Path
 from typing import Optional
 
+try:
+    from cryptography.fernet import Fernet
+    HAS_CRYPTO = True
+except ImportError:
+    HAS_CRYPTO = False
+
 from ..models.model_schemas import (
     ModelConfig, ModelProvider, DEFAULT_MODEL_CONFIGS, DEFAULT_ROUTING, AITaskType
 )
@@ -18,17 +24,16 @@ from .clients import (
 
 
 class SimpleEncryption:
-    """简单的加密器（基于机器信息的 XOR 加密）"""
-    
+    """旧版 XOR 加密器（仅用于回退解密历史配置，不再用于新写入）"""
+
     def __init__(self):
-        # 使用机器名+用户名作为密钥种子
+        # 使用机器名+用户名作为密钥种子（与旧版一致）
         machine = os.environ.get("COMPUTERNAME", "default")
         user = os.environ.get("USERNAME", "default")
         seed = f"office-agent-{machine}-{user}"
         self._key = hashlib.sha256(seed.encode()).digest()
-    
+
     def encrypt(self, plaintext: str) -> str:
-        """加密"""
         if not plaintext:
             return ""
         text_bytes = plaintext.encode("utf-8")
@@ -36,9 +41,8 @@ class SimpleEncryption:
         for i, b in enumerate(text_bytes):
             encrypted.append(b ^ self._key[i % len(self._key)])
         return base64.b64encode(bytes(encrypted)).decode("utf-8")
-    
+
     def decrypt(self, ciphertext: str) -> str:
-        """解密"""
         if not ciphertext:
             return ""
         try:
@@ -47,8 +51,66 @@ class SimpleEncryption:
             for i, b in enumerate(encrypted):
                 decrypted.append(b ^ self._key[i % len(self._key)])
             return bytes(decrypted).decode("utf-8")
-        except:
+        except Exception:
             return ""
+
+
+class ApiKeyCrypto:
+    """API Key 加密器：PBKDF2 + Fernet（密钥由机器信息派生，salt 持久化），兼容旧 XOR 数据。"""
+
+    def __init__(self, config_dir: Path):
+        self._legacy = SimpleEncryption()
+        self._fernet = None
+        if HAS_CRYPTO:
+            self._salt_file = config_dir / "key_salt.bin"
+            salt = self._load_or_create_salt()
+            key = base64.urlsafe_b64encode(
+                hashlib.pbkdf2_hmac("sha256", self._machine_key().encode("utf-8"), salt, 100000)
+            )
+            self._fernet = Fernet(key)
+
+    def _machine_key(self) -> str:
+        parts = [
+            os.environ.get("COMPUTERNAME", os.environ.get("HOSTNAME", "unknown")),
+            os.environ.get("USERNAME", os.environ.get("USER", "unknown")),
+            str(Path.home()),
+        ]
+        return "|".join(parts)
+
+    def _load_or_create_salt(self) -> bytes:
+        if self._salt_file.exists():
+            try:
+                with open(self._salt_file, "rb") as f:
+                    salt = f.read()
+                if salt:
+                    return salt
+            except Exception:
+                pass
+        salt = os.urandom(32)
+        try:
+            with open(self._salt_file, "wb") as f:
+                f.write(salt)
+        except Exception:
+            pass
+        return salt
+
+    def encrypt(self, plaintext: str) -> str:
+        if not plaintext:
+            return ""
+        if self._fernet is not None:
+            return self._fernet.encrypt(plaintext.encode("utf-8")).decode("utf-8")
+        return self._legacy.encrypt(plaintext)
+
+    def decrypt(self, ciphertext: str) -> str:
+        if not ciphertext:
+            return ""
+        if self._fernet is not None:
+            try:
+                return self._fernet.decrypt(ciphertext.encode("utf-8")).decode("utf-8")
+            except Exception:
+                pass
+        # 回退旧 XOR 数据
+        return self._legacy.decrypt(ciphertext)
 
 
 class ModelManager:
@@ -62,7 +124,7 @@ class ModelManager:
         self.config_dir.mkdir(parents=True, exist_ok=True)
         self.config_file = self.config_dir / "models.json"
         
-        self._encryption = SimpleEncryption()
+        self._encryption = ApiKeyCrypto(self.config_dir)
         self._models: dict[str, ModelConfig] = {}
         self._routing: dict[str, list[str]] = {}
         

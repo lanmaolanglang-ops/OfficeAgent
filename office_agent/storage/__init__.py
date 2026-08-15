@@ -8,9 +8,9 @@ Office Agent Storage Layer - 文件存储层
         ↓
     StorageBackend（抽象接口）
         ↓
-    ┌────────────┬─────────────┬──────────┐
-    │ LocalStorage│ MinioStorage│ S3Storage│
-    └────────────┴─────────────┴──────────┘
+    ┌────────────┐
+    │ LocalStorage│
+    └────────────┘
 
 使用：
     from office_agent.storage import get_storage_service, FileInfo
@@ -40,8 +40,6 @@ Office Agent Storage Layer - 文件存储层
 """
 from .storage_backend import StorageBackend
 from .local_storage import LocalStorage
-from .minio_storage import MinioStorage
-from .s3_storage import S3Storage
 from .storage_service import (
     StorageService, StorageConfig, FileInfo,
     create_storage_backend, get_storage_service,
@@ -56,10 +54,10 @@ from .path_generator import (
     BUCKET_UPLOADS, BUCKET_OUTPUTS, BUCKET_TEMP, BUCKET_CACHE, BUCKET_VERSIONS,
 )
 
-__version__ = "0.35.0"
+__version__ = "0.49.0"
 
 __all__ = [
-    "StorageBackend", "LocalStorage", "MinioStorage", "S3Storage",
+    "StorageBackend", "LocalStorage",
     "StorageService", "StorageConfig", "FileInfo",
     "create_storage_backend", "get_storage_service",
     "validate_file", "validate_extension", "validate_size",

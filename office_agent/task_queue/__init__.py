@@ -1,9 +1,7 @@
 """
 Office Agent Task Queue - 异步任务系统
 
-支持两种后端：
-1. LocalWorker - 本地线程池（默认，零依赖）
-2. CeleryWorker - Redis + Celery（生产环境）
+本地线程池任务系统（零外部依赖）。
 
 使用示例：
     from office_agent.task_queue import submit_task, get_worker
@@ -22,7 +20,7 @@ Office Agent Task Queue - 异步任务系统
         print(task.status, task.progress)
 """
 from .config import config
-from .worker import get_worker, LocalWorker, CeleryWorker
+from .worker import get_worker, LocalWorker
 from .tasks import TASK_REGISTRY
 
 __version__ = "0.49.0"
@@ -102,6 +100,6 @@ def init_worker():
 
 
 __all__ = [
-    "config", "get_worker", "LocalWorker", "CeleryWorker",
+    "config", "get_worker", "LocalWorker",
     "submit_task", "cancel_task", "init_worker", "TASK_REGISTRY",
 ]

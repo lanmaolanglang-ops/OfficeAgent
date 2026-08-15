@@ -1,6 +1,6 @@
 """
 健康检查路由 - 生产级健康检查
-检查 API、数据库、Redis、存储、Worker、模型等状态
+检查 API、数据库、存储、Worker、模型等状态
 """
 import os
 import time
@@ -42,26 +42,6 @@ def _check_database() -> dict:
             return {"status": "healthy", "message": "SQLite连接正常", "type": "sqlite"}
         except Exception as e2:
             return {"status": "unhealthy", "message": str(e2)[:200]}
-
-
-def _check_redis() -> dict:
-    """检查Redis连接"""
-    redis_url = os.environ.get("REDIS_URL", "")
-    if not redis_url:
-        return {"status": "disabled", "message": "未配置Redis"}
-    try:
-        import redis
-        r = redis.from_url(redis_url, socket_connect_timeout=2)
-        r.ping()
-        info = r.info()
-        return {
-            "status": "healthy",
-            "message": "连接正常",
-            "used_memory_mb": round(info.get("used_memory", 0) / 1024 / 1024, 1),
-            "connected_clients": info.get("connected_clients", 0),
-        }
-    except Exception as e:
-        return {"status": "unhealthy", "message": str(e)[:200]}
 
 
 def _check_storage() -> dict:
@@ -159,7 +139,6 @@ async def health():
     checks = {
         "api": {"status": "healthy", "message": "API运行中"},
         "database": _check_database(),
-        "redis": _check_redis(),
         "storage": _check_storage(),
         "workers": _check_workers(),
         "models": _check_models(),
@@ -189,7 +168,6 @@ async def health_detail():
     checks = {
         "api": {"status": "healthy"},
         "database": _check_database(),
-        "redis": _check_redis(),
         "storage": _check_storage(),
         "workers": _check_workers(),
         "models": _check_models(),

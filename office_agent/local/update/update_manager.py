@@ -1,7 +1,7 @@
-﻿"""
-Update Manager - 鍗囩骇绠＄悊鍣?
-鏀寔妫€鏌ョ増鏈€佷笅杞芥洿鏂般€佸崌绾у鎴风
-锛堟鏋惰璁★紝瀹為檯鏇存柊鏈嶅姟鍣ㄥ湴鍧€鍙厤缃級
+"""
+Update Manager - 升级管理器
+支持检查版本、下载更新、升级客户端
+（框架设计，实际更新服务器地址可配置）
 """
 import os
 import json
@@ -26,7 +26,7 @@ class UpdateStatus(str, Enum):
 
 @dataclass
 class VersionInfo:
-    """鐗堟湰淇℃伅"""
+    """版本信息"""
     version: str
     release_date: str = ""
     release_notes: str = ""
@@ -51,7 +51,7 @@ class VersionInfo:
 
 @dataclass
 class UpdateProgress:
-    """鏇存柊杩涘害"""
+    """更新进度"""
     status: UpdateStatus
     progress: float = 0.0
     message: str = ""
@@ -66,11 +66,11 @@ CURRENT_VERSION = "0.49.0"
 
 class UpdateManager:
     """
-    鍗囩骇绠＄悊鍣?
-    - 妫€鏌ユ柊鐗堟湰
-    - 涓嬭浇鏇存柊鍖?
-    - 鎵ц鍗囩骇
-    - 鏇存柊鍘嗗彶璁板綍
+    升级管理器
+    - 检查新版本
+    - 下载更新包
+    - 执行升级
+    - 更新历史记录
     """
 
     def __init__(self, update_url: str = None, current_version: str = None):
@@ -128,7 +128,7 @@ class UpdateManager:
             return (0, 0, 0)
 
     def compare_versions(self, v1: str, v2: str) -> int:
-        """姣旇緝鐗堟湰鍙? 1=v1>v2, -1=v1<v2, 0=鐩哥瓑"""
+        """比较版本号: 1=v1>v2, -1=v1<v2, 0=相等"""
         p1 = self.parse_version(v1)
         p2 = self.parse_version(v2)
         if p1 > p2:
@@ -140,9 +140,9 @@ class UpdateManager:
     def check_for_updates(self, force: bool = False) -> tuple[bool, Optional[VersionInfo]]:
         """Check the update service and return (available, version_info)."""
         self._status = UpdateStatus.CHECKING
-        self._progress = UpdateProgress(status=UpdateStatus.CHECKING, message="姝ｅ湪妫€鏌ユ洿鏂?..")
+        self._progress = UpdateProgress(status=UpdateStatus.CHECKING, message="正在检查更新...")
         self._notify()
-        # 灏濊瘯浠庢洿鏂版湇鍔″櫒鑾峰彇鐗堟湰淇℃伅
+        # 尝试从更新服务器获取版本信息
         try:
             import urllib.request
             import urllib.error
@@ -161,14 +161,14 @@ class UpdateManager:
                     min_version=data.get("min_version", ""),
                 )
         except Exception:
-            # 缃戠粶涓嶅彲鐢ㄦ垨鏈嶅姟鍣ㄦ湭閰嶇疆锛屼娇鐢ㄦā鎷熸鏌?
+            # 网络不可用或服务器未配置，使用模拟检查
             self._latest_version = None
-        # 姣旇緝鐗堟湰
+        # 比较版本
         if self._latest_version and self.compare_versions(self._latest_version.version, self._current_version) > 0:
             self._status = UpdateStatus.UPDATE_AVAILABLE
             self._progress = UpdateProgress(
                 status=UpdateStatus.UPDATE_AVAILABLE,
-                message=f"鍙戠幇鏂扮増鏈?{self._latest_version.version}",
+                message=f"发现新版本 {self._latest_version.version}",
             )
             self._notify()
             return True, self._latest_version
@@ -185,11 +185,11 @@ class UpdateManager:
             self._notify()
             return False
         self._status = UpdateStatus.DOWNLOADING
-        self._progress = UpdateProgress(status=UpdateStatus.DOWNLOADING, message="姝ｅ湪涓嬭浇鏇存柊...", total=info.file_size)
+        self._progress = UpdateProgress(status=UpdateStatus.DOWNLOADING, message="正在下载更新...", total=info.file_size)
         self._notify()
         try:
             import urllib.request
-            # 涓嬭浇鍒颁复鏃剁洰褰?
+            # 下载到临时目录
             self._download_path = Path(tempfile.gettempdir()) / f"OfficeAgent_{info.version}.update"
             def report_progress(block_num, block_size, total_size):
                 downloaded = block_num * block_size
@@ -198,7 +198,7 @@ class UpdateManager:
                 self._progress.progress = (downloaded / total_size * 100) if total_size else 0
             urllib.request.urlretrieve(info.download_url, str(self._download_path), reporthook=report_progress)
             self._status = UpdateStatus.DOWNLOADED
-            self._progress = UpdateProgress(status=UpdateStatus.DOWNLOADED, message="涓嬭浇瀹屾垚")
+            self._progress = UpdateProgress(status=UpdateStatus.DOWNLOADED, message="下载完成")
             self._notify()
             return True
         except Exception as e:
@@ -212,9 +212,9 @@ class UpdateManager:
         if not self._download_path or not self._download_path.exists():
             return False
         self._status = UpdateStatus.INSTALLING
-        self._progress = UpdateProgress(status=UpdateStatus.INSTALLING, message="姝ｅ湪瀹夎鏇存柊...")
+        self._progress = UpdateProgress(status=UpdateStatus.INSTALLING, message="正在安装更新...")
         self._notify()
-        # 璁板綍鏇存柊鍘嗗彶
+        # 记录更新历史
         if self._latest_version:
             self._history.append({
                 "version": self._latest_version.version,
@@ -222,13 +222,13 @@ class UpdateManager:
                 "previous_version": self._current_version,
             })
             self._save_history()
-        # 瀹為檯瀹夎閫昏緫锛?
-        # 1. 楠岃瘉checksum
-        # 2. 澶囦唤褰撳墠鐗堟湰
-        # 3. 瑙ｅ帇鏇存柊鍖?
-        # 4. 鏇挎崲鏂囦欢
-        # 5. 閲嶅惎搴旂敤
-        # 杩欓噷鍙仛妗嗘灦
+        # 实际安装逻辑：
+        # 1. 校验checksum
+        # 2. 备份当前版本
+        # 3. 解压更新包
+        # 4. 替换文件
+        # 5. 重启应用
+        # 这里只做框架
         self._status = UpdateStatus.IDLE
         return True
 
@@ -251,17 +251,17 @@ class UpdateManager:
         """Roll back to a target version."""
         if not self._history:
             return False
-        # 鎵惧埌鐩爣鐗堟湰
+        # 找到目标版本
         target = target_version
         if not target and len(self._history) >= 2:
             target = self._history[-2].get("version")
         if not target:
             return False
         self._status = UpdateStatus.INSTALLING
-        self._progress = UpdateProgress(status=UpdateStatus.INSTALLING, message=f"姝ｅ湪鍥炴粴鍒?{target}...")
+        self._progress = UpdateProgress(status=UpdateStatus.INSTALLING, message=f"正在回滚到 {target}...")
         self._notify()
         try:
-            # 浠庡浠芥仮澶?
+            # 从备份恢复
             from office_agent.local.config.migration import ConfigMigrator
             migrator = ConfigMigrator()
             backups = migrator.list_backups()
@@ -279,7 +279,7 @@ class UpdateManager:
                     return success
             return False
         except Exception as e:
-            self._progress = UpdateProgress(status=UpdateStatus.ERROR, error=f"鍥炴粴澶辫触: {e}")
+            self._progress = UpdateProgress(status=UpdateStatus.ERROR, error=f"回滚失败: {e}")
             self._notify()
             return False
 
@@ -298,7 +298,7 @@ class UpdateManager:
         return sha.hexdigest() == expected_checksum
 
 
-# 鍏ㄥ眬瀹炰緥
+# 全局实例
 _update_manager: Optional[UpdateManager] = None
 
 

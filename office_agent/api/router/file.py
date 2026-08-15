@@ -2,7 +2,7 @@
 文件路由 - 上传/下载/管理
 
 使用 StorageService 统一处理文件存储。
-支持：本地文件系统 / MinIO / S3
+支持：本地文件系统
 """
 import io
 import json

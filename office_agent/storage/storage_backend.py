@@ -1,7 +1,7 @@
 """
 存储后端抽象接口
 
-所有存储实现（本地/MinIO/S3）必须实现此接口。
+所有存储实现（本地文件系统）必须实现此接口。
 """
 import abc
 from typing import BinaryIO, Optional, Iterator
@@ -11,7 +11,7 @@ class StorageBackend(abc.ABC):
     """
     存储后端抽象基类
 
-    统一文件操作接口，支持本地文件系统、MinIO、AWS S3 等。
+    统一文件操作接口，支持本地文件系统。
     """
 
     @abc.abstractmethod

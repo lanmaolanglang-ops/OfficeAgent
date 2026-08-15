@@ -7,7 +7,6 @@ const Dashboard = lazy(() => import('./pages/Dashboard'));
 const WordAgentPage = lazy(() => import('./pages/WordAgent'));
 const PPTAgentPage = lazy(() => import('./pages/PPTAgent'));
 const ExcelAgentPage = lazy(() => import('./pages/ExcelAgent'));
-const WorkflowPage = lazy(() => import('./pages/Workflow'));
 const TaskHistory = lazy(() => import('./pages/TaskHistory'));
 const FileManagerPage = lazy(() => import('./pages/FileManager'));
 const SettingsPage = lazy(() => import('./pages/Settings'));
@@ -37,7 +36,6 @@ function App() {
             <Route path="/word" element={<WordAgentPage />} />
             <Route path="/ppt" element={<PPTAgentPage />} />
             <Route path="/excel" element={<ExcelAgentPage />} />
-            <Route path="/workflow" element={<WorkflowPage />} />
             <Route path="/history" element={<TaskHistory />} />
             <Route path="/files" element={<FileManagerPage />} />
             <Route path="/settings" element={<SettingsPage />} />

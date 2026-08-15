@@ -12,5 +12,5 @@ export default function ExcelAgentPage() {
     return () => stopPolling();
   }, [startPolling, stopPolling, loadTasks]);
 
-  return <Workspace title="Excel Agent" subtitle="智能表格处理 · 分析 · 公式 · 报表" />;
+  return <Workspace title="Excel Agent" subtitle="智能表格处理 · 分析 · 公式 · 报表" agent="excel" />;
 }

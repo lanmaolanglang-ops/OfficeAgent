@@ -5,10 +5,10 @@ import FileUploader from './FileUploader';
 import TaskTimeline, { type TimelineStep } from './TaskTimeline';
 import ChatInput from './ChatInput';
 import { useChatStore, useTaskStore } from '../../stores';
-import type { Task } from '../../types';
+import type { Task, AgentType } from '../../types';
 import heroAsset from '../../assets/hero.png';
 
-interface WorkspaceProps { title?: string; subtitle?: string; }
+interface WorkspaceProps { title?: string; subtitle?: string; agent?: AgentType; }
 
 function taskToSteps(task: Task | undefined): TimelineStep[] {
   if (!task) return [];
@@ -26,19 +26,21 @@ const agents = [
   { path: '/excel', title: 'Excel Agent', description: '数据分析、汇总与图表生成', icon: Sheet, tone: 'agent-excel' },
 ];
 
-export default function Workspace({ title = '工作台', subtitle = '智能办公助手' }: WorkspaceProps) {
+export default function Workspace({ title = '工作台', subtitle = '智能办公助手', agent = 'auto' }: WorkspaceProps) {
   const navigate = useNavigate();
-  const { messages, sending, sendMessage } = useChatStore();
+  const { messages, sending, sendMessage, setAgent } = useChatStore();
   const { tasks, loadTasks } = useTaskStore();
   const [localSteps, setLocalSteps] = useState<TimelineStep[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => { const interval = setInterval(() => { loadTasks(); }, 2000); return () => clearInterval(interval); }, [loadTasks]);
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
+  // 页面切换时同步当前 Agent 模式（Dashboard 为 auto）
+  useEffect(() => { setAgent(agent); }, [agent, setAgent]);
 
   const currentTask = tasks.find(t => t.status === 'processing' || t.status === 'pending');
   const displaySteps = currentTask ? taskToSteps(currentTask) : localSteps;
-  const isDashboard = title === '工作台';
+  const isDashboard = agent === 'auto';
 
   const handleSend = async (message: string) => {
     setLocalSteps([{ label: '理解任务需求', status: 'running' }, { label: '选择合适的 Agent', status: 'pending' }, { label: '执行处理', status: 'pending' }, { label: '输出结果', status: 'pending' }]);
