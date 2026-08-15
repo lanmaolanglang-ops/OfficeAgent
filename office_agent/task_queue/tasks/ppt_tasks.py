@@ -181,41 +181,11 @@ def generate_ppt(outline: str = None, input_path: str = None,
         if progress:
             progress.update(5, "初始化PPT生成")
 
-        # 调用 PPT Orchestrator（传入ModelGateway以启用AI内容生成）
+        # 调用 PPT Orchestrator（传入ModelGateway以启用AI内容生成；模型选择由“默认模型”机制接管）
         from ...ppt_agent.ppt_orchestrator import PPTOrchestrator
         try:
             from ...model_gateway import ModelGateway
             model_gateway = ModelGateway()
-
-            # 如果前端传了模型配置，添加到网关
-            if options and options.get("model_config"):
-                mc = options["model_config"]
-                if mc.get("api_key") and mc.get("enabled", True):
-                    provider = mc.get("provider", "openai")
-                    model = mc.get("model", "")
-                    api_key = mc.get("api_key", "")
-                    base_url = mc.get("base_url", "")
-                    try:
-                        frontend_model_id = f"{provider}-frontend"
-                        model_gateway.add_provider(
-                            provider=provider if provider in ["openai", "deepseek", "doubao", "qwen", "anthropic", "google"] else "custom",
-                            api_key=api_key,
-                            model=model,
-                            base_url=base_url,
-                            model_id=frontend_model_id,
-                        )
-                        # 将前端模型设为ppt_content路由首选（仅内存，不保存文件）
-                        routing = model_gateway.model_manager._routing
-                        for task_key in ["ppt_content", "simple_text", "chinese_writing"]:
-                            if task_key in routing:
-                                route_list = routing[task_key]
-                                if frontend_model_id in route_list:
-                                    route_list.remove(frontend_model_id)
-                                route_list.insert(0, frontend_model_id)
-                        logger.info(f"已添加前端模型配置并设为首选: {provider}/{model}")
-                    except Exception as e:
-                        logger.warning(f"添加前端模型失败: {e}")
-
             logger.info("ModelGateway已初始化，将使用AI生成PPT内容")
         except Exception as e:
             logger.warning(f"ModelGateway初始化失败，将使用模板: {e}")

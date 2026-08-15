@@ -98,16 +98,32 @@ export async function checkHealth(): Promise<HealthResponse> {
   return { success: data.status === 'healthy', data } as HealthResponse;
 }
 // 模型配置状态（GET/POST /api/settings/model）
-export interface ModelSettingsStatus {
-  configured: boolean;
-  provider?: string;
-  model?: string;
-  api_key_mask?: string;
+export interface ModelItem {
+  id: string;
+  provider: string;
+  model: string;
+  display_name: string;
+  api_key_mask: string;
+  is_default: boolean;
 }
 
-// 获取当前本地模型配置状态
+export interface ModelSettingsStatus {
+  configured: boolean;
+  default_model_id?: string | null;
+  models: ModelItem[];
+}
+
+// 获取当前本地模型配置状态（已保存模型列表 + 默认模型）
 export async function getModelSettings(): Promise<ModelSettingsStatus> {
   return await request<ModelSettingsStatus>('/api/settings/model');
+}
+
+// 切换默认模型（已保存的 Key 无缝切换，无需重新输入）
+export async function setDefaultModel(modelId: string): Promise<ModelSettingsStatus> {
+  return await request<ModelSettingsStatus>('/api/settings/model/default', {
+    method: 'POST',
+    body: JSON.stringify({ model_id: modelId }),
+  });
 }
 
 // 保存本地模型配置（API Key 仅写入后端 ~/.office_agent/models.json）

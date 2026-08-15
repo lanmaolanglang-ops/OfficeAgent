@@ -1,7 +1,6 @@
 import { create } from 'zustand';
 import type { ChatMessage, AgentType, ChatResponse } from '../types';
 import { sendChatMessage, getTask, getFileUrl } from '../services/api';
-import { useSettingsStore } from './settingsStore';
 import { useFileStore } from './fileStore';
 
 interface ChatState {
@@ -69,21 +68,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
     let taskId: string | undefined;
 
     try {
-      // 获取启用的模型配置（仅发送 provider/model，不发送 API Key）
-      const settingsState = useSettingsStore.getState();
-      const allModels = settingsState.settings.models;
-      const activeModel = allModels.find((m) => m.enabled) || allModels[0];
-      const modelConfig = activeModel
-        ? { provider: activeModel.provider, model: activeModel.model }
-        : undefined;
-
+      // 模型由后端“默认模型”机制决定，前端不再传 model_config
       const response: ChatResponse = await sendChatMessage({
         message: content,
         agent: get().currentAgent,
         file_ids: attachedFileIds,
         conversation_id: get().conversationId,
         history,
-        model_config: modelConfig,
       });
 
       // The Backend accepted the task, so these attachments no longer belong

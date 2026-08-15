@@ -5,7 +5,7 @@ import {
 } from 'lucide-react';
 import { useSettingsStore, useBackendStore } from '../../stores';
 import type { AgentType } from '../../types';
-import { getModelSettings, saveModelSettings, type ModelSettingsStatus } from '../../services/api';
+import { getModelSettings, saveModelSettings, setDefaultModel, type ModelSettingsStatus } from '../../services/api';
 import { isTauri, setAutoStart, getAutoStart } from '../../services/tauri';
 
 const agentOptions: { value: AgentType; label: string }[] = [
@@ -13,7 +13,6 @@ const agentOptions: { value: AgentType; label: string }[] = [
   { value: 'word', label: 'Word Agent' },
   { value: 'ppt', label: 'PPT Agent' },
   { value: 'excel', label: 'Excel Agent' },
-  { value: 'workflow', label: '工作流' },
 ];
 const MODEL_OPTIONS: Record<string, string[]> = {
   openai: ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'],
@@ -25,7 +24,7 @@ const MODEL_OPTIONS: Record<string, string[]> = {
 };
 
 export default function SettingsPage() {
-  const { settings, updateSettings, setBackendUrl, setDefaultAgent, updateModel, resetSettings } = useSettingsStore();
+  const { settings, updateSettings, setBackendUrl, setDefaultAgent, resetSettings } = useSettingsStore();
   const { check, connected } = useBackendStore();
   const [saved, setSaved] = useState(false);
   const [autostartEnabled, setAutostartEnabled] = useState(false);
@@ -46,7 +45,7 @@ export default function SettingsPage() {
   };
 
   const [modelForm, setModelForm] = useState({ provider: 'deepseek', model: '', apiKey: '' });
-  const [modelStatus, setModelStatus] = useState<ModelSettingsStatus>({ configured: false });
+  const [modelStatus, setModelStatus] = useState<ModelSettingsStatus>({ configured: false, models: [] });
   const [savingModel, setSavingModel] = useState(false);
   const [modelSaved, setModelSaved] = useState(false);
   const [modelError, setModelError] = useState('');
@@ -55,9 +54,6 @@ export default function SettingsPage() {
     try {
       const status = await getModelSettings();
       setModelStatus(status);
-      if (status.configured) {
-        setModelForm((f) => ({ ...f, provider: status.provider || f.provider, model: status.model || f.model }));
-      }
     } catch {
       // Backend 未连接时保持默认状态
     }
@@ -76,22 +72,29 @@ export default function SettingsPage() {
     setSavingModel(true);
     setModelError('');
     try {
-      const savedModelCfg = settings.models.find((m) => m.provider === modelForm.provider);
-      const status = await saveModelSettings({
+      await saveModelSettings({
         provider: modelForm.provider,
         model: modelForm.model.trim(),
         api_key: apiKey,
-        ...(savedModelCfg?.base_url ? { base_url: savedModelCfg.base_url } : {}),
       });
-      setModelStatus(status);
-      updateModel(modelForm.provider, { model: modelForm.model.trim(), enabled: true });
       setModelForm((f) => ({ ...f, apiKey: '' }));
       setModelSaved(true);
       setTimeout(() => setModelSaved(false), 2000);
+      await loadModelStatus(); // 刷新已保存模型列表
     } catch (e) {
       setModelError(e instanceof Error ? e.message : '保存失败，请检查 Backend 连接');
     } finally {
       setSavingModel(false);
+    }
+  };
+
+  const handleSwitchDefault = async (modelId: string) => {
+    setModelError('');
+    try {
+      const status = await setDefaultModel(modelId);
+      setModelStatus(status);
+    } catch (e) {
+      setModelError(e instanceof Error ? e.message : '切换失败，请检查 Backend 连接');
     }
   };
 
@@ -163,14 +166,35 @@ export default function SettingsPage() {
           {/* AI 模型配置 */}
           <div className={cardCls}>
             <h2 className={labelCls}><Key className="w-4 h-4 text-gray-500" /> AI 模型配置</h2>
-            <div className="mb-4">
-              {modelStatus.configured ? (
-                <span className="text-sm text-green-400">🟢 AI 已连接（{modelStatus.provider} / {modelStatus.model}）</span>
-              ) : (
+
+            {modelStatus.models.length > 0 ? (
+              <div className="mb-4 space-y-2">
+                <p className="text-xs text-gray-500">已保存的模型 · 点击“设为默认”即可切换，无需重新输入 Key</p>
+                {modelStatus.models.map((m) => (
+                  <div key={m.id} className={`flex items-center justify-between rounded-xl px-3 py-2.5 border ${m.is_default ? 'border-indigo-500/50 bg-indigo-500/10' : 'border-[#2A2A2A] bg-[#1b1b1b]'}`}>
+                    <div className="min-w-0">
+                      <p className="text-sm text-gray-200 flex items-center gap-2">
+                        {m.display_name || m.provider}
+                        {m.is_default && <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-300">默认</span>}
+                      </p>
+                      <p className="text-xs text-gray-500 truncate">{m.model} · {m.api_key_mask}</p>
+                    </div>
+                    {!m.is_default && (
+                      <button onClick={() => handleSwitchDefault(m.id)} className="px-3 py-1.5 text-xs bg-[#222222] text-gray-200 rounded-lg hover:bg-[#2a2a2a] transition-colors flex-shrink-0">
+                        设为默认
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="mb-4">
                 <span className="text-sm text-gray-400">⚪ 未配置，当前使用模板模式</span>
-              )}
-            </div>
-            <div className="space-y-3">
+              </div>
+            )}
+
+            <div className="border-t border-[#2A2A2A] pt-4 space-y-3">
+              <p className="text-xs text-gray-500">添加新模型</p>
               <div>
                 <label className="block text-xs text-gray-400 mb-1.5">供应商</label>
                 <select value={modelForm.provider} onChange={(e) => {
@@ -205,8 +229,8 @@ export default function SettingsPage() {
                 {modelSaved && <span className="text-sm text-green-400">已保存</span>}
                 {modelError && <span className="text-sm text-red-400">{modelError}</span>}
               </div>
-              <p className="text-xs text-gray-600">API Key 仅保存在本机 ~/.office_agent/models.json，不会上传云端或写入任务记录。</p>
             </div>
+            <p className="text-xs text-gray-600 mt-3">API Key 仅保存在本机 ~/.office_agent/models.json，不会上传云端或写入任务记录。</p>
           </div>
 
           {/* Notifications */}

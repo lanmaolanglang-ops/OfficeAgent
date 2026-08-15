@@ -127,6 +127,7 @@ class ModelManager:
         self._encryption = ApiKeyCrypto(self.config_dir)
         self._models: dict[str, ModelConfig] = {}
         self._routing: dict[str, list[str]] = {}
+        self._default_model_id: Optional[str] = None
         
         # 先加载环境变量中的 API Key
         self._load_env_keys()
@@ -212,6 +213,9 @@ class ModelManager:
             routing_data = data.get("routing", {})
             for task_type, model_ids in routing_data.items():
                 self._routing[task_type] = model_ids
+
+            # 加载默认模型
+            self._default_model_id = data.get("default_model_id") or None
                 
         except Exception as e:
             print(f"加载模型配置失败: {e}")
@@ -220,7 +224,8 @@ class ModelManager:
         """保存配置到文件"""
         data = {
             "models": [],
-            "routing": {}
+            "routing": {},
+            "default_model_id": self._default_model_id,
         }
         
         for model_id, config in self._models.items():
@@ -259,13 +264,38 @@ class ModelManager:
     def add_model(self, config: ModelConfig) -> bool:
         """添加或更新模型配置"""
         self._models[config.id] = config
+        # 首次保存的模型自动设为默认
+        if not self._default_model_id or self._default_model_id not in self._models:
+            self._default_model_id = config.id
         self._save_config()
         return True
+
+    def set_default_model(self, model_id: str) -> bool:
+        """设置当前默认模型（用于任务路由首选）"""
+        if model_id not in self._models:
+            return False
+        self._default_model_id = model_id
+        self._save_config()
+        return True
+
+    def get_default_model_id(self) -> Optional[str]:
+        """获取当前默认模型ID（无则回退到第一个可用模型）"""
+        if self._default_model_id and self._default_model_id in self._models:
+            return self._default_model_id
+        available = self.list_available_models()
+        return available[0].id if available else None
+
+    def get_default_model(self) -> Optional[ModelConfig]:
+        """获取当前默认模型配置"""
+        mid = self.get_default_model_id()
+        return self._models.get(mid) if mid else None
     
     def remove_model(self, model_id: str) -> bool:
         """删除模型配置"""
         if model_id in self._models:
             del self._models[model_id]
+            if self._default_model_id == model_id:
+                self._default_model_id = None
             self._save_config()
             return True
         return False

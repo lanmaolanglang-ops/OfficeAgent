@@ -1,14 +1,10 @@
-﻿"""
+"""
 设置管理路由 - 本地模型配置
 
 职责：
 - 保存/读取本地 API Key 配置（~/.office_agent/models.json）
-- 复用 ModelGateway / ModelManager / SimpleEncryption 能力
-- 不写 SQLite、不写任务记录
-
-注意：
-- 仅本地单机模式，无账号、无云端同步
-- API Key 通过 SimpleEncryption 混淆存储，接口不回传明文
+- 列出已保存的模型，支持切换默认模型（无需重新输入 API Key）
+- API Key 通过 ApiKeyCrypto 加密存储，接口不回传明文
 """
 import logging
 from typing import Optional
@@ -33,6 +29,11 @@ class ModelSettingsRequest(BaseModel):
     base_url: Optional[str] = None
 
 
+class SetDefaultModelRequest(BaseModel):
+    """切换默认模型请求"""
+    model_id: str
+
+
 def _mask_key(api_key: str) -> str:
     """生成 Key 掩码，不回传明文"""
     if not api_key:
@@ -49,18 +50,29 @@ def _get_gateway():
 
 @router.get("/model")
 def get_model_settings():
-    """获取当前已配置模型信息（不回传 API Key）"""
+    """获取已配置的模型列表与当前默认模型（不回传 API Key）"""
     try:
         gateway = _get_gateway()
-        available = gateway.manager.list_available_models()
+        manager = gateway.manager
+        available = manager.list_available_models()
         if not available:
-            return {"configured": False}
-        config = available[0]
+            return {"configured": False, "models": [], "default_model_id": None}
+        default_id = manager.get_default_model_id()
+        models = [
+            {
+                "id": m.id,
+                "provider": m.provider.value,
+                "model": m.model or "",
+                "display_name": m.display_name,
+                "api_key_mask": _mask_key(m.api_key),
+                "is_default": m.id == default_id,
+            }
+            for m in available
+        ]
         return {
             "configured": True,
-            "provider": config.provider.value,
-            "model": config.model or "",
-            "api_key_mask": _mask_key(config.api_key),
+            "default_model_id": default_id,
+            "models": models,
         }
     except Exception as e:
         logger.exception("读取模型配置失败")
@@ -105,3 +117,27 @@ def save_model_settings(req: ModelSettingsRequest):
         "model": model,
         "api_key_mask": _mask_key(api_key),
     }
+
+
+@router.post("/model/default")
+def set_default_model(req: SetDefaultModelRequest):
+    """切换当前默认模型（已保存的 Key 无缝切换，无需重新输入）"""
+    model_id = (req.model_id or "").strip()
+    if not model_id:
+        raise HTTPException(status_code=400, detail="model_id 不能为空")
+    try:
+        gateway = _get_gateway()
+        if not gateway.manager.set_default_model(model_id):
+            raise HTTPException(status_code=404, detail=f"模型不存在或未配置 API Key: {model_id}")
+        config = gateway.manager.get_model(model_id)
+        return {
+            "configured": True,
+            "default_model_id": model_id,
+            "provider": config.provider.value,
+            "model": config.model or "",
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("切换默认模型失败")
+        raise HTTPException(status_code=500, detail=f"切换默认模型失败: {e}")

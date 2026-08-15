@@ -193,7 +193,9 @@ class ModelGateway:
         elif isinstance(messages, list) and messages and isinstance(messages[0], ChatMessage):
             messages = [m.to_dict() for m in messages]
         
-        # 选择模型
+        # 选择模型：显式 prefer_model 优先，否则用用户设置的默认模型
+        if not prefer_model:
+            prefer_model = self.manager.get_default_model_id()
         model_ids = self.router.select_model(task_type, prefer_model=prefer_model)
         
         # 执行调用（带故障转移）
