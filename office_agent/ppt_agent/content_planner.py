@@ -143,15 +143,14 @@ class ContentPlanner:
         if ai_outline and ai_outline.slides:
             return ai_outline
 
-        # A configured LLM failure must be visible.  Returning a generic
-        # template makes the user believe the requested content was created
-        # by the model when it was not.
+        # 3. LLM 失败/未配置时回退模板，保证有产出，同时用 used_template 标记避免冒充 AI
         if self.model_gateway:
-            raise RuntimeError("PPT内容模型调用失败，已阻止使用通用模板冒充AI结果")
-
-        # 3. 仅在明确没有配置模型时使用模板
-        logger.warning(f"未配置LLM，使用模板生成: {clean_title}")
-        return self._generate_from_template(clean_title, slide_count, style, subtitle, author)
+            logger.warning("LLM生成PPT大纲失败，回退模板生成: %s", clean_title)
+        else:
+            logger.warning(f"未配置LLM，使用模板生成: {clean_title}")
+        outline = self._generate_from_template(clean_title, slide_count, style, subtitle, author)
+        outline.used_template = True
+        return outline
 
     def plan_from_text(self, text: str,
                        style: str = "professional",

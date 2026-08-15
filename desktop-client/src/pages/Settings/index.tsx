@@ -16,7 +16,7 @@ const agentOptions: { value: AgentType; label: string }[] = [
 ];
 const MODEL_OPTIONS: Record<string, string[]> = {
   openai: ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'],
-  deepseek: ['deepseek-v4-pro', 'deepseek-v4-flash'],
+  deepseek: ['deepseek-chat', 'deepseek-reasoner'],
   doubao: ['doubao-seed-2-1-pro', 'doubao-seed-2-1-turbo',
     'doubao-seed-2-0-pro', 'doubao-seed-2-0-lite', 'doubao-seed-2-0-mini', 'doubao-seed-2-0-code'],
   qwen: ['qwen3.8-max-preview', 'qwen3.7-max', 'qwen3.7-plus', 'qwen3.7-flash'],

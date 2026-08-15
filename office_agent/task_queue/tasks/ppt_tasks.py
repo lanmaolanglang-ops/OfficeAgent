@@ -272,8 +272,12 @@ def generate_ppt(outline: str = None, input_path: str = None,
             # The content planner can make several model calls.  Report the
             # actual content-generation call, not only the preliminary
             # follow-up rewriter call.
-            if getattr(model_gateway, "last_call", None):
-                result["model_call"] = model_gateway.last_call
+            last_call = getattr(model_gateway, "last_call", None)
+            if last_call:
+                result["model_call"] = last_call
+                if not last_call.get("success", True):
+                    # LLM 调用失败时已回退模板，明确告知用户
+                    result["message"] = (message or "PPT已生成") + "（模型调用失败，已使用模板内容）"
 
         if progress:
             progress.update(100, "PPT生成完成")

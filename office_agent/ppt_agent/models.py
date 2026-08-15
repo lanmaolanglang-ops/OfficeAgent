@@ -99,6 +99,7 @@ class PPTOutline:
     font_scheme: Optional[FontScheme] = None
     slide_width: float = 13.333     # 英寸
     slide_height: float = 7.5       # 英寸
+    used_template: bool = False     # 是否因 LLM 失败/未配置而回退模板
 
     def add_slide(self, slide: SlideContent):
         slide.page_number = len(self.slides) + 1

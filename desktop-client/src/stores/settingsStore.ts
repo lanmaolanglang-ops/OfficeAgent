@@ -6,7 +6,7 @@ const STORAGE_KEY = 'officeagent_settings';
 const defaultModels: ModelConfig[] = [
   { provider: 'openai', model: 'gpt-5.6-sol', api_key: '', enabled: false },
   { provider: 'anthropic', model: 'claude-opus-5', api_key: '', enabled: false },
-  { provider: 'deepseek', model: 'deepseek-v4-pro', api_key: '', enabled: false },
+  { provider: 'deepseek', model: 'deepseek-chat', api_key: '', enabled: false },
   { provider: 'doubao', model: 'doubao-seed-2-1-pro', api_key: '', enabled: true },
   { provider: 'qwen', model: 'qwen3.8-max-preview', api_key: '', enabled: false },
   { provider: 'agnes', model: 'agnes-2.0-flash', api_key: '', enabled: false, base_url: 'https://apihub.agnes-ai.cn/v1' },
