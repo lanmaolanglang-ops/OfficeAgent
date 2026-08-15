@@ -4,6 +4,7 @@ PPT Orchestrator - PPT 生成总控
 流程：
 用户需求 → 内容规划 → 模板解析 → 视觉设计 → 生成文件 → 质量检查 → 输出
 """
+import logging
 from pathlib import Path
 from typing import Optional
 
@@ -13,6 +14,8 @@ from .template_analyzer import TemplateAnalyzer
 from .slide_designer import SlideDesigner
 from .ppt_service import PPTService
 from .quality_checker import PPTQualityChecker, check_and_fix_outline
+
+logger = logging.getLogger("office_agent.ppt.orchestrator")
 
 
 class PPTOrchestrator:
@@ -35,8 +38,9 @@ class PPTOrchestrator:
         result = orch.generate_from_outline("标题", slides_data, output_path="out.pptx")
     """
 
-    def __init__(self, model_gateway=None):
+    def __init__(self, model_gateway=None, image_gateway=None):
         self.model_gateway = model_gateway
+        self.image_gateway = image_gateway
         self.planner = ContentPlanner(model_gateway=model_gateway)
         self.template_analyzer = TemplateAnalyzer()
         self.service = PPTService()
@@ -83,7 +87,10 @@ class PPTOrchestrator:
             )
             outline = designer.design(outline)
 
-            # 3.5 生成前质量预检 + 自动修正
+            # 3.5 给标记需要配图的页（content_image）按描述词生图
+            outline = self._generate_marked_images(outline)
+
+            # 3.6 生成前质量预检 + 自动修正
             outline = self._pre_check_and_fix(outline, expected_slides=slide_count)
 
             # 4. 生成文件
@@ -311,6 +318,30 @@ class PPTOrchestrator:
                 success=False,
                 message=f"模板生成失败: {str(e)}",
             )
+
+    def _generate_marked_images(self, outline: PPTOutline) -> PPTOutline:
+        """为标记了 image_prompt 的 content_image 页生成配图（按需生图）"""
+        if not self.image_gateway:
+            return outline
+        try:
+            if not self.image_gateway.available():
+                return outline
+        except Exception:
+            return outline
+        import tempfile
+        for slide in outline.slides:
+            if slide.layout != "content_image" or slide.image_path:
+                continue
+            if not slide.image_prompt:
+                continue
+            try:
+                slide.image_path = self.image_gateway.generate(
+                    slide.image_prompt, output_dir=tempfile.gettempdir()
+                )
+                slide.image_alt = slide.image_prompt[:50]
+            except Exception as e:
+                logger.warning("第 %s 页配图生成失败: %s", slide.page_number, e)
+        return outline
 
     def _pre_check_and_fix(self, outline: PPTOutline,
                            expected_slides: int = None) -> PPTOutline:

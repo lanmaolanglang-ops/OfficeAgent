@@ -554,8 +554,9 @@ class ContentPlanner:
   ]
 }}
 
-可用layout类型: cover(封面), toc(目录), section(章节页), content(内容页), two_column(两栏), data_cards(数据卡片), timeline(时间线), summary(总结)
-请确保生成{slide_count}页左右，内容充实专业。"""
+可用layout类型: cover(封面), toc(目录), section(章节页), content(内容页), content_image(图文页，需要配图，附image_prompt图片描述词), two_column(两栏), data_cards(数据卡片), table(表格页，附table_data二维数组，第一行为表头), timeline(时间线), summary(总结)
+
+当某一页内容更适合用图片表达时，使用 content_image 布局，并提供一句具体的 image_prompt 描述画面（横向构图、商务风格、避免文字）。当需要展示结构化数据时，使用 table 布局并提供 table_data。请确保生成{slide_count}页左右，内容充实专业。"""
 
             result = self.model_gateway.chat(
                 user_message=prompt,
@@ -602,6 +603,8 @@ class ContentPlanner:
                 title=slide_data.get("title", ""),
                 subtitle=slide_data.get("subtitle", ""),
                 bullets=slide_data.get("bullets", []) or [],
+                image_prompt=slide_data.get("image_prompt", "") or "",
+                table_data=slide_data.get("table_data", []) or [],
             )
 
             # 数据卡片

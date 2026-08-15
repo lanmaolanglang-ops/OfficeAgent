@@ -37,9 +37,10 @@ def _get_bytes(url: str, timeout: float = 120.0) -> bytes:
 
 
 class ImageGenerationGateway:
-    def __init__(self, api_key: str = "", base_url: str = "", model: str = "", provider: str = ""):
+    def __init__(self, api_key: str = "", base_url: str = "", model: str = "",
+                 provider: str = "", mcp_url: str = ""):
         self.provider = provider or os.getenv("IMAGE_PROVIDER", "agnes")
-        self.mcp_url = os.getenv("IMAGE_MCP_URL", "").rstrip("/")
+        self.mcp_url = (mcp_url or os.getenv("IMAGE_MCP_URL", "")).rstrip("/")
         self.mcp_tool = os.getenv("IMAGE_MCP_TOOL", "generate_image")
         self.api_key = api_key or os.getenv("AGNES_API_KEY") or os.getenv("CODEX_ENV_AGNES_API_KEY", "")
         self.base_url = (base_url or os.getenv("AGNES_BASE_URL", "https://apihub.agnes-ai.com/v1")).rstrip("/")

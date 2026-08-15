@@ -13,6 +13,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from ...models.model_schemas import ModelProvider, DEFAULT_MODEL_CONFIGS
+from ...image_generation.config import ImageModelConfigManager
 
 logger = logging.getLogger("office_agent.api.settings")
 router = APIRouter(prefix="/api/settings", tags=["设置"])
@@ -32,6 +33,15 @@ class ModelSettingsRequest(BaseModel):
 class SetDefaultModelRequest(BaseModel):
     """切换默认模型请求"""
     model_id: str
+
+
+class ImageModelRequest(BaseModel):
+    """生图模型配置请求"""
+    provider: str = "agnes"  # agnes | mcp
+    api_key: str = ""
+    base_url: Optional[str] = None
+    model: str = ""
+    mcp_url: Optional[str] = None
 
 
 def _mask_key(api_key: str) -> str:
@@ -141,3 +151,52 @@ def set_default_model(req: SetDefaultModelRequest):
     except Exception as e:
         logger.exception("切换默认模型失败")
         raise HTTPException(status_code=500, detail=f"切换默认模型失败: {e}")
+
+
+@router.get("/image-model")
+def get_image_model_settings():
+    """获取生图模型配置（不回传 API Key）"""
+    try:
+        mgr = ImageModelConfigManager()
+        cfg = mgr.get_config()
+        return {
+            "configured": mgr.is_configured(),
+            "provider": cfg["provider"],
+            "model": cfg["model"],
+            "base_url": cfg["base_url"],
+            "mcp_url": cfg["mcp_url"],
+            "api_key_mask": _mask_key(cfg["api_key"]),
+        }
+    except Exception as e:
+        logger.exception("读取生图模型配置失败")
+        raise HTTPException(status_code=500, detail=f"读取生图模型配置失败: {e}")
+
+
+@router.post("/image-model")
+def save_image_model_settings(req: ImageModelRequest):
+    """保存生图模型配置到 ~/.office_agent/image_model.json"""
+    provider = (req.provider or "agnes").strip().lower()
+    if provider not in ("agnes", "mcp"):
+        raise HTTPException(status_code=400, detail=f"不支持的生图服务: {provider}（仅支持 agnes/mcp）")
+    try:
+        mgr = ImageModelConfigManager()
+        cfg = mgr.save_config(
+            provider=provider,
+            api_key=(req.api_key or "").strip(),
+            base_url=(req.base_url or "").strip(),
+            model=(req.model or "").strip(),
+            mcp_url=(req.mcp_url or "").strip(),
+        )
+        return {
+            "configured": mgr.is_configured(),
+            "provider": cfg["provider"],
+            "model": cfg["model"],
+            "base_url": cfg["base_url"],
+            "mcp_url": cfg["mcp_url"],
+            "api_key_mask": _mask_key(cfg["api_key"]),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("保存生图模型配置失败")
+        raise HTTPException(status_code=500, detail=f"保存生图模型配置失败: {e}")

@@ -73,6 +73,7 @@ class SlideContent:
     right_content: list = field(default_factory=list)  # 右栏
     image_path: str = ""            # 图片路径
     image_alt: str = ""             # 图片说明
+    image_prompt: str = ""          # 生图描述词（LLM 标记该页需要配图时提供）
     data: list = field(default_factory=list)       # 数据项 [(label, value, unit)]
     table_data: list = field(default_factory=list) # 表格数据 [[行1], [行2], ...] 第一行为表头
     table_header: bool = True                       # 第一行是否为表头

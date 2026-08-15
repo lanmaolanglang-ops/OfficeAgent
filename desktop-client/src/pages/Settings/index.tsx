@@ -1,11 +1,11 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
   Server, Key, Bot, Bell, Save, RotateCcw, Check,
-  ExternalLink, Power, Minimize2, Monitor,
+  ExternalLink, Power, Minimize2, Monitor, Image as ImageIcon,
 } from 'lucide-react';
 import { useSettingsStore, useBackendStore } from '../../stores';
 import type { AgentType } from '../../types';
-import { getModelSettings, saveModelSettings, setDefaultModel, type ModelSettingsStatus } from '../../services/api';
+import { getModelSettings, saveModelSettings, setDefaultModel, getImageModelSettings, saveImageModelSettings, type ModelSettingsStatus, type ImageModelSettings } from '../../services/api';
 import { isTauri, setAutoStart, getAutoStart } from '../../services/tauri';
 
 const agentOptions: { value: AgentType; label: string }[] = [
@@ -95,6 +95,49 @@ export default function SettingsPage() {
       setModelStatus(status);
     } catch (e) {
       setModelError(e instanceof Error ? e.message : '切换失败，请检查 Backend 连接');
+    }
+  };
+
+  const [imageForm, setImageForm] = useState({ provider: 'agnes', model: '', apiKey: '', baseUrl: '', mcpUrl: '' });
+  const [imageStatus, setImageStatus] = useState<ImageModelSettings>({ configured: false, provider: 'agnes', model: '', base_url: '', mcp_url: '', api_key_mask: '' });
+  const [savingImage, setSavingImage] = useState(false);
+  const [imageError, setImageError] = useState('');
+
+  const loadImageStatus = useCallback(async () => {
+    try {
+      const status = await getImageModelSettings();
+      setImageStatus(status);
+      setImageForm((f) => ({ ...f, provider: status.provider || f.provider, model: status.model || f.model, baseUrl: status.base_url || f.baseUrl, mcpUrl: status.mcp_url || f.mcpUrl }));
+    } catch {
+      // Backend 未连接时保持默认状态
+    }
+  }, []);
+
+  useEffect(() => {
+    loadImageStatus();
+  }, [loadImageStatus]);
+
+  const handleSaveImage = async () => {
+    if (imageForm.provider !== 'mcp' && !imageForm.apiKey.trim() && !imageStatus.configured) {
+      setImageError('请输入生图 API Key（通常可与语言模型共用）');
+      return;
+    }
+    setSavingImage(true);
+    setImageError('');
+    try {
+      const status = await saveImageModelSettings({
+        provider: imageForm.provider,
+        model: imageForm.model.trim(),
+        api_key: imageForm.apiKey.trim(),
+        base_url: imageForm.baseUrl.trim(),
+        mcp_url: imageForm.mcpUrl.trim(),
+      });
+      setImageStatus(status);
+      setImageForm((f) => ({ ...f, apiKey: '' }));
+    } catch (e) {
+      setImageError(e instanceof Error ? e.message : '保存失败，请检查 Backend 连接');
+    } finally {
+      setSavingImage(false);
     }
   };
 
@@ -231,6 +274,55 @@ export default function SettingsPage() {
               </div>
             </div>
             <p className="text-xs text-gray-600 mt-3">API Key 仅保存在本机 ~/.office_agent/models.json，不会上传云端或写入任务记录。</p>
+          </div>
+
+          {/* 生图模型 */}
+          <div className={cardCls}>
+            <h2 className={labelCls}><ImageIcon className="w-4 h-4 text-gray-500" /> PPT 配图模型</h2>
+            <div className="mb-3">
+              {imageStatus.configured ? (
+                <span className="text-sm text-green-400">🟢 已配置（{imageStatus.provider} / {imageStatus.model || '默认模型'}）</span>
+              ) : (
+                <span className="text-sm text-gray-400">⚪ 未配置，PPT 生成时不配图</span>
+              )}
+            </div>
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs text-gray-400 mb-1.5">生图服务</label>
+                <select value={imageForm.provider} onChange={(e) => setImageForm((f) => ({ ...f, provider: e.target.value }))} className={inputCls}>
+                  <option value="agnes">Agnes 生图（OpenAI 兼容 /images/generations）</option>
+                  <option value="mcp">MCP 网关</option>
+                </select>
+              </div>
+              {imageForm.provider === 'mcp' ? (
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1.5">MCP 网关地址</label>
+                  <input type="text" value={imageForm.mcpUrl} onChange={(e) => setImageForm((f) => ({ ...f, mcpUrl: e.target.value }))} className={inputCls} placeholder="https://your-mcp-host" />
+                </div>
+              ) : (
+                <>
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1.5">生图模型名</label>
+                    <input type="text" value={imageForm.model} onChange={(e) => setImageForm((f) => ({ ...f, model: e.target.value }))} className={inputCls} placeholder="如 agnes-image-2.0-flash" />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1.5">Base URL（可选，默认 Agnes）</label>
+                    <input type="text" value={imageForm.baseUrl} onChange={(e) => setImageForm((f) => ({ ...f, baseUrl: e.target.value }))} className={inputCls} placeholder="https://apihub.agnes-ai.com/v1" />
+                  </div>
+                </>
+              )}
+              <div>
+                <label className="block text-xs text-gray-400 mb-1.5">生图 API Key{imageStatus.configured ? '（留空则保留已保存的 Key）' : ''}</label>
+                <input type="password" value={imageForm.apiKey} onChange={(e) => setImageForm((f) => ({ ...f, apiKey: e.target.value }))} className={inputCls} placeholder="通常可与语言模型共用同一个 Key" autoComplete="off" />
+              </div>
+              <div className="flex items-center gap-3">
+                <button onClick={handleSaveImage} disabled={savingImage} className="flex items-center gap-2 px-4 py-2 bg-[#222222] text-gray-200 rounded-xl hover:bg-[#2a2a2a] text-sm transition-colors disabled:opacity-50">
+                  {savingImage ? '保存中...' : '保存生图配置'}
+                </button>
+                {imageError && <span className="text-sm text-red-400">{imageError}</span>}
+              </div>
+              <p className="text-xs text-gray-600">PPT 生成时，若大纲标记了需要配图的页，会自动调用该生图模型按描述词生成图片；也可为文字页兜底配图。</p>
+            </div>
           </div>
 
           {/* Notifications */}

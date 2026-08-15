@@ -27,12 +27,17 @@ def _maybe_generate_slide_images(ppt_path: str, prompt: str, options: dict) -> i
         return 0
     try:
         from ...image_generation import ImageGenerationGateway
+        from ...image_generation.config import get_image_model_config
         config = options.get("image_model_config") or {}
+        if not config:
+            # 前端未下发时，读取用户已保存的生图模型配置
+            config = get_image_model_config()
         gateway = ImageGenerationGateway(
             api_key=config.get("api_key", ""),
             base_url=config.get("base_url", ""),
             model=config.get("model", ""),
             provider=config.get("provider", ""),
+            mcp_url=config.get("mcp_url", ""),
         )
         if not gateway.available():
             logger.info("未配置图像模型，跳过 PPT 图片生成")
@@ -190,7 +195,22 @@ def generate_ppt(outline: str = None, input_path: str = None,
         except Exception as e:
             logger.warning(f"ModelGateway初始化失败，将使用模板: {e}")
             model_gateway = None
-        orchestrator = PPTOrchestrator(model_gateway=model_gateway)
+        # 生图网关：读取用户配置的生图模型，用于按需配图
+        image_gateway = None
+        try:
+            from ...image_generation import ImageGenerationGateway
+            from ...image_generation.config import get_image_model_config
+            icfg = options.get("image_model_config") or get_image_model_config()
+            image_gateway = ImageGenerationGateway(
+                api_key=icfg.get("api_key", ""),
+                base_url=icfg.get("base_url", ""),
+                model=icfg.get("model", ""),
+                provider=icfg.get("provider", ""),
+                mcp_url=icfg.get("mcp_url", ""),
+            )
+        except Exception as e:
+            logger.warning(f"生图网关初始化失败: {e}")
+        orchestrator = PPTOrchestrator(model_gateway=model_gateway, image_gateway=image_gateway)
 
         # 确定主题和输出路径
         effective_instruction = _understand_ppt_request(instruction or outline or "", options)

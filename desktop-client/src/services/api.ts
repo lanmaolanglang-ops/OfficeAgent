@@ -139,6 +139,35 @@ export async function saveModelSettings(payload: {
   });
 }
 
+// 生图模型配置（GET/POST /api/settings/image-model）
+export interface ImageModelSettings {
+  configured: boolean;
+  provider: string;
+  model: string;
+  base_url: string;
+  mcp_url: string;
+  api_key_mask: string;
+}
+
+// 获取生图模型配置
+export async function getImageModelSettings(): Promise<ImageModelSettings> {
+  return await request<ImageModelSettings>('/api/settings/image-model');
+}
+
+// 保存生图模型配置（api_key 留空表示保留已保存的 Key）
+export async function saveImageModelSettings(payload: {
+  provider: string;
+  model: string;
+  api_key: string;
+  base_url?: string;
+  mcp_url?: string;
+}): Promise<ImageModelSettings> {
+  return await request<ImageModelSettings>('/api/settings/image-model', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
 // 上传文件（支持进度回调）
 export async function uploadFile(
   file: File,
