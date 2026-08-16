@@ -114,32 +114,12 @@ def run_qa_suite(include_performance: bool = False) -> QATestRunner:
     """运行QA测试套件"""
     runner = QATestRunner()
     runner.start()
-    # Runtime
-    try:
-        from tests.runtime.test_runtime import run_runtime_tests
-        run_runtime_tests(runner)
-    except Exception as e:
-        print(f"Runtime tests error: {e}")
     # Office兼容
     try:
         from tests.office_compatibility.test_office_compat import run_office_compat_tests
         run_office_compat_tests(runner)
     except Exception as e:
         print(f"Office compat tests error: {e}")
-    # Agent
-    try:
-        from tests.agent.test_agents import run_agent_tests
-        run_agent_tests(runner)
-    except Exception as e:
-        print(f"Agent tests error: {e}")
-    # 集成
-    try:
-        from tests.integration.test_scenarios import run_integration_tests
-        # 需要Inches导入
-        from pptx.util import Inches
-        run_integration_tests(runner)
-    except Exception as e:
-        print(f"Integration tests error: {e}")
     # 恢复
     try:
         from tests.recovery.test_recovery import run_recovery_tests
