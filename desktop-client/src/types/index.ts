@@ -164,6 +164,7 @@ export interface ChatRequest {
   message: string;
   agent?: AgentType;
   file_ids?: string[];
+  template_file_id?: string;
   conversation_id?: string;
   history?: Array<{ role: string; content: string }>;
   model_config?: ModelConfigPayload;

@@ -26,6 +26,7 @@ class ChatRequest(BaseModel):
     conversation_id: Optional[str] = Field(default=None, description="会话ID")
     context: Optional[Dict[str, Any]] = Field(default=None, description="额外上下文")
     agent_hint: Optional[str] = Field(default=None, description="指定Agent（可选）")
+    template_file_id: Optional[str] = Field(default=None, description="PPT 模板文件ID（可选，用于按模板生成）")
 
     @field_validator("message")
     @classmethod

@@ -42,6 +42,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const attachedFileIds = explicitFileIds.length > 0
       ? explicitFileIds
       : (get().lastOutputFileId ? [get().lastOutputFileId!] : []);
+    const templateFileId = useFileStore.getState().templateFileId;
     const userMessage: ChatMessage = {
       id: generateId(),
       role: 'user',
@@ -73,6 +74,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         message: content,
         agent: get().currentAgent,
         file_ids: attachedFileIds,
+        template_file_id: templateFileId || undefined,
         conversation_id: get().conversationId,
         history,
       });

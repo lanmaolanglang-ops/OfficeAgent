@@ -314,6 +314,7 @@ export async function sendChatMessage(req: ChatRequest): Promise<ChatResponse> {
       message: req.message,
       agent_hint: req.agent,
       file_ids: req.file_ids,
+      template_file_id: req.template_file_id,
       conversation_id: req.conversation_id,
       context: {
         ...(req.model_config ? { model_config: req.model_config } : {}),

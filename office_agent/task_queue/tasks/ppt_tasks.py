@@ -20,6 +20,19 @@ from pathlib import Path
 
 logger = logging.getLogger("office_agent.tasks.ppt")
 
+# PPT 页数上限（防止异常指令导致生成过多页）
+MAX_SLIDES = 50
+DEFAULT_SLIDES = 10
+
+
+def _parse_slide_count(instruction: str, effective: str) -> int:
+    """从用户指令/简报中解析期望页数，默认 10，限制 [1, 50]"""
+    text = f"{instruction or ''} {effective or ''}"
+    m = re.search(r'(\d{1,3})\s*页', text)
+    if m:
+        return max(1, min(MAX_SLIDES, int(m.group(1))))
+    return DEFAULT_SLIDES
+
 
 def _maybe_generate_slide_images(ppt_path: str, prompt: str, options: dict) -> int:
     """Generate images for text-heavy slides that do not already contain one."""
@@ -217,6 +230,8 @@ def generate_ppt(outline: str = None, input_path: str = None,
         # The LLM-resolved brief must take precedence during follow-ups.
         theme = effective_instruction or outline or "演示文稿"
         style = template_type or "professional"
+        # 从用户指令解析期望页数（默认 10，最大 50）
+        slide_count = _parse_slide_count(instruction or "", effective_instruction)
         if not output_path:
             output_path = _safe_filename(theme)
 
@@ -229,7 +244,17 @@ def generate_ppt(outline: str = None, input_path: str = None,
         # 根据输入类型选择生成方法
         ppt_result = None
 
-        if input_path and os.path.exists(input_path):
+        # 用户指定了 PPT 模板 → 分析模板并按模板配色/字体/版式生成
+        template_path = (options or {}).get("template_path")
+        if template_path and os.path.exists(template_path):
+            if progress:
+                progress.update(60, "分析模板并按模板生成PPT...")
+            ppt_result = orchestrator.generate_with_template(
+                template_path=template_path,
+                theme=theme,
+                output_path=output_path,
+            )
+        elif input_path and os.path.exists(input_path):
             if progress:
                 progress.update(60, "从文件生成PPT...")
             ext = Path(input_path).suffix.lower()
@@ -250,6 +275,7 @@ def generate_ppt(outline: str = None, input_path: str = None,
                 progress.update(60, "生成幻灯片内容...")
             ppt_result = orchestrator.generate_from_theme(
                 theme=theme,
+                slide_count=slide_count,
                 style=style,
                 output_path=output_path,
             )

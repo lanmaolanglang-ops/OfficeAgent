@@ -6,7 +6,7 @@ import { useFileStore } from '../../stores';
 interface UploadedFileInfo { key: string; fileId?: string; name: string; size: number; status: 'uploading' | 'done' | 'error'; progress: number; error?: string; }
 
 export default function FileUploader() {
-  const { uploadFiles, attachFile, detachFile } = useFileStore();
+  const { uploadFiles, attachFile, detachFile, templateFileId, setTemplateFile } = useFileStore();
   const [dragOver, setDragOver] = useState(false);
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFileInfo[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -67,7 +67,16 @@ export default function FileUploader() {
               <div className="w-8 h-8 rounded-md bg-[#edf3ff] flex items-center justify-center"><FileText className="w-4 h-4 text-[#4978ee]" /></div>
               <div className="flex-1 min-w-0"><p className="text-xs font-medium text-[#35405a] truncate">{file.name}</p><p className="text-[10px] text-[#9ba3b1] mt-0.5">{formatSize(file.size)}</p></div>
               {file.status === 'done' ? <CheckCircle2 className="w-4 h-4 text-[#22b573]" /> : file.status === 'error' ? <span className="text-[10px] text-red-500" title={file.error}>失败</span> : <span className="text-[10px] text-[#4f73e8]">上传中</span>}
-              <button onClick={(e) => { e.stopPropagation(); if (file.fileId) detachFile(file.fileId); setUploadedFiles(prev => prev.filter(f => f.key !== file.key)); }} className="text-[#a6adba] hover:text-[#59647a]" title="移除"><X className="w-4 h-4" /></button>
+              {file.status === 'done' && (file.name.toLowerCase().endsWith('.pptx') || file.name.toLowerCase().endsWith('.ppt')) && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); setTemplateFile(templateFileId === file.fileId ? null : (file.fileId ?? null)); }}
+                  className={`px-2 py-1 text-[10px] rounded ${templateFileId === file.fileId ? 'bg-indigo-500/20 text-indigo-500' : 'bg-[#eef1f6] text-[#59647a] hover:bg-[#e3e8f0]'}`}
+                  title="将上传的 PPT 作为模板，按其配色/字体/版式生成"
+                >
+                  {templateFileId === file.fileId ? '模板中' : '设为模板'}
+                </button>
+              )}
+              <button onClick={(e) => { e.stopPropagation(); if (file.fileId) detachFile(file.fileId); if (templateFileId === file.fileId) setTemplateFile(null); setUploadedFiles(prev => prev.filter(f => f.key !== file.key)); }} className="text-[#a6adba] hover:text-[#59647a]" title="移除"><X className="w-4 h-4" /></button>
             </div>
           ))}
         </div>

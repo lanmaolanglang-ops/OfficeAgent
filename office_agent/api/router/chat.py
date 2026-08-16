@@ -235,6 +235,12 @@ async def chat(req: ChatRequest):
                 if routed:
                     agent, task_type, intent = routed
 
+        # 解析 PPT 模板文件（可选，用于按模板生成）
+        template_path = None
+        if req.template_file_id:
+            template_paths = _resolve_input_files([req.template_file_id], file_repo)
+            template_path = template_paths[0] if template_paths else None
+
         # 从context中提取模型配置（仅保留非敏感字段，防止 API Key 进入任务数据）
         model_config = _sanitize_model_config(req.context.get("model_config") if req.context else None)
         history = _sanitize_history(req.context.get("history") if req.context else None)
@@ -259,6 +265,7 @@ async def chat(req: ChatRequest):
                 "intent": intent,
                 "conversation_id": req.conversation_id,
                 "input_paths": input_paths,
+                "template_path": template_path,
                 "model_config": model_config,
                 "history": history,
                 "is_follow_up": bool(recovered),
@@ -291,6 +298,7 @@ async def chat(req: ChatRequest):
                     "model_config": model_config,
                     "input_file_ids": file_ids,
                     "input_paths": input_paths,
+                    "template_path": template_path,
                     "history": history,
                     "is_follow_up": bool(recovered),
                     "parent_task_id": recovered["task"].id if recovered else None,

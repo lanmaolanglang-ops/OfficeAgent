@@ -5,12 +5,14 @@ import { uploadFiles as apiUploadFiles, listFiles as apiListFiles } from '../ser
 interface FileState {
   files: UploadedFile[];
   attachedFileIds: string[];
+  templateFileId: string | null;
   uploading: boolean;
   uploadProgress: number;
   uploadFiles: (files: File[]) => Promise<UploadedFile[]>;
   loadFiles: () => Promise<void>;
   attachFile: (fileId: string) => void;
   detachFile: (fileId: string) => void;
+  setTemplateFile: (fileId: string | null) => void;
   clearAttachments: () => void;
   removeFile: (id: string) => void;
   clearFiles: () => void;
@@ -19,6 +21,7 @@ interface FileState {
 export const useFileStore = create<FileState>((set) => ({
   files: [],
   attachedFileIds: [],
+  templateFileId: null,
   uploading: false,
   uploadProgress: 0,
 
@@ -59,6 +62,10 @@ export const useFileStore = create<FileState>((set) => ({
     set((state) => ({
       attachedFileIds: state.attachedFileIds.filter((id) => id !== fileId),
     }));
+  },
+
+  setTemplateFile: (fileId: string | null) => {
+    set({ templateFileId: fileId });
   },
 
   clearAttachments: () => {
