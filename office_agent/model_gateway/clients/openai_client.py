@@ -44,6 +44,10 @@ class OpenAIClient(BaseModelClient):
             "max_tokens": self._get_max_tokens(max_tokens),
             "stream": False,
         }
+        # DeepSeek 思考模型（deepseek-reasoner / deepseek-v4 等）默认输出 reasoning_content
+        # 思维链，会挤占 max_tokens 导致正文被截断。禁用思考，直接输出正文（JSON）。
+        if getattr(self.config, "provider", None) and self.config.provider.value == "deepseek":
+            payload["reasoning"] = {"enabled": False}
         
         # 支持视觉的模型添加图片支持参数
         if self.config.supports_vision:
@@ -62,10 +66,27 @@ class OpenAIClient(BaseModelClient):
             with urlopen(req, timeout=self.config.timeout) as resp:
                 result = json.loads(resp.read().decode("utf-8"))
             
-            content = result["choices"][0]["message"]["content"]
+            choice = result["choices"][0]
+            message = choice.get("message", {}) or {}
+            content = message.get("content") or ""
+            finish_reason = choice.get("finish_reason", "")
             usage = result.get("usage", {})
             tokens = usage.get("total_tokens", 0)
-            
+
+            # 推理模型（deepseek-reasoner / deepseek-v4 等）会先输出 reasoning_content 思维链，
+            # 当 max_tokens 不足以同时容纳思维链与正文时，content 会被截断为空。
+            if not content:
+                reasoning = message.get("reasoning_content", "") or ""
+                if finish_reason == "length":
+                    return self._make_error(
+                        f"响应被 max_tokens 截断，正文未生成（思维链已占用 {len(reasoning)} 字），请增大 max_tokens",
+                        start,
+                    )
+                if reasoning:
+                    content = reasoning
+                else:
+                    return self._make_error("模型返回空内容", start)
+
             return self._make_response(content, start, tokens, result)
             
         except HTTPError as e:

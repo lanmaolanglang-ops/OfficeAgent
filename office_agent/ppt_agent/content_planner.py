@@ -522,7 +522,7 @@ class ContentPlanner:
 2. 内容要紧扣主题，有实际价值
 3. 每页的要点要具体、详实，不要写"要点一"这种空话
 
-请严格按以下JSON格式返回，不要返回其他内容：
+请直接输出 JSON 结果，不要输出任何思考过程、推理或解释。严格按以下JSON格式返回，不要返回其他内容：
 {{
   "subtitle": "副标题（一句话概括）",
   "slides": [
@@ -562,7 +562,7 @@ class ContentPlanner:
                 user_message=prompt,
                 task_type_str="ppt_content",
                 temperature=0.7,
-                max_tokens=4000,
+                max_tokens=8192,
             )
 
             if not result or not result.success or not result.content:
