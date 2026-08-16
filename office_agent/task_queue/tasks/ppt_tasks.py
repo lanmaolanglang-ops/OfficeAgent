@@ -252,6 +252,7 @@ def generate_ppt(outline: str = None, input_path: str = None,
             ppt_result = orchestrator.generate_with_template(
                 template_path=template_path,
                 theme=theme,
+                slide_count=slide_count,
                 output_path=output_path,
             )
         elif input_path and os.path.exists(input_path):

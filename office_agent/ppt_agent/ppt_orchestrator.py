@@ -255,12 +255,16 @@ class PPTOrchestrator:
                                theme: str = "",
                                text: str = "",
                                slides_data: list = None,
+                               slide_count: int = 10,
                                output_path: str = "") -> PPTGenerationResult:
         """
         使用指定模板生成 PPT
 
         可以从主题、文本或结构化数据生成内容，
         但使用模板的配色和字体。
+
+        Args:
+            slide_count: 期望页数，透传给 plan_from_theme（用户指令解析出的页数）
         """
         try:
             if not Path(template_path).exists():
@@ -281,7 +285,7 @@ class PPTOrchestrator:
             elif text:
                 outline = self.planner.plan_from_text(text, title=theme)
             elif theme:
-                outline = self.planner.plan_from_theme(theme)
+                outline = self.planner.plan_from_theme(theme, slide_count=slide_count)
             else:
                 return PPTGenerationResult(
                     success=False,
