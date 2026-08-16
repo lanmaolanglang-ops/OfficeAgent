@@ -4,6 +4,14 @@
 
 OfficeAgent 从云 SaaS 架构迁移至本地桌面架构。用户安装 `OfficeAgent.exe` 即可运行完整系统，无需注册登录，所有数据保存在本地。
 
+> ⚠️ **现状说明（v0.49.0）**：本文档主要描述 `office_agent/local/` 子系统。该子系统在 v0.47.5 迁移时搭建，但**尚未接入 FastAPI HTTP 层**——产品实际运行的 API 走的是另一套并行实现：
+> - 数据层：`office_agent/database/`（SQLAlchemy，`~/.office_agent/db/office_agent.db`）
+> - 文件存储：`office_agent/storage/`（StorageService）
+> - 模型网关：`office_agent/models/` + `office_agent/model_gateway/`（provider 枚举为 openai/claude/gemini/deepseek/doubao/qwen/agnes/custom）
+> - 任务队列：`office_agent/task_queue/`（线程池 LocalWorker）
+>
+> `office_agent/local/` 目前只有 `desktop/` 启动器（`app_launcher.py`）引用了其中的运行时管理。阅读本文档的「API 变化」与「模块详解」时请以代码为准。
+
 ## 目标架构
 
 ```
@@ -102,6 +110,8 @@ AuthAdapter
 
 ### 4. Local SQLite Database（本地数据库）
 
+> ⚠️ **现状说明**：本小节描述 local 子系统自带的 sqlite3 库（`%APPDATA%/OfficeAgent/database/officeagent.db`），**未被 FastAPI 后端使用**。后端实际读写 SQLAlchemy 库 `~/.office_agent/db/office_agent.db`（`office_agent/database/`），两套库并行、互不相连。
+
 **位置**: `office_agent/local/database/local_db.py`
 
 - 默认 SQLite，WAL 模式，线程安全
@@ -160,6 +170,8 @@ AuthAdapter
 | 智谱 | glm-4 | ✅ |
 | Moonshot | moonshot-v1-8k | ❌ |
 | Ollama | llama3.1 | ❌ |
+
+> ⚠️ **现状说明**：上表是 local 子系统 `model_manager.py` 的预设，**与 API 实际模型网关不一致**。API 网关（`office_agent/models/model_schemas.py`）的 provider 枚举为 `openai / claude / gemini / deepseek / doubao / qwen / agnes / custom`，且 `/api/settings/model` 的白名单仅接受 `openai / deepseek / doubao / qwen / claude / gemini / agnes`——上表中的 `anthropic`（API 用 `claude`）、`zhipu`、`moonshot`、`ollama` 均会被 API 拒绝。API 侧默认模型为 `gpt-4o`、`claude-3-5-sonnet-20241022`、`deepseek-chat`、`doubao-pro-32k`、`qwen-max`、`gemini-1.5-pro`、`agnes-2.5-flash`。
 
 ### 7. Local Task Queue（本地任务队列）
 
@@ -361,20 +373,17 @@ office_agent/local/
 
 ## API 变化
 
-### 新增端点
+> ⚠️ 本节如实列出 v0.49.0 实际暴露的端点（来自 `office_agent/api/router/`）。此前文档曾声称存在 `/api/local/*`、`/api/runtime/*` 等 12 个端点，实际**从未实现**——`office_agent/local/` 子系统无 HTTP 暴露层。
 
-- `GET /api/local/status` - 本地状态
-- `GET /api/local/config` - 获取配置
-- `PUT /api/local/config` - 更新配置
-- `GET /api/local/models` - 模型列表
-- `POST /api/local/models/{provider}/key` - 设置 API Key
-- `GET /api/local/storage/stats` - 存储统计
-- `POST /api/local/tasks/{task_id}/cancel` - 取消任务
-- `GET /api/local/env` - 环境信息
-- `POST /api/local/update/check` - 检查更新
-- `POST /api/runtime/start` - 启动 Backend
-- `POST /api/runtime/stop` - 停止 Backend
-- `GET /api/runtime/status` - 运行时状态
+### 实际端点
+
+- 服务状态（`router/health.py`，无前缀）：`GET /`、`GET /health`、`GET /api/health`、`GET /api/version`、`GET /ready`、`GET /live`；另有 `GET /metrics` 与 `/api/logs/*`、`/api/trace/{trace_id}`（在 `api/main.py`）
+- 对话（`router/chat.py`）：`POST /api/chat`
+- Agent（`router/agent.py`）：`GET /api/agents`、`GET /api/agents/{agent_id}`、`GET /api/agents/{agent_id}/versions`
+- 任务（`router/task.py`）：`POST /api/task/create`、`GET /api/task/{task_id}`、`GET /api/task/`、`POST /api/task/{task_id}/cancel`、`POST /api/task/{task_id}/feedback`
+- 文件（`router/file.py`）：`POST /api/file/upload`、`GET /api/file/download/{file_id}`、`GET /api/file/{file_id}`、`GET /api/file/{file_id}/versions`、`POST /api/file/{file_id}/versions/{v}/restore`、`DELETE /api/file/{file_id}`、`GET /api/file/`、`GET /api/file/stats/overview`、`POST /api/file/cleanup` 及分片上传端点
+- 设置（`router/settings.py`）：`GET|POST /api/settings/model`、`POST /api/settings/model/default`、`GET|POST /api/settings/image-model`
+- 配置（`router/config.py`）：`GET /api/config/`、`/export`、`/reload`、`/models`、`/agents`、`/prompts`、`/skills`、`/workflows` 等
 
 ### 认证
 

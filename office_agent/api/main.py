@@ -2,15 +2,15 @@
 Office Agent API - 统一接口服务层
 
 启动方式：
-    uvicorn office_agent.api.main:app --host 0.0.0.0 --port 8000 --reload
+    uvicorn office_agent.api.main:app --host 0.0.0.0 --port 8765 --reload
 
 或直接运行：
     python -m office_agent.api.main
 
 API文档：
-    Swagger UI: http://localhost:8000/docs
-    ReDoc: http://localhost:8000/redoc
-    Metrics: http://localhost:8000/metrics
+    Swagger UI: http://localhost:8765/docs
+    ReDoc: http://localhost:8765/redoc
+    Metrics: http://localhost:8765/metrics
 """
 import os
 import sys

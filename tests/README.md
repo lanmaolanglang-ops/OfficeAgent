@@ -7,31 +7,38 @@ Office Agent 测试与质量保证系统。
 ```
 tests/
 ├── __init__.py
-├── conftest.py              # 共享fixtures
-├── pytest.ini               # pytest配置
+├── conftest.py              # 共享fixtures（pytest.ini 在项目根目录）
 ├── unit/                    # 单元测试
-│   ├── test_word.py         # Word引擎测试
-│   ├── test_ppt.py          # PPT引擎测试
-│   ├── test_excel.py        # Excel引擎测试
+│   ├── test_config.py       # 配置测试
 │   ├── test_database.py     # 数据库测试
-│   ├── test_storage.py      # 存储测试
+│   ├── test_ppt.py          # PPT 页数解析/模板生成测试
 │   ├── test_security.py     # 安全测试
-│   └── test_config.py       # 配置/日志测试
+│   └── test_storage.py      # 存储测试
 ├── integration/             # 集成测试
-│   ├── test_workflow.py     # 多Agent工作流测试
-│   ├── test_api.py          # API接口测试
-│   └── test_e2e.py          # 端到端文件处理测试
+│   └── test_api.py          # API接口测试
+├── agent/                   # Agent 评估测试
+│   └── test_evaluation.py
 ├── agent_eval/              # Agent评估模块
 │   ├── evaluator.py         # 评估器基类
 │   ├── word_eval.py         # Word Agent评估
 │   ├── ppt_eval.py          # PPT Agent评估
 │   └── excel_eval.py        # Excel Agent评估
 ├── performance/             # 性能测试
-│   ├── test_performance.py  # 性能基准测试
-│   └── test_stress.py       # 压力测试
-├── test_report.py           # 测试报告生成
-├── fixtures/                # 测试数据目录
-└── reports/                 # 测试报告输出
+│   └── test_performance.py  # 性能基准测试
+├── recovery/                # 故障恢复测试
+│   └── test_recovery.py
+├── runtime/                 # 运行时测试
+│   └── test_runtime.py
+├── office_compatibility/    # Office 兼容性测试
+│   └── test_office_compat.py
+├── test_chat_context_recovery.py  # 对话上下文恢复
+├── test_image_generation.py       # 生图网关
+├── test_installation.py           # 安装/环境检测
+├── test_local.py                  # local 子系统
+├── test_model_failover.py         # 模型故障转移
+├── test_report.py                 # 测试报告生成
+├── qa_framework.py / qa_report.py / run_regression.py / generate_dataset.py
+└── fixtures/                # 测试数据目录
 ```
 
 ## 运行测试
@@ -50,7 +57,7 @@ python -m pytest tests/integration/ -v
 python -m pytest tests/performance/ -v
 
 # 运行特定模块
-python -m pytest tests/unit/test_word.py -v
+python -m pytest tests/unit/test_ppt.py -v
 
 # 生成覆盖率报告
 python -m pytest tests/ --cov=office_agent --cov-report=html
@@ -178,9 +185,4 @@ GitHub Actions配置在 `.github/workflows/ci.yml`：
 
 ## 版本历史
 
-- **v0.46.0** (2026-07-31)：初始测试系统
-  - 102个测试全部通过
-  - 单元测试、集成测试、性能测试、压力测试
-  - Agent评估模块
-  - 测试报告系统
-  - CI/CD配置
+- **v0.49.0**：测试结构收敛为 `unit/ integration/ agent/ agent_eval/ performance/ recovery/ runtime/ office_compatibility/` + 根目录散件；全量 85 个测试通过（`python -m pytest tests/`）。
