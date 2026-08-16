@@ -86,7 +86,7 @@ class OfficeAgentService(win32serviceutil.ServiceFramework):
         servicemanager.LogMsg(servicemanager.EVENTLOG_INFORMATION_TYPE,
                               servicemanager.PYS_SERVICE_STARTED,
                               (self._svc_name_, ""))
-        from office_agent.local.runtime.app_manager import AppConfig, ApplicationRuntimeManager
+        from office_agent.runtime_manager import AppConfig, ApplicationRuntimeManager
         config = AppConfig(port={port}, backend_dir=r"{app_dir}")
         self._mgr = ApplicationRuntimeManager(config)
         self._mgr.start()

@@ -27,14 +27,11 @@ tests/
 │   └── test_performance.py  # 性能基准测试
 ├── recovery/                # 故障恢复测试
 │   └── test_recovery.py
-├── runtime/                 # 运行时测试
-│   └── test_runtime.py
 ├── office_compatibility/    # Office 兼容性测试
 │   └── test_office_compat.py
 ├── test_chat_context_recovery.py  # 对话上下文恢复
 ├── test_image_generation.py       # 生图网关
 ├── test_installation.py           # 安装/环境检测
-├── test_local.py                  # local 子系统
 ├── test_model_failover.py         # 模型故障转移
 ├── test_report.py                 # 测试报告生成
 ├── qa_framework.py / qa_report.py / run_regression.py / generate_dataset.py

@@ -118,24 +118,6 @@ def main():
     logger.info(f"App dir: {APP_DIR}")
     logger.info(f"Python: {sys.executable}")
 
-    # 环境检测
-    try:
-        from office_agent.local.env import check_environment
-        report = check_environment()
-        if report.overall_status.value == "error":
-            logger.error(f"Environment check failed: {[c.message for c in report.checks if c.status.value == 'error']}")
-    except Exception as e:
-        logger.warning(f"Environment check error: {e}")
-
-    # 初始化本地应用
-    try:
-        from office_agent.local import LocalApplication
-        app = LocalApplication(data_dir=str(data_dir))
-        app.initialize()
-        logger.info("Local application initialized")
-    except Exception as e:
-        logger.warning(f"Local app init error (non-fatal): {e}")
-
     # 启动Backend
     if args.no_autostart:
         logger.info("Backend autostart disabled, exiting")
@@ -152,7 +134,7 @@ def main():
             raise
     else:
         # 开发模式：通过RuntimeManager启动子进程
-        from office_agent.local.runtime.app_manager import AppConfig, ApplicationRuntimeManager
+        from office_agent.runtime_manager import AppConfig, ApplicationRuntimeManager
         config = AppConfig(
             host=args.host,
             port=args.port,

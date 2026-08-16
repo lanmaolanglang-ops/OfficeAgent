@@ -6,8 +6,7 @@
 
 - **后端** `office_agent/`：FastAPI，默认 SQLite + 本地线程池任务队列 + `urllib` 零 SDK 模型网关（多提供商 + 故障转移）。
 - **桌面壳** `desktop-client/`：Tauri 2 + React 19 + Vite，内嵌后端（`src-tauri` 自动拉起并健康检查后端进程）。
-- **本地模式** `office_agent/local/`：本地身份 / 存储 / 配置 / 任务队列 / 运行时 / 更新。
-- 详细设计见 [LOCAL_ARCHITECTURE.md](LOCAL_ARCHITECTURE.md)。
+- **桌面启动器** `desktop/`：PyInstaller 打包入口（`app_launcher.py`），拉起 FastAPI 后端并管理进程生命周期。
 
 ## 运行
 

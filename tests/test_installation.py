@@ -51,19 +51,12 @@ class InstallationTestSuite:
             ("检查核心依赖", self.test_dependencies),
             ("检查目录结构", self.test_directory_structure),
             ("检查配置文件", self.test_config_files),
-            ("检查数据目录", self.test_data_directory),
-            ("检查日志系统", self.test_logging),
-            ("检查环境检测", self.test_system_checker),
             ("检查Backend启动", self.test_backend_startup),
             ("检查健康检查API", self.test_health_endpoint),
             ("检查文件上传API", self.test_file_upload),
             ("检查Word处理", self.test_word_processing),
             ("检查Excel处理", self.test_excel_processing),
             ("检查PPT处理", self.test_ppt_processing),
-            ("检查任务队列", self.test_task_queue),
-            ("检查数据库", self.test_database),
-            ("检查凭据加密", self.test_credential_manager),
-            ("检查异常恢复", self.test_error_recovery),
             ("检查Backend停止", self.test_backend_shutdown),
         ]
         for name, test_fn in tests:
@@ -121,15 +114,8 @@ class InstallationTestSuite:
         required_dirs = [
             "office_agent",
             "office_agent/api",
-            "office_agent/word_engine",
-            "office_agent/ppt_engine",
-            "office_agent/excel_engine",
-            "office_agent/local",
-            "office_agent/local/runtime",
-            "office_agent/local/config",
-            "office_agent/local/database",
-            "office_agent/local/auth",
-            "office_agent/local/storage",
+            "office_agent/excel_agent",
+            "office_agent/ppt_agent",
         ]
         missing = []
         for dir_path in required_dirs:
@@ -150,59 +136,6 @@ class InstallationTestSuite:
         if missing:
             return InstallTestResult(status=TestStatus.FAIL, message=f"缺少文件: {', '.join(missing)}")
         return InstallTestResult(status=TestStatus.PASS, message="核心文件完整")
-
-    def test_data_directory(self) -> InstallTestResult:
-        """检查数据目录创建"""
-        from office_agent.local.config import get_config
-        config = get_config()
-        data_dir = config.get_data_dir()
-        Path(data_dir).mkdir(parents=True, exist_ok=True)
-        required_subdirs = ["config", "data", "logs", "cache"]
-        for sub in required_subdirs:
-            (Path(data_dir) / sub).mkdir(exist_ok=True)
-        return InstallTestResult(
-            status=TestStatus.PASS,
-            message=f"数据目录: {data_dir}",
-            details={"data_dir": str(data_dir)},
-        )
-
-    def test_logging(self) -> InstallTestResult:
-        """检查日志系统"""
-        from office_agent.local.logs import LocalLogManager, LogConfig
-        import tempfile
-        with tempfile.TemporaryDirectory() as tmpdir:
-            log_dir = Path(tmpdir) / "logs"
-            mgr = LocalLogManager(config=LogConfig(log_dir=log_dir, console_output=False))
-            mgr.log_task("test-001", "test", "completed", "测试日志")
-            mgr.log_security("test", "user", "file", True)
-            # 刷新所有handler
-            for logger in mgr._loggers.values():
-                for handler in logger.handlers:
-                    handler.flush()
-            stats = mgr.get_stats()
-            # 关闭所有handler释放文件锁
-            for logger in mgr._loggers.values():
-                for handler in logger.handlers[:]:
-                    handler.close()
-                    logger.removeHandler(handler)
-            if stats["file_count"] > 0:
-                return InstallTestResult(status=TestStatus.PASS, message=f"日志系统正常 ({stats['file_count']}个文件)")
-        return InstallTestResult(status=TestStatus.FAIL, message="日志系统异常")
-
-    def test_system_checker(self) -> InstallTestResult:
-        """检查环境检测"""
-        from office_agent.local.env.system_checker import check_system
-        report = check_system()
-        errors = [c for c in report.checks if c.status.value == "error"]
-        if errors:
-            return InstallTestResult(
-                status=TestStatus.WARN,
-                message=f"环境问题: {', '.join(e.message for e in errors)}",
-            )
-        return InstallTestResult(
-            status=TestStatus.PASS,
-            message=f"环境正常: {report.os_name}, Python {report.python_version}",
-        )
 
     def test_backend_startup(self) -> InstallTestResult:
         """检查Backend启动"""
@@ -360,73 +293,6 @@ class InstallationTestSuite:
             return InstallTestResult(status=TestStatus.PASS, message="PPT处理正常")
         except Exception as e:
             return InstallTestResult(status=TestStatus.FAIL, message=f"PPT处理失败: {e}")
-
-    def test_task_queue(self) -> InstallTestResult:
-        """检查任务队列"""
-        try:
-            from office_agent.local.tasks import LocalTaskQueue
-            queue = LocalTaskQueue(max_workers=2)
-            result = queue.submit("test", lambda: 42)
-            task_result = queue.wait_for_task(result.task_id, timeout=5)
-            queue.shutdown(wait=False)
-            if task_result and task_result.result == 42:
-                return InstallTestResult(status=TestStatus.PASS, message="任务队列正常")
-        except Exception as e:
-            return InstallTestResult(status=TestStatus.FAIL, message=f"任务队列失败: {e}")
-        return InstallTestResult(status=TestStatus.FAIL, message="任务队列异常")
-
-    def test_database(self) -> InstallTestResult:
-        """检查数据库"""
-        try:
-            from office_agent.local.database import get_database
-            db = get_database()
-            db.set_setting("test_key", "test_value")
-            val = db.get_setting("test_key")
-            if val == "test_value":
-                return InstallTestResult(status=TestStatus.PASS, message="数据库读写正常")
-        except Exception as e:
-            return InstallTestResult(status=TestStatus.FAIL, message=f"数据库失败: {e}")
-        return InstallTestResult(status=TestStatus.FAIL, message="数据库异常")
-
-    def test_credential_manager(self) -> InstallTestResult:
-        """检查凭据加密"""
-        try:
-            from office_agent.local.credential import get_credential_manager
-            import tempfile
-            with tempfile.TemporaryDirectory() as tmpdir:
-                os.environ["OFFICE_AGENT_DATA_DIR"] = tmpdir
-                mgr = get_credential_manager()
-                mgr.set_credential("openai", "api_key", "sk-test-123")
-                val = mgr.get_credential("openai", "api_key")
-                if val == "sk-test-123":
-                    return InstallTestResult(status=TestStatus.PASS, message="凭据加密正常")
-        except Exception as e:
-            return InstallTestResult(status=TestStatus.FAIL, message=f"凭据加密失败: {e}")
-        return InstallTestResult(status=TestStatus.FAIL, message="凭据加密异常")
-
-    def test_error_recovery(self) -> InstallTestResult:
-        """检查异常恢复"""
-        try:
-            from office_agent.local.tasks import LocalTaskQueue, TaskStatus
-            call_count = 0
-            def flaky():
-                nonlocal call_count
-                call_count += 1
-                if call_count < 3:
-                    raise RuntimeError("fail")
-                return "ok"
-            queue = LocalTaskQueue(max_workers=1)
-            task = queue.submit("flaky", flaky, max_retries=3)
-            for _ in range(20):
-                if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
-                    break
-                time.sleep(0.5)
-            queue.shutdown(wait=False)
-            if task.status == TaskStatus.COMPLETED:
-                return InstallTestResult(status=TestStatus.PASS, message=f"异常恢复正常 (重试{call_count-1}次)")
-        except Exception as e:
-            return InstallTestResult(status=TestStatus.FAIL, message=f"异常恢复失败: {e}")
-        return InstallTestResult(status=TestStatus.FAIL, message="异常恢复异常")
 
     def test_backend_shutdown(self) -> InstallTestResult:
         """检查Backend停止"""

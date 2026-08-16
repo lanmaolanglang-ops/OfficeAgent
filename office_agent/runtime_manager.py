@@ -62,7 +62,7 @@ class AppConfig:
         if self.log_dir is None:
             self.log_dir = self.data_dir / "logs"
         if self.backend_dir is None:
-            self.backend_dir = Path(__file__).parent.parent.parent
+            self.backend_dir = Path(__file__).parent.parent
         if self.python_executable is None:
             self.python_executable = sys.executable
 
