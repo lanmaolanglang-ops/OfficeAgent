@@ -217,13 +217,16 @@ class WordService:
 
         # 将新分析结果转换为旧格式（向后兼容）
         for node in self.document_tree.nodes:
-            if node.level >= 1 and node.type in (
-                "chapter", "section", "subsection", "subsubsection"
-            ):
+            if node.type in (
+                "chapter", "section", "subsection", "subsubsection",
+                "abstract", "reference", "appendix", "keywords",
+            ) and 1 <= node.level <= 4:
                 level = node.level
-                if 1 <= level <= 4:
-                    self.structure.headings[level].append((node.index, node.text))
-                    self.structure.detected_levels[node.index] = level
+                self.structure.headings[level].append((node.index, node.text))
+                self.structure.detected_levels[node.index] = level
+            elif node.type == "title":
+                # 文档标题：跳过正文格式，但不参与标题编号（level 0）
+                self.structure.detected_levels[node.index] = 0
             elif node.type == "paragraph":
                 self.structure.body_paragraphs += 1
 

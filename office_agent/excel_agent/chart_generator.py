@@ -184,13 +184,15 @@ class ChartGenerator:
     # ==========================================
 
     def generate_from_text(self, text: str,
-                           sheet_name: str = None) -> List[ChartSpec]:
-        """从自然语言生成图表规格"""
+                           sheet_name: str = None,
+                           chart_type: str = "") -> List[ChartSpec]:
+        """从自然语言生成图表规格；chart_type 显式给定时优先"""
         charts = []
         sheet = self.profile.get_sheet(sheet_name) if self.profile else None
 
-        # 识别图表类型
-        chart_type = self._detect_chart_type(text)
+        # 识别图表类型：显式参数优先，否则从文本推断
+        chart_type = (chart_type if chart_type in CHART_TYPE_RULES
+                      else self._detect_chart_type(text))
 
         # 识别目标列
         target_cols = self._detect_columns(text, sheet)

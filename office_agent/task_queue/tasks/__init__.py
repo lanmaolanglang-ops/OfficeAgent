@@ -11,9 +11,9 @@
 import os
 import time
 import logging
-from .word_tasks import process_word, format_document, convert_word
+from .word_tasks import process_word, format_document
 from .ppt_tasks import generate_ppt, design_ppt
-from .excel_tasks import analyze_excel, generate_chart, process_data
+from .excel_tasks import analyze_excel, generate_chart
 from .file_tasks import (
     process_upload, convert_format, cleanup_temp_files, system_health_check,
 )
@@ -124,14 +124,12 @@ TASK_REGISTRY = {
     # Word
     "word.process": process_word,
     "word.format": format_document,
-    "word.convert": convert_word,
     # PPT
     "ppt.generate": generate_ppt,
     "ppt.design": design_ppt,
     # Excel
     "excel.analyze": analyze_excel,
     "excel.chart": generate_chart,
-    "excel.process": process_data,
     # File
     "file.process_upload": process_upload,
     "file.convert": convert_format,
@@ -148,13 +146,11 @@ TASK_REGISTRY = {
 TASK_TYPE_TO_QUEUE = {
     "word_format": "word.format",
     "word_process": "word.process",
-    "word_convert": "word.convert",
     "ppt_generate": "ppt.generate",
     "ppt_process": "ppt.generate",   # 历史别名：无独立 ppt.process 处理器，归并到 ppt.generate
     "ppt_design": "ppt.design",
     "excel_analyze": "excel.analyze",
     "excel_chart": "excel.chart",
-    "excel_process": "excel.process",
     "file_convert": "file.convert",
     "file_process": "file.process_upload",
     "general": "general.process",

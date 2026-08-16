@@ -62,7 +62,8 @@ class ExcelOrchestrator:
                      output_path: str = "",
                      add_summary: bool = True,
                      add_charts: bool = True,
-                     add_format: bool = True) -> ExcelResult:
+                     add_format: bool = True,
+                     chart_type: str = "") -> ExcelResult:
         """
         处理已有 Excel 文件
 
@@ -114,7 +115,7 @@ class ExcelOrchestrator:
             if add_charts:
                 if task and any(kw in task_lower for kw in
                                ["图", "chart", "趋势", "对比", "占比", "可视化"]):
-                    charts = self.chart_gen.generate_from_text(task, sheet_name)
+                    charts = self.chart_gen.generate_from_text(task, sheet_name, chart_type=chart_type)
                 else:
                     charts = self.chart_gen.auto_charts(sheet_name)
 

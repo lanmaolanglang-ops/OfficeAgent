@@ -136,6 +136,19 @@ class LocalWorker:
                         task_func = self._tasks[task_name]
                     result = task_func(*args, **kwargs)
                 duration = time.time() - start_time
+                # 任务函数可通过返回 {"status":"failed"} 表示失败（保留函数内
+                # sanitize 后的 error 与 model_call 元数据），不必依赖抛异常。
+                if isinstance(result, dict) and result.get("status") == "failed":
+                    error_msg = result.get("error") or "任务处理失败"
+                    _task_logger.error(f"任务 {task_id} 失败: {error_msg}")
+                    self._fail(task_id, error_msg)
+                    log_task_event(task_id, "failed", "error",
+                                  details={"error": error_msg, "duration_ms": int(duration * 1000)})
+                    registry.counter("tasks_total").inc(
+                        task_type=task_name, status="failed"
+                    )
+                    registry.gauge("tasks_active").dec(task_type=task_name)
+                    return result
                 self._complete(task_id, result)
                 log_task_event(task_id, "completed", "success",
                               details={"duration_ms": int(duration * 1000)})

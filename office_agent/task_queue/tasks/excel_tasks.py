@@ -65,6 +65,18 @@ def _safe_output(ext: str = ".xlsx") -> str:
     return os.path.join(OUTPUT_DIR, f"excel_{time.strftime('%Y%m%d_%H%M%S')}{ext}")
 
 
+def _csv_to_xlsx(csv_path: str) -> str:
+    """CSV → 临时 xlsx，供统一 openpyxl 处理链使用"""
+    import pandas as pd
+    import tempfile
+    df = pd.read_csv(csv_path)
+    df = df.where(pd.notnull(df), None)
+    tmp = os.path.join(tempfile.gettempdir(),
+                       f"csv_{int(time.time() * 1000)}_{os.getpid()}.xlsx")
+    df.to_excel(tmp, index=False, sheet_name="Sheet1", engine="openpyxl")
+    return tmp
+
+
 def analyze_excel(input_path: str, output_path: str = None,
                   instruction: str = "", options: dict = None,
                   progress=None, _task_id: str = None, **kwargs) -> dict:
@@ -80,6 +92,14 @@ def analyze_excel(input_path: str, output_path: str = None,
 
         if not os.path.exists(input_path):
             raise FileNotFoundError(f"文件不存在: {input_path}")
+
+        # CSV 转临时 xlsx；.xls（Excel 97-2003）openpyxl 不支持，明确拒绝
+        original_input_path = input_path
+        ext = os.path.splitext(input_path)[1].lower()
+        if ext == ".xls":
+            raise RuntimeError("不支持 .xls（Excel 97-2003）格式，请另存为 .xlsx 后重试")
+        if ext == ".csv":
+            input_path = _csv_to_xlsx(input_path)
 
         if not output_path:
             output_path = _safe_output()
@@ -103,6 +123,7 @@ def analyze_excel(input_path: str, output_path: str = None,
             file_path=input_path,
             task=effective_instruction,
             output_path=output_path,
+            chart_type=(options.get("chart_type") or ""),
         )
 
         if not process_result or not process_result.success:
@@ -121,7 +142,7 @@ def analyze_excel(input_path: str, output_path: str = None,
 
         storage = get_storage_service()
         original_name = options.get("output_filename") or (
-            f"{os.path.splitext(os.path.basename(input_path))[0]}_processed.xlsx"
+            f"{os.path.splitext(os.path.basename(original_input_path))[0]}_processed.xlsx"
         )
         file_info = storage.save_new_output(
             source_path=str(output),
@@ -151,7 +172,6 @@ def analyze_excel(input_path: str, output_path: str = None,
         result["status"] = "failed"
         from ...security.error_sanitizer import sanitize_error
         result["error"] = sanitize_error(e)
-        raise
 
     if options.get("model_call"):
         result["model_call"] = options["model_call"]
@@ -167,20 +187,6 @@ def generate_chart(input_path: str, output_path: str = None,
         output_path=output_path,
         instruction=f"生成{chart_type}图表",
         options={"chart_type": chart_type, **(options or {})},
-        progress=progress,
-        _task_id=_task_id,
-    )
-
-
-def process_data(input_path: str, output_path: str = None,
-                 operations: list = None, options: dict = None,
-                 progress=None, _task_id: str = None, **kwargs) -> dict:
-    """数据处理任务（清洗、转换、合并等）"""
-    return analyze_excel(
-        input_path=input_path,
-        output_path=output_path,
-        instruction="数据处理: " + ", ".join(operations or []),
-        options={"operations": operations or [], **(options or {})},
         progress=progress,
         _task_id=_task_id,
     )

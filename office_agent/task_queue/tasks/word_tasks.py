@@ -190,7 +190,6 @@ def process_word(input_path: str, output_path: str = None,
         result["status"] = "failed"
         from ...security.error_sanitizer import sanitize_error
         result["error"] = sanitize_error(e)
-        raise
 
     if options.get("model_call"):
         result["model_call"] = options["model_call"]
@@ -207,20 +206,6 @@ def format_document(input_path: str, output_path: str = None,
         output_path=output_path,
         instruction=instruction or f"按照{template_type or '标准'}格式排版",
         options=options or {},
-        progress=progress,
-        _task_id=_task_id,
-    )
-
-
-def convert_word(input_path: str, target_format: str = "pdf",
-                 output_path: str = None,
-                 progress=None, _task_id: str = None, **kwargs) -> dict:
-    """Word 格式转换"""
-    return process_word(
-        input_path=input_path,
-        output_path=output_path,
-        instruction=f"转换为{target_format}格式",
-        options={"target_format": target_format},
         progress=progress,
         _task_id=_task_id,
     )
