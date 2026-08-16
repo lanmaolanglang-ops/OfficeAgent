@@ -1,13 +1,12 @@
 import { NavLink } from 'react-router-dom';
 import {
-  House, MessageSquareText, FileText, Presentation, Sheet,
+  House, FileText, Presentation, Sheet,
   FolderOpen, History, Settings, Sparkles,
 } from 'lucide-react';
 
 const navGroups = [
   [
     { to: '/', icon: House, label: '工作台' },
-    { to: '/chat', icon: MessageSquareText, label: '智能对话' },
   ],
   [
     { to: '/word', icon: FileText, label: 'Word Agent' },

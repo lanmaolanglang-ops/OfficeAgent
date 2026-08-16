@@ -1,7 +1,9 @@
 import { create } from 'zustand';
 import type { ChatMessage, AgentType, ChatResponse } from '../types';
 import { sendChatMessage, getTask, getFileUrl } from '../services/api';
+import { sendNotification } from '../services/tauri';
 import { useFileStore } from './fileStore';
+import { useSettingsStore } from './settingsStore';
 
 interface ChatState {
   messages: ChatMessage[];
@@ -19,6 +21,19 @@ function generateId(): string {
   return Math.random().toString(36).substring(2, 15) + Date.now().toString(36);
 }
 
+// 轮询代际令牌：新消息/清空会话时自增，使旧轮询链失效（定时器仍触发但立即空转）
+let pollGeneration = 0;
+
+// 触发浏览器/WebView 下载，用于「完成后自动打开结果」
+function triggerDownload(url: string, filename?: string) {
+  const a = document.createElement('a');
+  a.href = url;
+  if (filename) a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
 export const useChatStore = create<ChatState>((set, get) => ({
   messages: [],
   sending: false,
@@ -33,6 +48,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   sendMessage: async (content: string) => {
+    // 并发守卫：上一轮任务仍在轮询时忽略新的发送，避免 sending 状态竞态
+    if (get().sending) return;
+    const generation = ++pollGeneration;
     // 在插入占位消息之前快照历史，避免把“正在理解…”占位内容发给后端
     const history = get().messages
       .filter((m) => m.role === 'user' || (m.role === 'assistant' && m.task_status !== 'pending'))
@@ -119,6 +137,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const pollTask = () => {
         const poll = async () => {
           try {
+            if (generation !== pollGeneration) return; // 已被新消息/清空会话取代
             pollCount++;
             const task = await getTask(taskId!);
 
@@ -145,6 +164,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
               }
             } else if (task.status === 'completed' || task.status === 'failed') {
               const result = task.result as Record<string, unknown> | null;
+              const settings = useSettingsStore.getState().settings;
 
               const autoRevisionTaskId = typeof result?.auto_revision_task_id === 'string'
                 ? result.auto_revision_task_id
@@ -219,10 +239,23 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 if (latestOutput) {
                   set({ lastOutputFileId: latestOutput });
                 }
+
+                // 完成通知 + 自动打开结果（尊重用户设置）
+                if (settings.notifications) {
+                  sendNotification('任务已完成', resultText.replace(/\n/g, ' ').slice(0, 120)).catch(() => {});
+                }
+                if (settings.auto_open_results && task.output_files?.length) {
+                  const first = task.output_files[0];
+                  const url = first.download_url || getFileUrl(first.file_id);
+                  triggerDownload(url, first.filename);
+                }
                 set({ sending: false });
               } else {
                 // 任务失败
                 const errorMsg = task.error || (result?.error as string) || '未知错误';
+                if (settings.notifications) {
+                  sendNotification('任务失败', errorMsg.slice(0, 120)).catch(() => {});
+                }
                 get().updateMessage(assistantId, {
                   content: `❌ 任务失败：${errorMsg}`,
                   task_status: 'failed',
@@ -269,6 +302,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   clearChat: () => {
+    pollGeneration++;
+    useFileStore.getState().setTemplateFile(null);
     set({ messages: [], conversationId: undefined, lastOutputFileId: undefined });
   },
 }));

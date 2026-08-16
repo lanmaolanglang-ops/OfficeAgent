@@ -30,9 +30,6 @@ function App() {
         <Routes>
           <Route element={<MainLayout />}>
             <Route path="/" element={<Dashboard />} />
-            <Route path="/chat" element={<Dashboard />} />
-            <Route path="/agents" element={<Dashboard />} />
-            <Route path="/templates" element={<Dashboard />} />
             <Route path="/word" element={<WordAgentPage />} />
             <Route path="/ppt" element={<PPTAgentPage />} />
             <Route path="/excel" element={<ExcelAgentPage />} />
