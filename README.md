@@ -20,6 +20,12 @@ pnpm install
 pnpm run dev
 ```
 
+## 配置与安全
+
+- **API Key**：保存在本机 `~/.office_agent/models.json`（Fernet 加密），**不会进入 Git 仓库**。请勿在代码或提交中写入任何真实密钥。
+- **认证**：默认关闭（本地模式）。如需开启，请配置 `auth_enabled` 与 `api_keys`，并用环境变量 `OFFICE_AGENT_JWT_SECRET` 覆盖默认占位密钥。
+- **默认 JWT 密钥**：`office_agent/security/config.py` 中是开发占位符，生产环境务必用环境变量覆盖。
+
 ## 测试
 
 ```bash
