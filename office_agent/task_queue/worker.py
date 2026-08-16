@@ -55,11 +55,12 @@ class LocalWorker:
 
     def __init__(self, max_workers: int = None):
         self.max_workers = max_workers or config.LOCAL_MAX_WORKERS
-        # 三个优先级的线程池
+        # 三个优先级的线程池，并发数取自 TASK_QUEUES 配置（默认 high=2/normal=4/low=2）
+        queues = config.TASK_QUEUES
         self.executors = {
-            "high": ThreadPoolExecutor(max_workers=2, thread_name_prefix="task-high"),
-            "normal": ThreadPoolExecutor(max_workers=self.max_workers, thread_name_prefix="task-normal"),
-            "low": ThreadPoolExecutor(max_workers=2, thread_name_prefix="task-low"),
+            "high": ThreadPoolExecutor(max_workers=queues["high"]["concurrency"], thread_name_prefix="task-high"),
+            "normal": ThreadPoolExecutor(max_workers=queues["normal"]["concurrency"], thread_name_prefix="task-normal"),
+            "low": ThreadPoolExecutor(max_workers=queues["low"]["concurrency"], thread_name_prefix="task-low"),
         }
         # 任务注册表
         self._tasks: Dict[str, Callable] = {}
@@ -77,7 +78,7 @@ class LocalWorker:
         except Exception:
             pass
 
-        logger.info(f"LocalWorker 初始化完成，并发数: {self.max_workers}")
+        logger.info(f"LocalWorker 初始化完成，总并发数: {sum(q['concurrency'] for q in config.TASK_QUEUES.values())}")
 
     def register(self, name: str, func: Callable):
         """注册任务函数"""
@@ -136,6 +137,10 @@ class LocalWorker:
                         task_func = self._tasks[task_name]
                     result = task_func(*args, **kwargs)
                 duration = time.time() - start_time
+                # 任务执行期间被取消：不再把状态覆盖为 completed/failed
+                if task_id in self._cancelled:
+                    self._update_status(task_id, "cancelled")
+                    return {"status": "cancelled"}
                 # 任务函数可通过返回 {"status":"failed"} 表示失败（保留函数内
                 # sanitize 后的 error 与 model_call 元数据），不必依赖抛异常。
                 if isinstance(result, dict) and result.get("status") == "failed":

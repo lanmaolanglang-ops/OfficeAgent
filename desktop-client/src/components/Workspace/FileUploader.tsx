@@ -52,7 +52,7 @@ export default function FileUploader() {
         onDrop={async (e) => { e.preventDefault(); setDragOver(false); for (const f of Array.from(e.dataTransfer.files)) await handleUploadFile(f); }}
         className={`upload-zone ${dragOver ? 'upload-zone-active' : ''}`}
       >
-        <input ref={fileInputRef} type="file" multiple accept=".docx,.doc,.pptx,.ppt,.xlsx,.xls,.pdf,.txt,.md" onChange={async (e) => { if (e.target.files) for (const f of Array.from(e.target.files)) await handleUploadFile(f); }} className="hidden" />
+        <input ref={fileInputRef} type="file" multiple accept=".docx,.doc,.pptx,.ppt,.xlsx,.xls,.pdf,.txt,.md,.csv,.json,.xml,.html,.png,.jpg,.jpeg,.gif,.bmp,.webp,.svg" onChange={async (e) => { if (e.target.files) for (const f of Array.from(e.target.files)) await handleUploadFile(f); }} className="hidden" />
         <div className="upload-icon"><UploadCloud className="w-5 h-5" /></div>
         <div className="min-w-0 text-left">
           <p className="text-sm font-semibold text-[#35405a]">拖放文件到这里，或点击上传</p>

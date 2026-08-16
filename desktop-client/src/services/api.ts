@@ -15,8 +15,8 @@ export const ALLOWED_EXTENSIONS = [
   '.pptx', '.ppt',
   '.xlsx', '.xls',
   '.pdf',
-  '.txt', '.md', '.csv', '.json',
-  '.png', '.jpg', '.jpeg', '.gif', '.bmp',
+  '.txt', '.md', '.csv', '.json', '.xml', '.html',
+  '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg',
 ];
 
 // 最大文件大小 50MB

@@ -52,7 +52,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 },
             )
 
-        if settings.api_keys and api_key not in settings.api_keys:
+        if api_key not in settings.api_keys:
             return JSONResponse(
                 status_code=401,
                 content={

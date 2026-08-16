@@ -51,7 +51,7 @@ def test_error_logging():
         log_path = Path(tmpdir) / "error.log"
         logger = logging.getLogger("test_recovery")
         logger.setLevel(logging.ERROR)
-        handler = logging.FileHandler(str(log_path))
+        handler = logging.FileHandler(str(log_path), encoding="utf-8")
         handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
         logger.addHandler(handler)
         # 模拟错误
