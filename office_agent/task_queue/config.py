@@ -8,8 +8,9 @@ from pathlib import Path
 class QueueConfig:
     """任务队列配置"""
 
-    # 注：线程池模型无法强杀运行中的线程，任务级整体超时/重试未实现，
-    # 故不再保留误导性的超时/重试参数；模型级故障转移由 model_gateway 的 fallback 链承担。
+    # 软超时（秒）：任务运行超过该时长则标记为失败（不杀线程，线程自然结束）。
+    # 线程池模型无法强杀运行中的线程，故仅做软超时；模型级故障转移由 gateway 承担。
+    TASK_SOFT_TIMEOUT: int = int(os.environ.get("TASK_SOFT_TIMEOUT", "300"))
 
     # 优先级队列
     TASK_QUEUES = {

@@ -26,7 +26,12 @@
     "window-state:allow-save-window-state",
     {
       "identifier": "fs:allow-read-file",
-      "allow": [{ "path": "**" }]
+      "allow": [
+        { "path": "$HOME/**" },
+        { "path": "$DOWNLOAD/**" },
+        { "path": "$DESKTOP/**" },
+        { "path": "$DOCUMENT/**" }
+      ]
     },
     {
       "identifier": "shell:allow-open",

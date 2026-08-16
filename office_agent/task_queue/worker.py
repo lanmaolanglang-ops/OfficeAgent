@@ -68,6 +68,9 @@ class LocalWorker:
         self._futures: Dict[str, Future] = {}
         # 取消标记
         self._cancelled: set = set()
+        # 软超时标记 + 计时器
+        self._timed_out: set = set()
+        self._timers: Dict[str, threading.Timer] = {}
         self._lock = threading.RLock()
 
         # 数据库 session 工厂
@@ -124,6 +127,15 @@ class LocalWorker:
             self._update_status(task_id, "running", progress=0)
             progress_cb = TaskProgress(task_id, self._session_factory)
 
+            # 软超时计时器：运行超过阈值则标记失败（不杀线程）
+            timer = None
+            if config.TASK_SOFT_TIMEOUT and config.TASK_SOFT_TIMEOUT > 0:
+                timer = threading.Timer(config.TASK_SOFT_TIMEOUT, self._on_task_timeout, args=(task_id,))
+                timer.daemon = True
+                timer.start()
+                with self._lock:
+                    self._timers[task_id] = timer
+
             log_task_event(task_id, "started", "running")
             registry.counter("tasks_total").inc(
                 task_type=task_name, status="started"
@@ -141,6 +153,9 @@ class LocalWorker:
                 if task_id in self._cancelled:
                     self._update_status(task_id, "cancelled")
                     return {"status": "cancelled"}
+                # 任务执行期间超时：标记失败（不覆盖为 completed）
+                if task_id in self._timed_out:
+                    return {"status": "failed", "error": "任务执行超时"}
                 # 任务函数可通过返回 {"status":"failed"} 表示失败（保留函数内
                 # sanitize 后的 error 与 model_call 元数据），不必依赖抛异常。
                 if isinstance(result, dict) and result.get("status") == "failed":
@@ -179,6 +194,10 @@ class LocalWorker:
                 registry.gauge("tasks_active").dec(task_type=task_name)
                 return {"status": "failed", "error": error_msg}
             finally:
+                with self._lock:
+                    timer = self._timers.pop(task_id, None)
+                if timer:
+                    timer.cancel()
                 from ..logging_system.context import _request_id_var, _task_id_var
                 _request_id_var.reset(req_token)
                 _task_id_var.reset(task_token)
@@ -394,6 +413,17 @@ class LocalWorker:
             self._futures.pop(task_id, None)
         self._update_status(task_id, "failed", progress=100,
                             step="处理失败", error=error)
+
+    def _on_task_timeout(self, task_id: str):
+        """软超时回调：任务仍运行时标记失败（线程继续自然结束，不杀线程）"""
+        with self._lock:
+            future = self._futures.get(task_id)
+            if future and not future.done():
+                self._timed_out.add(task_id)
+            else:
+                return
+        self._update_status(task_id, "failed", progress=100,
+                            step="处理超时", error="任务执行超时")
 
     def revoke(self, task_id: str):
         """取消任务"""
