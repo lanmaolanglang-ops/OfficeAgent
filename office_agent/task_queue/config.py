@@ -8,14 +8,8 @@ from pathlib import Path
 class QueueConfig:
     """任务队列配置"""
 
-    # 任务超时（秒）
-    TASK_SOFT_TIMEOUT: int = int(os.environ.get("TASK_SOFT_TIMEOUT", "300"))
-    TASK_HARD_TIMEOUT: int = int(os.environ.get("TASK_HARD_TIMEOUT", "600"))
-
-    # 重试配置
-    TASK_MAX_RETRIES: int = int(os.environ.get("TASK_MAX_RETRIES", "3"))
-    TASK_RETRY_DELAY: int = int(os.environ.get("TASK_RETRY_DELAY", "5"))
-    TASK_RETRY_BACKOFF: bool = True
+    # 注：线程池模型无法强杀运行中的线程，任务级整体超时/重试未实现，
+    # 故不再保留误导性的超时/重试参数；模型级故障转移由 model_gateway 的 fallback 链承担。
 
     # 优先级队列
     TASK_QUEUES = {

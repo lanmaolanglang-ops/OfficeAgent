@@ -11,14 +11,7 @@
     "core:event:default",
     "shell:default",
     "shell:allow-open",
-    "dialog:default",
-    "dialog:allow-open",
-    "dialog:allow-save",
-    "dialog:allow-message",
-    "dialog:allow-confirm",
     "fs:default",
-    "fs:allow-read-text-file",
-    "fs:allow-write-text-file",
     "fs:allow-read-file",
     "fs:allow-exists",
     "notification:default",
@@ -31,14 +24,6 @@
     "autostart:allow-is-enabled",
     "window-state:default",
     "window-state:allow-save-window-state",
-    {
-      "identifier": "fs:allow-read-text-file",
-      "allow": [{ "path": "**" }]
-    },
-    {
-      "identifier": "fs:allow-write-text-file",
-      "allow": [{ "path": "**" }]
-    },
     {
       "identifier": "fs:allow-read-file",
       "allow": [{ "path": "**" }]
