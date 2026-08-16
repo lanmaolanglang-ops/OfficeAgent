@@ -133,16 +133,6 @@ class AgentListResponse(BaseModel):
     total: int
 
 
-class HealthResponse(BaseModel):
-    """健康检查响应"""
-    status: str = "ok"
-    version: str
-    uptime: float
-    agents: List[str] = Field(default_factory=list)
-    active_tasks: int = 0
-    storage: Dict[str, Any] = Field(default_factory=dict)
-
-
 class VersionInfo(BaseModel):
     """版本信息"""
     version: str

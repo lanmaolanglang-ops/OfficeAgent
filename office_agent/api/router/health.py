@@ -215,10 +215,3 @@ async def liveness():
         status_code=200,
         content={"alive": True, "uptime": round(time.time() - _start_time, 1)},
     )
-
-
-# SQLAlchemy text导入
-try:
-    from sqlalchemy import text
-except ImportError:
-    text = None

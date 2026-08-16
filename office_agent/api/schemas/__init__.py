@@ -1,8 +1,6 @@
 from .request import (
     ChatRequest,
     TaskCreateRequest,
-    TaskListRequest,
-    AgentConfigRequest,
     FeedbackRequest,
 )
 from .response import (
@@ -16,16 +14,14 @@ from .response import (
     TaskListResponse,
     AgentInfo,
     AgentListResponse,
-    HealthResponse,
     VersionInfo,
 )
 
 __all__ = [
-    "ChatRequest", "TaskCreateRequest", "TaskListRequest",
-    "AgentConfigRequest", "FeedbackRequest",
+    "ChatRequest", "TaskCreateRequest", "FeedbackRequest",
     "BaseResponse", "ErrorResponse", "ChatResponse",
     "FileInfo", "FileUploadResponse",
     "TaskStep", "TaskInfo", "TaskListResponse",
     "AgentInfo", "AgentListResponse",
-    "HealthResponse", "VersionInfo",
+    "VersionInfo",
 ]

@@ -14,7 +14,7 @@ import logging
 import os
 from fastapi import APIRouter, HTTPException
 
-from ..schemas.request import TaskCreateRequest, TaskListRequest, FeedbackRequest
+from ..schemas.request import TaskCreateRequest, FeedbackRequest
 from ..schemas.response import (
     TaskInfo, TaskListResponse, BaseResponse,
 )

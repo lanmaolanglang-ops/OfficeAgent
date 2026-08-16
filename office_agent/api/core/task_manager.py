@@ -121,20 +121,6 @@ class TaskManager:
     def __init__(self):
         self.tasks: Dict[str, Task] = {}
         self._lock = threading.Lock()
-        self._executors: Dict[str, Callable] = {}
-
-    def register_executor(self, task_type: str, executor: Callable):
-        """注册任务执行器"""
-        self._executors[task_type] = executor
-
-    def create_task(self, task_type: str, instruction: str,
-                    agent: str = "", file_ids: List[str] = None,
-                    options: Dict = None) -> Task:
-        """创建任务"""
-        task = Task(task_type, instruction, agent, file_ids, options)
-        with self._lock:
-            self.tasks[task.task_id] = task
-        return task
 
     def get_task(self, task_id: str) -> Optional[Task]:
         return self.tasks.get(task_id)
@@ -150,44 +136,6 @@ class TaskManager:
         total = len(tasks)
         start = (page - 1) * page_size
         return tasks[start:start + page_size], total
-
-    def run_task(self, task_id: str, executor: Callable = None):
-        """异步运行任务"""
-        task = self.get_task(task_id)
-        if not task:
-            return
-
-        def _run():
-            task.start()
-            try:
-                exec_fn = executor or self._executors.get(task.task_type)
-                if exec_fn:
-                    exec_fn(task)
-                else:
-                    # 默认模拟执行
-                    self._simulate_execution(task)
-            except Exception as e:
-                task.fail(str(e))
-
-        thread = threading.Thread(target=_run, daemon=True)
-        thread.start()
-
-    def _simulate_execution(self, task: Task):
-        """模拟执行（当没有注册执行器时）"""
-        import time as _time
-        steps = [
-            ("理解任务", 10),
-            ("分析输入", 30),
-            ("处理中", 60),
-            ("生成结果", 90),
-        ]
-        for step_name, progress in steps:
-            task.update(progress=progress, step=step_name)
-            _time.sleep(0.3)
-        task.complete(
-            result={"message": "任务完成（模拟）", "agent": task.agent},
-            output_files=[],
-        )
 
     def get_active_count(self) -> int:
         return sum(1 for t in self.tasks.values()

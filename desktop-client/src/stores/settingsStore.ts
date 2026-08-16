@@ -72,7 +72,6 @@ interface SettingsState {
   updateSettings: (updates: Partial<AppSettings>) => void;
   setBackendUrl: (url: string) => void;
   setDefaultAgent: (agent: AgentType) => void;
-  updateModel: (provider: string, updates: Partial<ModelConfig>) => void;
   resetSettings: () => void;
 }
 
@@ -91,21 +90,6 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
   setDefaultAgent: (agent) => {
     get().updateSettings({ default_agent: agent });
-  },
-
-  updateModel: (provider, updates) => {
-    const existing = get().settings.models.find((m) => m.provider === provider);
-    let models;
-    if (existing) {
-      models = get().settings.models.map((m) =>
-        m.provider === provider ? { ...m, ...updates } : m
-      );
-    } else {
-      // 添加新的provider配置
-      const defaultModel = defaultModels.find((m) => m.provider === provider);
-      models = [...get().settings.models, { ...defaultModel, ...updates, provider } as ModelConfig];
-    }
-    get().updateSettings({ models });
   },
 
   resetSettings: () => {

@@ -60,19 +60,6 @@ class TaskCreateRequest(BaseModel):
         return _filter_sensitive(value)
 
 
-class TaskListRequest(BaseModel):
-    """任务列表查询"""
-    status: Optional[str] = Field(default=None, description="按状态筛选")
-    agent: Optional[str] = Field(default=None, description="按Agent筛选")
-    page: int = Field(default=1, ge=1)
-    page_size: int = Field(default=20, ge=1, le=100)
-
-
-class AgentConfigRequest(BaseModel):
-    """Agent配置更新"""
-    config: Dict[str, Any] = Field(..., description="配置项")
-
-
 class FeedbackRequest(BaseModel):
     """任务反馈"""
     rating: int = Field(..., ge=1, le=5, description="评分1-5")

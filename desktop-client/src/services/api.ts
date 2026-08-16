@@ -3,7 +3,6 @@ import type {
   Task,
   ChatRequest,
   ChatResponse,
-  CreateTaskRequest,
   UploadedFile,
   FileVersionInfo,
 } from '../types';
@@ -240,34 +239,6 @@ export async function uploadFiles(files: File[]): Promise<UploadedFile[]> {
   return Promise.all(files.map((f) => uploadFile(f)));
 }
 
-// 创建任务
-export async function createTask(req: CreateTaskRequest): Promise<Task> {
-  const taskTypeMap: Record<string, string> = {
-    word: 'word_format',
-    ppt: 'ppt_generate',
-    excel: 'excel_analyze',
-    workflow: 'workflow',
-  };
-
-  const backendReq = {
-    task_type: taskTypeMap[req.type] || req.type,
-    instruction: req.input,
-    file_ids: req.files,
-    options: req.options,
-  };
-
-  const result = await request<{ success: boolean; data?: Record<string, unknown> }>(
-    '/api/task/create',
-    {
-      method: 'POST',
-      body: JSON.stringify(backendReq),
-    }
-  );
-
-  const data = result.data || {};
-  return mapBackendTask(data);
-}
-
 // 获取任务
 export async function getTask(taskId: string): Promise<Task> {
   const result = await request<{ success: boolean; data?: Record<string, unknown> }>(
@@ -296,11 +267,6 @@ export async function listTasks(params?: {
   }>(path);
 
   return (result.data?.tasks || []).map(mapBackendTask);
-}
-
-// 取消任务
-export async function cancelTask(taskId: string): Promise<void> {
-  await request(`/api/task/${taskId}/cancel`, { method: 'POST' });
 }
 
 // 发送聊天消息

@@ -191,11 +191,3 @@ export interface FileVersionInfo {
   changed_by?: string;
   created_at?: string;
 }
-
-// 创建任务请求
-export interface CreateTaskRequest {
-  type: string;
-  input: string;
-  files?: string[];
-  options?: Record<string, unknown>;
-}
