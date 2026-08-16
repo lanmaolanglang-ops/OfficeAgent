@@ -48,12 +48,12 @@ export default function TaskHistory() {
                     {task.error && (
                       <p className="text-xs text-red-400 mt-2 bg-red-500/10 p-2 rounded-lg">{task.error}</p>
                     )}
-                    {task.result?.files && task.result.files.length > 0 && (
+                    {task.output_files && task.output_files.length > 0 && (
                       <div className="mt-3 flex flex-wrap gap-2">
-                        {task.result.files.map((file, i) => (
+                        {task.output_files.map((file, i) => (
                           <div key={i} className="flex items-center gap-1 text-xs bg-indigo-500/10 text-indigo-300 px-2 py-1 rounded-lg">
                             <FileOutput className="w-3 h-3" />
-                            {file.name}
+                            {file.filename}
                           </div>
                         ))}
                       </div>

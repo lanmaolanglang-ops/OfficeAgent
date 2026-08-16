@@ -121,7 +121,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // 如果没有taskId，直接结束
       if (!taskId) {
         get().updateMessage(assistantId, {
-          content: response.response || '任务已提交',
+          content: response.message || '任务已提交',
           task_status: 'completed',
           task_progress: 100,
         });

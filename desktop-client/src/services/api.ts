@@ -291,7 +291,7 @@ export async function sendChatMessage(req: ChatRequest): Promise<ChatResponse> {
 
   const data = result.data || {};
   return {
-    response: (data.response as string) || (data.message as string) || '',
+    message: (data.message as string) || (data.response as string) || '',
     task_id: data.task_id as string | undefined,
     conversation_id: data.conversation_id as string | undefined,
     agent: data.agent as string | undefined,
@@ -384,7 +384,7 @@ function mapBackendTask(data: Record<string, unknown>): Task {
     status,
     progress,
     current_step: data.current_step as string | undefined,
-    steps: [],
+    steps: (data.steps as Task['steps']) ?? [],
     result: data.result as Task['result'],
     output_files: data.output_files as Task['output_files'],
     error: data.error as string | undefined,

@@ -21,7 +21,7 @@ export interface HealthResponse {
       redis?: { status: string };
       storage?: { status: string; upload_count?: number; output_count?: number };
       workers?: { status: string; active_tasks?: number };
-      models?: { status: string; primary?: string };
+      models?: { status: string; model?: string | null; provider?: string; fallback_chain?: string[] };
     };
   };
   message?: string;
@@ -29,12 +29,13 @@ export interface HealthResponse {
 
 // 任务步骤
 export interface TaskStep {
-  step: number;
+  step_id: string;
   name: string;
-  status: TaskStatus;
+  status: string;
   started_at?: string;
   completed_at?: string;
   duration_ms?: number;
+  message?: string;
 }
 
 // 输出文件
@@ -172,7 +173,7 @@ export interface ChatRequest {
 
 // 聊天响应
 export interface ChatResponse {
-  response: string;
+  message: string;
   task_id?: string;
   conversation_id?: string;
   agent?: string;

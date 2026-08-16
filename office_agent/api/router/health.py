@@ -35,7 +35,8 @@ def _check_database() -> dict:
         # 尝试SQLite
         try:
             import sqlite3
-            db_path = os.environ.get("DB_PATH", "office_agent.db")
+            from office_agent.database.connection import DEFAULT_DB_PATH
+            db_path = os.environ.get("DB_PATH", str(DEFAULT_DB_PATH))
             conn = sqlite3.connect(db_path)
             conn.execute("SELECT 1")
             conn.close()
