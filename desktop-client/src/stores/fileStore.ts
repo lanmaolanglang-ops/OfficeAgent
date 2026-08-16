@@ -76,10 +76,12 @@ export const useFileStore = create<FileState>((set) => ({
     set((state) => ({
       files: state.files.filter((f) => f.id !== id),
       attachedFileIds: state.attachedFileIds.filter((fileId) => fileId !== id),
+      // 移除的正是当前模板文件时，同步清掉模板引用，避免悬空 file_id
+      templateFileId: state.templateFileId === id ? null : state.templateFileId,
     }));
   },
 
   clearFiles: () => {
-    set({ files: [], attachedFileIds: [], uploadProgress: 0 });
+    set({ files: [], attachedFileIds: [], templateFileId: null, uploadProgress: 0 });
   },
 }));

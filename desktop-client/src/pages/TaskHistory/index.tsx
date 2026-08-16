@@ -1,26 +1,7 @@
 import { useEffect } from 'react';
-import {
-  CheckCircle, AlertCircle, Loader2, Clock, XCircle, RefreshCw, FileOutput,
-} from 'lucide-react';
+import { Clock, RefreshCw, FileOutput } from 'lucide-react';
 import { useTaskStore } from '../../stores';
-import type { TaskStatus } from '../../types';
-
-function StatusBadge({ status }: { status: TaskStatus }) {
-  const config: Record<TaskStatus, { label: string; class: string; icon: typeof Clock }> = {
-    pending: { label: '等待中', class: 'bg-yellow-500/10 text-yellow-400', icon: Clock },
-    processing: { label: '处理中', class: 'bg-indigo-500/10 text-indigo-400', icon: Loader2 },
-    completed: { label: '已完成', class: 'bg-green-500/10 text-green-400', icon: CheckCircle },
-    failed: { label: '失败', class: 'bg-red-500/10 text-red-400', icon: AlertCircle },
-    cancelled: { label: '已取消', class: 'bg-gray-500/10 text-gray-400', icon: XCircle },
-  };
-  const { label, class: cls, icon: Icon } = config[status];
-  return (
-    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${cls}`}>
-      <Icon className={`w-3 h-3 ${status === 'processing' ? 'animate-spin' : ''}`} />
-      {label}
-    </span>
-  );
-}
+import TaskStatusBadge from '../../components/Tasks/TaskStatusBadge';
 
 export default function TaskHistory() {
   const { tasks, loadTasks, loading } = useTaskStore();
@@ -58,7 +39,7 @@ export default function TaskHistory() {
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-3 mb-2">
                       <span className="text-sm font-medium text-gray-200">{task.type?.replace(/_/g, ' ')}</span>
-                      <StatusBadge status={task.status} />
+                      <TaskStatusBadge status={task.status} />
                       <span className="text-xs text-gray-600">{new Date(task.created_at).toLocaleString('zh-CN')}</span>
                     </div>
                     {task.current_step && (
