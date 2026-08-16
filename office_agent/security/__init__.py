@@ -1,5 +1,5 @@
 """
-Security & Permission Layer v0.45.0
+Security & Permission Layer v0.50.0
 安全与权限控制系统
 
 包含：
@@ -42,7 +42,7 @@ from .audit import (
     get_audit_logger,
 )
 
-__version__ = "0.45.0"
+__version__ = "0.50.0"
 
 __all__ = [
     # 配置

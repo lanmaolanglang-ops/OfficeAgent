@@ -58,7 +58,7 @@ export default function Sidebar() {
           <span className="w-2 h-2 rounded-full bg-[#22b573] shadow-[0_0_0_3px_rgba(34,181,115,.12)]" />
           本地服务运行中
         </div>
-        <p className="text-[10px] text-[#9aa3b5] mt-2">v0.49.0 · 127.0.0.1:8765</p>
+        <p className="text-[10px] text-[#9aa3b5] mt-2">v0.50.0 · 127.0.0.1:8765</p>
       </div>
     </aside>
   );

@@ -1,5 +1,5 @@
 // OfficeAgent Desktop Client - 类型定义
-// 与后端 OfficeAgent v0.49.0 API 对齐
+// 与后端 OfficeAgent v0.50.0 API 对齐
 
 // Agent类型
 export type AgentType = 'auto' | 'word' | 'ppt' | 'excel' | 'workflow';

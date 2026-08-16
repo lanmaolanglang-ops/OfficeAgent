@@ -101,10 +101,10 @@ def run_qa_suite(include_performance: bool = False) -> QATestRunner:
 def run_regression(include_performance: bool = False, should_generate_report: bool = True) -> dict:
     """运行完整回归测试"""
     print("=" * 60)
-    print("OfficeAgent Regression Test Suite v0.49.0")
+    print("OfficeAgent Regression Test Suite v0.50.0")
     print("=" * 60)
     results = {
-        "version": "0.49.0",
+        "version": "0.50.0",
         "timestamp": datetime.now().isoformat(),
         "pytest": None,
         "qa": None,

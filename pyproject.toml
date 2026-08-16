@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "office-agent"
-version = "0.49.0"
+version = "0.50.0"
 description = "智能办公自动化助手（本地桌面版）—— Word 排版 / PPT 生成 / Excel 数据分析"
 readme = "README.md"
 requires-python = ">=3.10"

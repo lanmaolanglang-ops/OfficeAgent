@@ -182,4 +182,4 @@ GitHub Actions配置在 `.github/workflows/ci.yml`：
 
 ## 版本历史
 
-- **v0.49.0**：测试结构收敛为 `unit/ integration/ agent/ agent_eval/ performance/ recovery/ runtime/ office_compatibility/` + 根目录散件；全量 85 个测试通过（`python -m pytest tests/`）。
+- **v0.50.0**：测试结构收敛为 `unit/ integration/ agent/ agent_eval/ performance/ recovery/ runtime/ office_compatibility/` + 根目录散件；全量 64 个测试通过（`python -m pytest tests/`）。

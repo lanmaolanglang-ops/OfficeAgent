@@ -15,7 +15,7 @@ class APIConfig:
     port: int = 8765
     debug: bool = False
     title: str = "Office Agent API"
-    version: str = "0.49.0"
+    version: str = "0.50.0"
     description: str = "智能办公自动化Agent统一API服务"
 
     # 存储

@@ -41,4 +41,4 @@ npm run tauri:build
 
 ## 版本
 
-0.49.0
+0.50.0

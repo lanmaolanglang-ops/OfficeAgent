@@ -20,7 +20,7 @@ from .connection import engine, init_db, DATABASE_URL
 from .session import SessionLocal, session_scope, get_db
 from .base import Base
 
-__version__ = "0.49.0"
+__version__ = "0.50.0"
 __all__ = [
     "engine", "init_db", "DATABASE_URL",
     "SessionLocal", "session_scope", "get_db",

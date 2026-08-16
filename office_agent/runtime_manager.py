@@ -33,7 +33,7 @@ class AppStatus(str, Enum):
 class AppConfig:
     """应用配置"""
     app_name: str = "OfficeAgent"
-    app_version: str = "0.49.0"
+    app_version: str = "0.50.0"
     host: str = "127.0.0.1"
     port: int = 8765
     backend_module: str = "office_agent.api.main:app"
