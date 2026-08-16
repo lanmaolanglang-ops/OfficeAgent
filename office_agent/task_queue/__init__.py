@@ -21,7 +21,7 @@ Office Agent Task Queue - 异步任务系统
 """
 from .config import config
 from .worker import get_worker, LocalWorker
-from .tasks import TASK_REGISTRY
+from .tasks import TASK_REGISTRY, TASK_TYPE_TO_QUEUE, queue_name_for_task_type
 
 __version__ = "0.49.0"
 
@@ -102,4 +102,5 @@ def init_worker():
 __all__ = [
     "config", "get_worker", "LocalWorker",
     "submit_task", "cancel_task", "init_worker", "TASK_REGISTRY",
+    "TASK_TYPE_TO_QUEUE", "queue_name_for_task_type",
 ]

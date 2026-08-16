@@ -91,7 +91,7 @@ def security_config():
     """安全配置"""
     from office_agent.security import SecurityConfig
     return SecurityConfig(
-        jwt_secret="test-secret-key-for-testing-only",
+        jwt_secret_key="test-secret-key-for-testing-only",
         access_token_expire=3600,
         max_file_size=10 * 1024 * 1024,
         sandbox_timeout=10,

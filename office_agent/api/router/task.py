@@ -79,25 +79,6 @@ def _get_db_session():
         return None
 
 
-def _task_type_to_queue_name(task_type: str) -> str:
-    """任务类型映射到队列任务名"""
-    mapping = {
-        "word_format": "word.format",
-        "word_process": "word.process",
-        "word_convert": "word.convert",
-        "ppt_generate": "ppt.generate",
-        "ppt_design": "ppt.design",
-        "excel_analyze": "excel.analyze",
-        "excel_chart": "excel.chart",
-        "excel_process": "excel.process",
-        "file_convert": "file.convert",
-        "file_process": "file.process_upload",
-        "rag_index": "rag.index",
-        "rag_search": "rag.search",
-    }
-    return mapping.get(task_type, task_type)
-
-
 @router.post("/create", response_model=BaseResponse[TaskInfo],
              summary="创建任务")
 async def create_task(req: TaskCreateRequest):
@@ -145,10 +126,10 @@ async def create_task(req: TaskCreateRequest):
 
     # 2. 提交到任务队列
     try:
-        from ...task_queue import submit_task, init_worker
+        from ...task_queue import submit_task, init_worker, queue_name_for_task_type
         init_worker()
 
-        queue_task_name = _task_type_to_queue_name(req.task_type)
+        queue_task_name = queue_name_for_task_type(req.task_type)
         options = req.options or {}
         input_path = input_paths[0] if input_paths else None
 

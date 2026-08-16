@@ -362,10 +362,8 @@ class LocalWorker:
                 revision_number=(task.revision_number or 1) + 1)
             child_id = child.id
         from . import submit_task
-        queue_name = {"word_format": "word.format", "word_process": "word.process",
-                      "ppt_generate": "ppt.generate", "ppt_process": "ppt.process",
-                      "excel_analyze": "excel.analyze", "excel_process": "excel.process"}.get(
-                          task.task_type, task.task_type)
+        from .tasks import queue_name_for_task_type
+        queue_name = queue_name_for_task_type(task.task_type)
         submit_task(queue_name, kwargs={"input_path": input_path,
                      "instruction": instruction, "options": child_options},
                     priority="normal", task_id=child_id, task_type=task.task_type,

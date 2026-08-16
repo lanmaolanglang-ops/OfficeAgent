@@ -144,4 +144,28 @@ TASK_REGISTRY = {
     "rag.search": search_knowledge,
 }
 
-__all__ = ["TASK_REGISTRY"]
+# 任务类型 → 队列任务名（唯一权威映射，必须与 TASK_REGISTRY 键对齐）
+TASK_TYPE_TO_QUEUE = {
+    "word_format": "word.format",
+    "word_process": "word.process",
+    "word_convert": "word.convert",
+    "ppt_generate": "ppt.generate",
+    "ppt_process": "ppt.generate",   # 历史别名：无独立 ppt.process 处理器，归并到 ppt.generate
+    "ppt_design": "ppt.design",
+    "excel_analyze": "excel.analyze",
+    "excel_chart": "excel.chart",
+    "excel_process": "excel.process",
+    "file_convert": "file.convert",
+    "file_process": "file.process_upload",
+    "general": "general.process",
+    "rag_index": "rag.index",
+    "rag_search": "rag.search",
+}
+
+
+def queue_name_for_task_type(task_type: str) -> str:
+    """任务类型 → 注册队列名；未知类型原样返回（由 worker 兜底报错）。"""
+    return TASK_TYPE_TO_QUEUE.get(task_type, task_type)
+
+
+__all__ = ["TASK_REGISTRY", "TASK_TYPE_TO_QUEUE", "queue_name_for_task_type"]

@@ -138,7 +138,7 @@ def status():
     from office_agent.database.repository import (
         UserRepository, FileRepository, TaskRepository, AgentRepository,
         SkillRepository, TemplateRepository, KnowledgeRepository,
-        ExecutionLogRepository, MemoryRepository,
+        ExecutionLogRepository,
     )
 
     print(f"数据库: {DATABASE_URL}")
@@ -155,7 +155,6 @@ def status():
             "模板": TemplateRepository(session),
             "知识": KnowledgeRepository(session),
             "日志": ExecutionLogRepository(session),
-            "记忆": MemoryRepository(session),
         }
         print(f"{'表':<10} {'记录数':>8}")
         print("-" * 22)

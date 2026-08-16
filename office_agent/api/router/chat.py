@@ -37,64 +37,6 @@ def _resolve_input_files(file_ids, file_repo):
     return input_paths
 
 
-def _route_intent(message: str) -> tuple:
-    """
-    简单意图路由（关键词匹配）
-    返回 (agent, task_type, intent)
-    """
-    # Compatibility shim: routing logic lives in office_agent.api.routing.
-    return route_intent(message)
-
-    # Word相关
-    word_keywords = ["word", "文档", "排版", "格式", "论文", "公文", "报告", "docx", "doc"]
-    if any(k in msg for k in word_keywords):
-        return "word_agent", "word_format", "format"
-
-    # PPT相关
-    ppt_keywords = ["ppt", "pptx", "演示", "幻灯片", "汇报", "幻灯", "课件"]
-    if any(k in msg for k in ppt_keywords):
-        return "ppt_agent", "ppt_generate", "generate"
-
-    # Excel相关
-    excel_keywords = ["excel", "xlsx", "xls", "表格", "数据", "分析", "图表", "统计"]
-    if any(k in msg for k in excel_keywords):
-        return "excel_agent", "excel_analyze", "analyze"
-
-    return "orchestrator", "general", "general"
-
-
-def _task_type_to_queue_name(task_type: str) -> str:
-    """任务类型映射到队列任务名"""
-    mapping = {
-        "word_format": "word.format",
-        "word_process": "word.process",
-        "word_convert": "word.convert",
-        "ppt_generate": "ppt.generate",
-        "ppt_process": "ppt.process",
-        "ppt_design": "ppt.design",
-        "excel_analyze": "excel.analyze",
-        "excel_chart": "excel.chart",
-        "excel_process": "excel.process",
-        "file_convert": "file.convert",
-        "file_process": "file.process_upload",
-        "general": "general.process",
-    }
-    return mapping.get(task_type, task_type)
-
-
-def _route_by_file_path(path: str):
-    """Route follow-up messages using the attached document type."""
-    # Compatibility shim: routing logic lives in office_agent.api.routing.
-    return route_by_file_path(path)
-    if ext in (".docx", ".doc"):
-        return "word_agent", "word_process", "file_type"
-    if ext in (".pptx", ".ppt"):
-        return "ppt_agent", "ppt_generate", "file_type"
-    if ext in (".xlsx", ".xls", ".csv"):
-        return "excel_agent", "excel_analyze", "file_type"
-    return None
-
-
 def _recover_conversation_context(conversation_id: str, task_repo, storage):
     """Recover the latest artifact and routing context when the client omits it."""
     if not conversation_id:
@@ -283,10 +225,10 @@ async def chat(req: ChatRequest):
     # 2. 提交到真正的任务队列
     status = "queued"
     try:
-        from ...task_queue import submit_task, init_worker, TASK_REGISTRY
+        from ...task_queue import submit_task, init_worker, TASK_REGISTRY, queue_name_for_task_type
         init_worker()
 
-        queue_task_name = _task_type_to_queue_name(task_type)
+        queue_task_name = queue_name_for_task_type(task_type)
         submit_task(
             task_name=queue_task_name,
             kwargs={
