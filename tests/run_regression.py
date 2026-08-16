@@ -17,46 +17,6 @@ from tests.qa_framework import QATestRunner, TestCategory, TestSeverity
 from tests.qa_report import generate_report
 
 
-# 核心回归测试集（每次更新必须通过）
-REGRESSION_SUITE = {
-    "critical": [
-        # 基础导入
-        "test_imports",
-        # 本地架构
-        "test_local_identity",
-        "test_local_storage",
-        "test_sqlite_database",
-        "test_credential_manager",
-        "test_model_manager",
-        "test_local_task_queue",
-        "test_local_application",
-        # Office兼容
-        "test_docx_read_write",
-        "test_pptx_read_write",
-        "test_xlsx_read_write",
-        # Agent
-        "test_excel_formula_calculation",
-        # 集成
-        "scenario_excel_to_analysis",
-        "scenario_full_pipeline",
-        # 恢复
-        "test_task_retry_on_failure",
-        "test_database_recovery",
-        "test_credential_recovery",
-    ],
-    "high": [
-        "test_word_paragraph_format",
-        "test_word_heading_hierarchy",
-        "test_word_table_format",
-        "test_ppt_slide_layouts",
-        "test_excel_large_dataset",
-        "test_corrupted_file_handling",
-        "test_network_failure_simulation",
-        "test_concurrent_task_safety",
-    ],
-}
-
-
 def run_pytest_suite(test_path: str = "tests/", pattern: str = None) -> dict:
     """运行pytest测试套件"""
     cmd = [sys.executable, "-m", "pytest", test_path, "-v", "--tb=short", "-q"]
@@ -141,10 +101,10 @@ def run_qa_suite(include_performance: bool = False) -> QATestRunner:
 def run_regression(include_performance: bool = False, should_generate_report: bool = True) -> dict:
     """运行完整回归测试"""
     print("=" * 60)
-    print("OfficeAgent Regression Test Suite v0.47.5")
+    print("OfficeAgent Regression Test Suite v0.49.0")
     print("=" * 60)
     results = {
-        "version": "0.48.0",
+        "version": "0.49.0",
         "timestamp": datetime.now().isoformat(),
         "pytest": None,
         "qa": None,

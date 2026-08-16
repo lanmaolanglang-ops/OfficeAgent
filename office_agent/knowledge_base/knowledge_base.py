@@ -43,7 +43,7 @@ class OfficeKnowledgeBase:
         print(ctx.to_text())
     """
 
-    def __init__(self, storage_dir: str = "./kb_data",
+    def __init__(self, storage_dir: str = os.path.expanduser("~/.office_agent/kb_data"),
                  embedder: Optional[BaseEmbedder] = None,
                  chunk_config: Optional[ChunkConfig] = None):
         self.storage_dir = storage_dir
@@ -394,7 +394,7 @@ class OfficeKnowledgeBase:
         return "\n".join(lines)
 
 
-def create_default_kb(storage_dir: str = "./kb_data") -> OfficeKnowledgeBase:
+def create_default_kb(storage_dir: str = os.path.expanduser("~/.office_agent/kb_data")) -> OfficeKnowledgeBase:
     """
     创建带内置知识的默认知识库
 

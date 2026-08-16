@@ -3,6 +3,7 @@ Model Manager - 模型配置管理
 负责 API Key 的加密存储、模型配置的增删改查
 """
 import json
+import logging
 import os
 import base64
 import hashlib
@@ -21,6 +22,8 @@ from ..models.model_schemas import (
 from .clients import (
     BaseModelClient, OpenAIClient, DoubaoClient, ClaudeClient, GeminiClient
 )
+
+logger = logging.getLogger("office_agent.model_manager")
 
 
 class SimpleEncryption:
@@ -218,7 +221,7 @@ class ModelManager:
             self._default_model_id = data.get("default_model_id") or None
                 
         except Exception as e:
-            print(f"加载模型配置失败: {e}")
+            logger.warning("加载模型配置失败: %s", e)
     
     def _save_config(self):
         """保存配置到文件"""
@@ -259,7 +262,7 @@ class ModelManager:
             with open(self.config_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2, ensure_ascii=False)
         except Exception as e:
-            print(f"保存模型配置失败: {e}")
+            logger.warning("保存模型配置失败: %s", e)
     
     def add_model(self, config: ModelConfig) -> bool:
         """添加或更新模型配置"""

@@ -38,7 +38,7 @@ class FileError(APIError):
     status_code = 400
 
 
-class FileNotFoundError(APIError):
+class FileNotFoundAPIError(APIError):
     """文件不存在"""
     error_code = "FILE_NOT_FOUND"
     status_code = 404
@@ -80,7 +80,7 @@ class AuthError(APIError):
     status_code = 401
 
 
-class PermissionError(APIError):
+class PermissionDeniedError(APIError):
     """权限错误"""
     error_code = "PERMISSION_DENIED"
     status_code = 403

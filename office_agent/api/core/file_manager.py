@@ -12,7 +12,7 @@ from datetime import datetime
 
 from ..core.config import settings
 from ..core.exceptions import (
-    FileError, FileNotFoundError, FileTypeNotSupportedError,
+    FileError, FileTypeNotSupportedError,
 )
 
 
