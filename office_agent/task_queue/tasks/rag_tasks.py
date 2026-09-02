@@ -1,4 +1,5 @@
 """RAG / 知识库后台任务。"""
+import hashlib
 import json
 import logging
 import os
@@ -36,6 +37,49 @@ def _load_all(repo, page_size: int = 1000):
         offset += page_size
 
 
+def _load_filtered(repo, *, page_size: int = 1000, **filters):
+    """Page through a filtered repository query without its default limit."""
+    items = []
+    offset = 0
+    while True:
+        page = repo.find(offset=offset, limit=page_size, **filters)
+        items.extend(page)
+        if len(page) < page_size:
+            return items
+        offset += page_size
+
+
+def _load_search_candidates(repo, category: str | None,
+                            max_candidates: int, page_size: int = 1000):
+    """Load at most max_candidates and report whether more rows exist."""
+    items = []
+    offset = 0
+    target = max_candidates + 1
+    while len(items) < target:
+        limit = min(page_size, target - len(items))
+        if category:
+            page = repo.get_by_category(category, offset=offset, limit=limit)
+        else:
+            page = repo.get_all(offset=offset, limit=limit)
+        items.extend(page)
+        if len(page) < limit:
+            break
+        offset += len(page)
+    return items[:max_candidates], len(items) > max_candidates
+
+
+def _document_fingerprint(chunks, title: str, category: str | None,
+                          source: str | None) -> str:
+    digest = hashlib.sha256()
+    for value in (title, category or "", source or ""):
+        digest.update(value.encode("utf-8", errors="replace"))
+        digest.update(b"\0")
+    for chunk in chunks:
+        digest.update(chunk.content.encode("utf-8", errors="replace"))
+        digest.update(b"\x1e")
+    return digest.hexdigest()
+
+
 def _chunks_from_file(file_path: str, title: str | None, category: str | None):
     from ...knowledge_base.document_parser import DocumentParser
     from ...knowledge_base.text_chunker import TextChunker
@@ -71,10 +115,28 @@ def _store_chunks(chunks, title: str, category: str | None,
     from ...database.session import session_scope
     from ...knowledge_base.embeddings import HashingEmbedder
 
-    embedder = HashingEmbedder()
-    embeddings = embedder.embed([chunk.content for chunk in chunks])
+    fingerprint = _document_fingerprint(chunks, title, category, source)
     with session_scope() as session:
         repo = KnowledgeRepository(session)
+        existing = _load_filtered(
+            repo, title=title, category=category, source=source
+        )
+        matching = []
+        for item in existing:
+            try:
+                metadata = json.loads(item.metadata_json or "{}")
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if metadata.get("document_fingerprint") == fingerprint:
+                matching.append(item)
+        if len(matching) == len(chunks) and {
+                item.chunk_index for item in matching
+        } == set(range(len(chunks))):
+            logger.info("跳过重复知识索引: %s (%s chunks)", title, len(chunks))
+            return len(chunks)
+
+        embedder = HashingEmbedder()
+        embeddings = embedder.embed([chunk.content for chunk in chunks])
         for index, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
             repo.add_knowledge(
                 title=title,
@@ -87,6 +149,7 @@ def _store_chunks(chunks, title: str, category: str | None,
                     "embedding_model": "hashing-512-v1",
                     "section_title": chunk.section_title,
                     "page_number": chunk.page_number,
+                    "document_fingerprint": fingerprint,
                 }, ensure_ascii=False),
                 chunk_index=index,
                 total_chunks=len(chunks),
@@ -139,14 +202,20 @@ def chunk_and_embed(text: str, title: str = None,
 
 
 def search_knowledge(query: str, top_k: int = 5,
-                     category: str = None, progress=None,
+                     category: str = None, max_candidates: int = 10000,
+                     progress=None,
                      _task_id: str = None, **kwargs) -> dict:
     """使用持久化向量执行余弦检索，并回退到文本匹配。"""
-    result = {"status": "success", "results": []}
+    result = {
+        "status": "success", "results": [], "candidate_count": 0,
+        "candidate_limit": 0, "truncated": False,
+    }
     try:
         if not isinstance(query, str) or not query.strip():
             raise ValueError("检索词不能为空")
         top_k = max(1, min(int(top_k), 50))
+        max_candidates = max(1, min(int(max_candidates), 100000))
+        result["candidate_limit"] = max_candidates
         _progress(progress, 20, "准备检索条件")
         from ...database.repository import KnowledgeRepository
         from ...database.session import session_scope
@@ -156,7 +225,16 @@ def search_knowledge(query: str, top_k: int = 5,
         scored = []
         with session_scope() as session:
             repo = KnowledgeRepository(session)
-            items = repo.get_by_category(category) if category else _load_all(repo)
+            items, truncated = _load_search_candidates(
+                repo, category, max_candidates
+            )
+            result["candidate_count"] = len(items)
+            result["truncated"] = truncated
+            if truncated:
+                logger.warning(
+                    "知识检索候选超过上限: task=%s category=%s limit=%s",
+                    _task_id, category, max_candidates,
+                )
             for item in items:
                 try:
                     vector = json.loads(item.embedding or "[]")

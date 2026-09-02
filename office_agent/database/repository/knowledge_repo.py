@@ -11,8 +11,9 @@ class KnowledgeRepository(BaseRepository[Knowledge]):
     def __init__(self, session: Session):
         super().__init__(session, Knowledge)
 
-    def get_by_category(self, category: str) -> List[Knowledge]:
-        return self.find(category=category)
+    def get_by_category(self, category: str, offset: int = 0,
+                        limit: int = 100) -> List[Knowledge]:
+        return self.find(offset=offset, limit=limit, category=category)
 
     def search_by_text(self, query: str, limit: int = 20) -> List[Knowledge]:
         """简单文本搜索（向量搜索由上层实现）"""
