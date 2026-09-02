@@ -245,7 +245,7 @@ class AuditLogger:
             ip_address=ip, risk_level="critical",
         )
 
-    def log_sandbox_blocked(self, user_id: str, reason: str):
+    def log_sandbox_blocked(self, user_id: str | None, reason: str):
         """记录沙箱阻止"""
         return self.log(
             AuditAction.SANDBOX_BLOCKED, "blocked",
@@ -254,13 +254,36 @@ class AuditLogger:
             risk_level="danger",
         )
 
-    def log_tool_blocked(self, user_id: str, agent: str, tool: str, reason: str):
+    def log_sandbox_timeout(self, user_id: str | None, timeout_seconds: int):
+        """记录沙箱超时。"""
+        return self.log(
+            AuditAction.SANDBOX_TIMEOUT, "timeout",
+            user_id=user_id, resource="sandbox",
+            details={"timeout_seconds": timeout_seconds},
+            risk_level="danger",
+        )
+
+    def log_tool_blocked(self, user_id: str | None, agent: str, tool: str,
+                         reason: str):
         """记录工具阻止"""
         return self.log(
             AuditAction.TOOL_BLOCKED, "denied",
             user_id=user_id, resource=f"tool:{tool}",
             details={"agent": agent, "reason": reason},
             risk_level="warning",
+        )
+
+    def log_tool_call(self, user_id: str | None, agent: str, tool: str,
+                      risk_level: str, approval_granted: bool):
+        """记录已授权的高风险工具调用。"""
+        return self.log(
+            AuditAction.TOOL_CALL, "success",
+            user_id=user_id, resource=f"tool:{tool}",
+            details={
+                "agent": agent,
+                "approval_granted": approval_granted,
+            },
+            risk_level=risk_level,
         )
 
     def get_entries(self, user_id: str | None = None,

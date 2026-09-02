@@ -195,26 +195,61 @@ class ToolRegistry:
 class AgentPermissionManager:
     """Agent权限管理器"""
 
-    def __init__(self, registry: ToolRegistry | None = None):
+    def __init__(self, registry: ToolRegistry | None = None, audit_logger=None):
         self.registry = registry or ToolRegistry()
+        self._audit_logger = audit_logger
         self._agent_blacklist: dict[str, set[str]] = {}  # agent -> blocked tools
         self._call_counts: dict[tuple[str, str], list[float]] = {}  # (agent, tool) -> timestamps
         self._lock = threading.RLock()
 
-    def can_use_tool(self, agent: str, tool_name: str) -> tuple[bool, str]:
+    def _audit_blocked(self, user_id: str | None, agent: str, tool_name: str,
+                       reason: str) -> None:
+        try:
+            if self._audit_logger is None:
+                from ..audit import get_audit_logger
+                self._audit_logger = get_audit_logger()
+            self._audit_logger.log_tool_blocked(user_id, agent, tool_name, reason)
+        except Exception:
+            logger.exception("Tool denial audit failed")
+
+    def _audit_high_risk_call(self, user_id: str | None, agent: str,
+                              tool: ToolInfo, approval_granted: bool) -> None:
+        if tool.risk_level not in {RiskLevel.HIGH, RiskLevel.CRITICAL}:
+            return
+        try:
+            if self._audit_logger is None:
+                from ..audit import get_audit_logger
+                self._audit_logger = get_audit_logger()
+            self._audit_logger.log_tool_call(
+                user_id, agent, tool.name, tool.risk_level.value,
+                approval_granted,
+            )
+        except Exception:
+            logger.exception("High-risk tool audit failed")
+
+    def can_use_tool(self, agent: str, tool_name: str,
+                     *, user_id: str | None = None,
+                     approval_granted: bool = False) -> tuple[bool, str]:
         """检查Agent是否可以使用工具（含频率限制）"""
         # 基本权限检查
         allowed, reason = self.registry.check_access(agent, tool_name)
         if not allowed:
+            self._audit_blocked(user_id, agent, tool_name, reason)
             return False, reason
 
         # 黑名单检查
         with self._lock:
             if tool_name in self._agent_blacklist.get(agent, set()):
-                return False, f"工具 '{tool_name}' 已被Agent '{agent}' 禁用"
+                reason = f"工具 '{tool_name}' 已被Agent '{agent}' 禁用"
+                self._audit_blocked(user_id, agent, tool_name, reason)
+                return False, reason
 
             tool = self.registry.get(tool_name)
             if tool:
+                if tool.requires_approval and not approval_granted:
+                    reason = f"工具 '{tool_name}' 需要人工审批"
+                    self._audit_blocked(user_id, agent, tool_name, reason)
+                    return False, reason
                 key = (agent, tool_name)
                 now = time.time()
                 self._call_counts[key] = [
@@ -222,9 +257,13 @@ class AgentPermissionManager:
                     if now - timestamp < 60
                 ]
                 if len(self._call_counts[key]) >= tool.max_calls_per_minute:
-                    return False, f"调用频率超限: {tool.max_calls_per_minute}/分钟"
+                    reason = f"调用频率超限: {tool.max_calls_per_minute}/分钟"
+                    self._audit_blocked(user_id, agent, tool_name, reason)
+                    return False, reason
                 self._call_counts[key].append(now)
 
+        if tool:
+            self._audit_high_risk_call(user_id, agent, tool, approval_granted)
         return True, "允许"
 
     def block_tool(self, agent: str, tool_name: str):

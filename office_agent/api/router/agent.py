@@ -3,6 +3,7 @@ Agent管理路由
 集成数据库，从 AgentConfig 表读取配置
 """
 import json
+import logging
 from fastapi import APIRouter
 
 from ..schemas.response import AgentInfo, AgentListResponse, BaseResponse, VersionInfo
@@ -10,9 +11,10 @@ from ..core.config import settings
 from ..core.exceptions import AgentNotFoundError
 
 router = APIRouter(prefix="/api", tags=["Agent管理"])
+logger = logging.getLogger("office_agent.api.agent")
 
 
-# 内置Agent（数据库为空时使用）
+# 内置 Agent（仅在数据库不可用时作为降级清单）
 BUILTIN_AGENTS = [
     {
         "agent_id": "word_agent",
@@ -61,20 +63,6 @@ def _get_db_session():
         return None
 
 
-def _ensure_seed_agents(session):
-    """确保数据库中有内置 Agent"""
-    from ...database.repository import AgentRepository
-    repo = AgentRepository(session)
-    if repo.count() == 0:
-        for a in BUILTIN_AGENTS:
-            caps = json.dumps(a["capabilities"], ensure_ascii=False)
-            repo.create_agent(
-                agent_id=a["agent_id"], name=a["name"], agent_type=a["agent_type"],
-                description=a["description"], version=a["version"], capabilities=caps,
-            )
-        session.commit()
-
-
 def _db_agent_to_info(db_agent) -> AgentInfo:
     caps = []
     if db_agent.capabilities:
@@ -101,14 +89,14 @@ async def list_agents():
     if session:
         try:
             from ...database.repository import AgentRepository
-            _ensure_seed_agents(session)
             repo = AgentRepository(session)
             db_agents = repo.get_enabled()
-            if db_agents:
-                agents = [_db_agent_to_info(a) for a in db_agents]
-                return BaseResponse(data=AgentListResponse(agents=agents, total=len(agents)))
+            agents = [_db_agent_to_info(a) for a in db_agents]
+            # An empty database is a valid explicit configuration. Seeding is
+            # handled by setup/migrations, never by this read-only endpoint.
+            return BaseResponse(data=AgentListResponse(agents=agents, total=len(agents)))
         except Exception:
-            pass
+            logger.exception("读取 Agent 配置失败，降级到内置清单")
         finally:
             session.close()
 
@@ -130,7 +118,7 @@ async def get_agent(agent_id: str):
             if db_agent:
                 return BaseResponse(data=_db_agent_to_info(db_agent))
         except Exception:
-            pass
+            logger.exception("读取 Agent 详情失败，降级到内置清单")
         finally:
             session.close()
 

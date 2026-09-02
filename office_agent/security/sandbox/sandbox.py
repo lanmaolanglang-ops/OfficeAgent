@@ -141,7 +141,8 @@ class Sandbox:
                  max_output_bytes: int = 1024 * 1024,  # 1MB
                  allowed_modules: set[str] | None = None,
                  work_dir: str | Path | None = None,
-                 allow_unsafe_subprocess: bool = False):
+                 allow_unsafe_subprocess: bool = False,
+                 audit_logger=None):
         self.timeout_seconds = timeout_seconds
         self.max_output_bytes = max_output_bytes
         self.allowed_modules = frozenset(allowed_modules or ALLOWED_MODULES)
@@ -152,9 +153,29 @@ class Sandbox:
         else:
             self.work_dir = Path(work_dir)
         self.allow_unsafe_subprocess = allow_unsafe_subprocess
+        self._audit_logger = audit_logger
         self.work_dir.mkdir(parents=True, exist_ok=True)
 
-    def execute(self, code: str, input_data: dict | None = None) -> SandboxResult:
+    def _audit_blocked(self, user_id: str | None, reason: str) -> None:
+        try:
+            if self._audit_logger is None:
+                from ..audit import get_audit_logger
+                self._audit_logger = get_audit_logger()
+            self._audit_logger.log_sandbox_blocked(user_id, reason)
+        except Exception:
+            logger.exception("Sandbox blocked-event audit failed")
+
+    def _audit_timeout(self, user_id: str | None) -> None:
+        try:
+            if self._audit_logger is None:
+                from ..audit import get_audit_logger
+                self._audit_logger = get_audit_logger()
+            self._audit_logger.log_sandbox_timeout(user_id, self.timeout_seconds)
+        except Exception:
+            logger.exception("Sandbox timeout-event audit failed")
+
+    def execute(self, code: str, input_data: dict | None = None,
+                *, user_id: str | None = None) -> SandboxResult:
         """
         在沙箱中执行Python代码
         代码中可以直接使用 result 变量作为返回值
@@ -162,16 +183,19 @@ class Sandbox:
         start_time = time.time()
 
         if not self.allow_unsafe_subprocess:
+            reason = ("未配置操作系统级隔离执行器，已拒绝运行代码。"
+                      "生产环境请保持 ENABLE_SANDBOX=false。")
+            self._audit_blocked(user_id, reason)
             return SandboxResult(
                 status=SandboxStatus.BLOCKED,
-                error=("未配置操作系统级隔离执行器，已拒绝运行代码。"
-                       "生产环境请保持 ENABLE_SANDBOX=false。"),
+                error=reason,
                 execution_time=0,
             )
 
         # 预检查代码
         pre_check = self._pre_check_code(code)
         if pre_check:
+            self._audit_blocked(user_id, pre_check)
             return SandboxResult(
                 status=SandboxStatus.BLOCKED,
                 error=pre_check,
@@ -256,6 +280,7 @@ class Sandbox:
             )
 
         except subprocess.TimeoutExpired:
+            self._audit_timeout(user_id)
             return SandboxResult(
                 status=SandboxStatus.TIMEOUT,
                 error=f"执行超时（{self.timeout_seconds}秒）",
@@ -278,7 +303,8 @@ class Sandbox:
         """使用 AST 与运行时白名单同口径预检，拒绝空白/别名绕过。"""
         return validate_code(code, self.allowed_modules)
 
-    def execute_data_analysis(self, code: str, data: Any = None) -> SandboxResult:
+    def execute_data_analysis(self, code: str, data: Any = None,
+                              *, user_id: str | None = None) -> SandboxResult:
         """
         执行数据分析代码
         自动注入pandas和numpy
@@ -294,7 +320,7 @@ import json
             serialized = json.dumps(data, ensure_ascii=False, default=str)
             setup += f"\ndata = json.loads({serialized!r})\n"
         full_code = setup + "\n" + code
-        return self.execute(full_code)
+        return self.execute(full_code, user_id=user_id)
 
     def cleanup(self):
         """清理工作目录"""
