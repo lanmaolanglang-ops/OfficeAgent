@@ -14,7 +14,6 @@ import re
 import time
 import uuid
 import logging
-import traceback
 import json
 from ...security.error_sanitizer import sanitize_error
 from pathlib import Path
@@ -307,6 +306,7 @@ def generate_ppt(outline: str = None, input_path: str = None,
                 file_info = storage.save_new_output(
                     source_path=str(output),
                     original_name=_make_registered_name(input_path, str(output), options),
+                    owner_id=options.get("_owner_id"),
                     change_description=instruction if instruction else "PPT generation",
                 )
                 if not file_info or not file_info.file_id:

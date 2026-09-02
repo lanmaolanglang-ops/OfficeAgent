@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException, Request
 from ..schemas.request import ChatRequest
 from ..schemas.response import ChatResponse, BaseResponse
 from ..routing import route_intent, route_by_file_path
+from ..core.config import settings
 from ..core.file_resolution import resolve_input_files
 
 router = APIRouter(prefix="/api", tags=["对话"])
@@ -46,7 +47,8 @@ def _scan_user_prompt(message: str, request: Request):
     return result
 
 
-def _recover_conversation_context(conversation_id: str, task_repo, storage):
+def _recover_conversation_context(conversation_id: str, task_repo, storage,
+                                  owner_id: str | None = None):
     """Recover the latest artifact and routing context when the client omits it."""
     if not conversation_id:
         return None
@@ -62,6 +64,8 @@ def _recover_conversation_context(conversation_id: str, task_repo, storage):
             break
         offset += len(tasks)
         for task in tasks:
+            if owner_id and getattr(task, "user_id", None) != owner_id:
+                continue
             try:
                 options = json.loads(task.options_json or "{}")
             except (TypeError, ValueError):
@@ -97,6 +101,25 @@ def _recover_conversation_context(conversation_id: str, task_repo, storage):
                     "previous_instruction": task.instruction,
                 }
     return None
+
+
+def _request_identity(request: Request) -> tuple[str | None, str]:
+    if not settings.auth_enabled:
+        return None, ""
+    user_id = getattr(request.state, "user_id", None)
+    role = getattr(request.state, "user_role", "")
+    if not user_id or user_id == "anonymous":
+        raise HTTPException(status_code=401, detail="缺少已认证用户")
+    return user_id, role
+
+
+def _require_owned_files(file_ids, file_repo, user_id: str | None, role: str):
+    if not user_id or role == "admin":
+        return
+    for file_id in file_ids:
+        db_file = file_repo.get_by_id(file_id)
+        if not db_file or db_file.owner_id != user_id:
+            raise HTTPException(status_code=403, detail="输入文件不属于当前用户")
 
 
 def _sanitize_model_config(model_config):
@@ -156,13 +179,14 @@ async def chat(req: ChatRequest, request: Request):
     走真正的数据库+任务队列，而非内存模拟。
     """
     _scan_user_prompt(req.message, request)
+    user_id, user_role = _request_identity(request)
 
     from ...database.session import session_scope
     from ...database.repository import TaskRepository, FileRepository
 
     # 兼容前端发送的不同字段名
     agent_hint = req.agent_hint
-    file_ids = req.file_ids or []
+    file_ids = list(req.file_ids or [])
 
     # 意图识别
     if agent_hint and agent_hint != "auto":
@@ -191,7 +215,10 @@ async def chat(req: ChatRequest, request: Request):
         if not file_ids and req.conversation_id:
             from ...storage.storage_service import get_storage_service
             recovered = _recover_conversation_context(
-                req.conversation_id, task_repo, get_storage_service()
+                req.conversation_id,
+                task_repo,
+                get_storage_service(),
+                owner_id=user_id if user_role != "admin" else None,
             )
             if recovered:
                 file_ids = []
@@ -214,6 +241,7 @@ async def chat(req: ChatRequest, request: Request):
                         intent = "follow_up"
 
         if file_ids:
+            _require_owned_files(file_ids, file_repo, user_id, user_role)
             input_paths = resolve_input_files(file_ids, file_repo)
             # The attached file's type is the authoritative route; message
             # keywords only refine the sub-task within the same agent
@@ -237,6 +265,9 @@ async def chat(req: ChatRequest, request: Request):
         # 解析 PPT 模板文件（可选，用于按模板生成）
         template_path = None
         if req.template_file_id:
+            _require_owned_files(
+                [req.template_file_id], file_repo, user_id, user_role
+            )
             template_paths = resolve_input_files([req.template_file_id], file_repo)
             template_path = template_paths[0] if template_paths else None
 
@@ -259,6 +290,7 @@ async def chat(req: ChatRequest, request: Request):
             task_type=task_type,
             instruction=req.message,
             agent_name=agent,
+            user_id=user_id,
             input_file_ids=json.dumps(file_ids) if file_ids else None,
             options_json=json.dumps({
                 "intent": intent,
@@ -272,6 +304,7 @@ async def chat(req: ChatRequest, request: Request):
                 "previous_instruction": previous_instruction,
                 "revision_mode": revision_mode,
                 "revision_number": revision_number,
+                "_owner_id": user_id,
             }, ensure_ascii=False),
             priority=1,
             parent_task_id=parent_task_id,
@@ -303,6 +336,7 @@ async def chat(req: ChatRequest, request: Request):
                     "parent_task_id": parent_task_id,
                     "previous_instruction": previous_instruction,
                     "revision_mode": revision_mode,
+                    "_owner_id": user_id,
                 },
             },
             priority="normal",

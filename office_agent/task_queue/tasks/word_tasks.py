@@ -13,11 +13,8 @@ import os
 import time
 import uuid
 import logging
-import traceback
 import json
 from ...security.error_sanitizer import sanitize_error
-from typing import Optional
-from pathlib import Path
 
 logger = logging.getLogger("office_agent.tasks.word")
 
@@ -189,6 +186,7 @@ def process_word(input_path: str, output_path: str = None,
         file_info = storage.save_new_output(
             source_path=output,
             original_name=original_name,
+            owner_id=options.get("_owner_id"),
             change_description=instruction or "Word 文档处理",
         )
 

@@ -11,7 +11,7 @@
 """
 import json
 import logging
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 
 from ..schemas.request import TaskCreateRequest, FeedbackRequest
 from ..schemas.response import (
@@ -21,6 +21,7 @@ from ..core.task_manager import task_manager
 from ..core.exceptions import APIError, TaskNotFoundError
 from ..core.file_resolution import resolve_input_files
 from ...security.error_sanitizer import sanitize_error
+from ..core.config import settings
 
 router = APIRouter(prefix="/api/task", tags=["任务"])
 
@@ -29,6 +30,16 @@ logger = logging.getLogger("office_agent.api.task")
 
 # Backward-compatible private name for integrations that imported the old helper.
 _resolve_input_files = resolve_input_files
+
+
+def _request_identity(request: Request | None) -> tuple[str | None, str]:
+    if not settings.auth_enabled:
+        return None, ""
+    user_id = getattr(request.state, "user_id", None) if request else None
+    role = getattr(request.state, "user_role", "") if request else ""
+    if not user_id or user_id == "anonymous":
+        raise HTTPException(status_code=401, detail="缺少已认证用户")
+    return user_id, role
 
 
 def _safe_json_object(raw: str | None, default):
@@ -76,7 +87,7 @@ def _get_db_session():
 
 @router.post("/create", response_model=BaseResponse[TaskInfo],
              summary="创建任务")
-async def create_task(req: TaskCreateRequest):
+async def create_task(req: TaskCreateRequest, request: Request = None):
     """
     创建处理任务（异步队列执行）
 
@@ -99,6 +110,12 @@ async def create_task(req: TaskCreateRequest):
     # 1. 创建数据库记录
     task_id = None
     input_files = []
+    user_id, user_role = _request_identity(request)
+    task_options = dict(req.options or {})
+    if user_id:
+        # Server-controlled key: a client-supplied value must never choose the
+        # owner of generated output files.
+        task_options["_owner_id"] = user_id
     with session_scope() as session:
         task_repo = TaskRepository(session)
         file_repo = FileRepository(session)
@@ -106,6 +123,11 @@ async def create_task(req: TaskCreateRequest):
         # 获取输入文件路径
         input_paths = []
         if req.file_ids:
+            if user_id and user_role != "admin":
+                for file_id in req.file_ids:
+                    db_file = file_repo.get_by_id(file_id)
+                    if not db_file or db_file.owner_id != user_id:
+                        raise HTTPException(status_code=403, detail="输入文件不属于当前用户")
             input_paths = resolve_input_files(req.file_ids, file_repo)
             input_files = list(req.file_ids)
 
@@ -113,10 +135,11 @@ async def create_task(req: TaskCreateRequest):
             task_type=req.task_type,
             instruction=req.instruction,
             agent_name=req.task_type.split("_")[0] + "_agent" if "_" in req.task_type else None,
+            user_id=user_id,
             input_file_ids=json.dumps(input_files) if input_files else None,
             options_json=json.dumps({
                 "output_format": getattr(req, "output_format", None),
-                "options": req.options or {},
+                "options": task_options,
                 "input_paths": input_paths,
             }, ensure_ascii=False),
             priority={"high": 2, "normal": 1, "low": 0}.get(priority, 1),
@@ -129,7 +152,7 @@ async def create_task(req: TaskCreateRequest):
         init_worker()
 
         queue_task_name = queue_name_for_task_type(req.task_type)
-        options = req.options or {}
+        options = task_options
         input_path = input_paths[0] if input_paths else None
 
         submit_task(
@@ -209,6 +232,16 @@ async def get_task(task_id: str):
         finally:
             session.close()
 
+        if settings.auth_enabled:
+            raise TaskNotFoundError(f"任务不存在: {task_id}")
+
+    if settings.auth_enabled:
+        raise APIError(
+            "数据库暂不可用，无法查询任务",
+            error_code="DATABASE_UNAVAILABLE",
+            status_code=503,
+        )
+
     # 回退到内存
     task = task_manager.get_task(task_id)
     if task:
@@ -221,7 +254,8 @@ async def get_task(task_id: str):
             summary="任务列表")
 async def list_tasks(status: str = None, agent: str = None,
                      page: int = Query(default=1, ge=1),
-                     page_size: int = Query(default=20, ge=1, le=200)):
+                     page_size: int = Query(default=20, ge=1, le=200),
+                     request: Request = None):
     """列出任务，支持按状态/Agent筛选"""
     session = _get_db_session()
     if session:
@@ -230,6 +264,9 @@ async def list_tasks(status: str = None, agent: str = None,
             repo = TaskRepository(session)
             file_repo = FileRepository(session)
             filters = {}
+            user_id, user_role = _request_identity(request)
+            if user_id and user_role != "admin":
+                filters["user_id"] = user_id
             if status:
                 filters["status"] = status
             if agent:
@@ -254,6 +291,13 @@ async def list_tasks(status: str = None, agent: str = None,
             ))
         finally:
             session.close()
+
+    if settings.auth_enabled:
+        raise APIError(
+            "数据库暂不可用，无法列出任务",
+            error_code="DATABASE_UNAVAILABLE",
+            status_code=503,
+        )
 
     # 回退到内存
     tasks, total = task_manager.list_tasks(status=status, agent=agent, page=page, page_size=page_size)
@@ -287,6 +331,16 @@ async def cancel_task(task_id: str):
         finally:
             session.close()
 
+        if settings.auth_enabled:
+            raise TaskNotFoundError(f"任务不存在: {task_id}")
+
+    if settings.auth_enabled:
+        raise APIError(
+            "数据库暂不可用，无法取消任务",
+            error_code="DATABASE_UNAVAILABLE",
+            status_code=503,
+        )
+
     # 回退到内存
     task = task_manager.get_task(task_id)
     if task:
@@ -302,6 +356,12 @@ async def task_feedback(task_id: str, req: FeedbackRequest):
     """对任务结果提交反馈"""
     session = _get_db_session()
     if session is None:
+        if settings.auth_enabled:
+            raise APIError(
+                "数据库暂不可用，反馈未保存",
+                error_code="DATABASE_UNAVAILABLE",
+                status_code=503,
+            )
         task = task_manager.get_task(task_id)
         if task is not None:
             task.feedback_rating = req.rating

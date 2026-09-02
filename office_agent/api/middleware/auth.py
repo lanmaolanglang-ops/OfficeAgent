@@ -59,7 +59,43 @@ class AuthMiddleware(BaseHTTPMiddleware):
             return ("admin:config",)
         if path.startswith("/api/security"):
             return ("admin:user",)
+        if path == "/api/chat":
+            return ("task:create", "model:call")
+        if path.startswith("/api/file"):
+            if path.startswith("/api/file/stats"):
+                return ("admin:audit",)
+            if path == "/api/file/cleanup":
+                return ("admin:config",)
+            if request.method == "DELETE":
+                return ("file:delete",)
+            if "/download/" in path:
+                return ("file:download",)
+            if request.method == "GET":
+                return ("file:read",)
+            return ("file:write",)
+        if path.startswith("/api/task"):
+            if path == "/api/task/create":
+                return ("task:create",)
+            if path.endswith("/cancel"):
+                return ("task:cancel",)
+            return ("task:view",)
         return ()
+
+    @staticmethod
+    def _resource_target(path: str) -> tuple[str, str] | None:
+        parts = [part for part in path.split("/") if part]
+        if len(parts) >= 3 and parts[:2] == ["api", "file"]:
+            if parts[2] == "download" and len(parts) >= 4:
+                return "file", parts[3]
+            if (parts[2] == "upload" and len(parts) >= 5
+                    and parts[3] == "multipart"):
+                return "file", parts[4]
+            if parts[2] not in {"upload", "trash", "stats", "cleanup"}:
+                return "file", parts[2]
+        if len(parts) >= 3 and parts[:2] == ["api", "task"]:
+            if parts[2] != "create":
+                return "task", parts[2]
+        return None
 
     def _authorize(self, request: Request, user_id: str) -> JSONResponse | None:
         required = self._required_permissions(request)
@@ -73,7 +109,12 @@ class AuthMiddleware(BaseHTTPMiddleware):
             )
         if decision.allowed:
             request.state.user_role = decision.role
-            return None
+            target = self._resource_target(request.url.path)
+            if target is None:
+                return None
+            decision = self._get_permissions().check_ownership(user_id, *target)
+            if decision.allowed:
+                return None
         message = decision.reason or "权限不足"
         self._audit(request, AuditAction.ACCESS_DENIED, "denied", user_id, message)
         return JSONResponse(
@@ -110,6 +151,11 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 action = AuditAction.FILE_DELETE
             elif "download" in path:
                 action = AuditAction.FILE_DOWNLOAD
+        elif request.method == "POST" and path in {"/api/chat", "/api/task/create"}:
+            action = AuditAction.WORKFLOW_CREATE
+        elif request.method == "POST" and path.startswith("/api/task/") \
+                and path.endswith("/cancel"):
+            action = AuditAction.WORKFLOW_CANCEL
         elif request.method in {"POST", "PUT", "PATCH", "DELETE"} and path.startswith(
             ("/api/settings", "/api/config", "/api/security")
         ):

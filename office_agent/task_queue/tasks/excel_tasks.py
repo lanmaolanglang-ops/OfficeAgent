@@ -13,7 +13,6 @@ import os
 import time
 import uuid
 import logging
-import traceback
 import json
 from ...security.error_sanitizer import sanitize_error
 
@@ -119,7 +118,6 @@ def _sanitize_csv_cell(value):
 def _csv_to_xlsx(csv_path: str) -> str:
     """CSV → 临时 xlsx，供统一 openpyxl 处理链使用"""
     import pandas as pd
-    import tempfile
     df = _read_csv_any_encoding(csv_path)
     df = df.where(pd.notnull(df), None)
     df = df.map(_sanitize_csv_cell) if hasattr(df, "map") else df.applymap(_sanitize_csv_cell)
@@ -209,6 +207,7 @@ def analyze_excel(input_path: str, output_path: str = None,
         file_info = storage.save_new_output(
             source_path=str(output),
             original_name=original_name,
+            owner_id=options.get("_owner_id"),
             change_description=instruction or "Excel 文档处理",
         )
 

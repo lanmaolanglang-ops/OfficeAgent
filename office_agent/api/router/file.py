@@ -14,6 +14,7 @@ from ..schemas.response import (
     FileUploadResponse, FileInfo, BaseResponse,
 )
 from ..schemas.request import MultipartCompleteRequest
+from ..core.config import settings
 from ...storage import get_storage_service, FileValidationError
 from ...storage.validators import CHUNK_SIZE
 
@@ -43,6 +44,18 @@ def _get_storage():
     if _storage is None:
         _storage = get_storage_service()
     return _storage
+
+
+def _effective_owner(request: Request | None, supplied: str | None = None,
+                     allow_admin_scope: bool = False) -> str | None:
+    if not settings.auth_enabled:
+        return supplied
+    user_id = getattr(request.state, "user_id", None) if request else None
+    if not user_id or user_id == "anonymous":
+        raise HTTPException(status_code=401, detail="缺少已认证用户")
+    if allow_admin_scope and getattr(request.state, "user_role", "") == "admin":
+        return supplied
+    return user_id
 
 
 def _content_disposition(filename: str) -> str:
@@ -82,6 +95,7 @@ async def upload_file(request: Request, file: UploadFile = File(...)):
         info = storage.upload_fileobj(
             filename=file.filename or "unknown",
             fileobj=file.file,
+            owner_id=_effective_owner(request),
             metadata={"content_type": file.content_type},
         )
         return BaseResponse(data=FileUploadResponse(
@@ -103,7 +117,7 @@ def init_multipart(filename: str,
                          expected_size: int = Query(..., ge=1),
                          expected_parts: int = Query(..., ge=1),
                          expected_sha256: str = Query(..., min_length=64, max_length=64),
-                         content_type: str = None):
+                         content_type: str = None, request: Request = None):
     """
     初始化大文件分片上传
 
@@ -113,6 +127,7 @@ def init_multipart(filename: str,
         storage = _get_storage()
         result = storage.init_multipart_upload(
             filename,
+            owner_id=_effective_owner(request),
             content_type=content_type,
             expected_size=expected_size,
             expected_parts=expected_parts,
@@ -186,14 +201,19 @@ def abort_multipart(file_id: str, upload_id: str):
 @router.get("/trash", response_model=BaseResponse, summary="回收站文件列表")
 def list_deleted_files(file_type: str = None, owner_id: str = None,
                              page: int = Query(default=1, ge=1),
-                             page_size: int = Query(default=50, ge=1, le=200)):
+                             page_size: int = Query(default=50, ge=1, le=200),
+                             request: Request = None):
     """列出可恢复的软删除文件，不包含正在永久删除的 tombstone。"""
     storage = _get_storage()
     files = storage.list_deleted_files(
-        owner_id=owner_id, file_type=file_type,
+        owner_id=_effective_owner(request, owner_id, allow_admin_scope=True),
+        file_type=file_type,
         offset=(page - 1) * page_size, limit=page_size,
     )
-    total = storage.count_deleted_files(owner_id=owner_id, file_type=file_type)
+    total = storage.count_deleted_files(
+        owner_id=_effective_owner(request, owner_id, allow_admin_scope=True),
+        file_type=file_type
+    )
     return BaseResponse(data={
         "files": [{
             "file_id": f.file_id,
@@ -340,14 +360,19 @@ def delete_file(file_id: str, permanent: bool = Query(default=False)):
 @router.get("/", response_model=BaseResponse, summary="文件列表")
 def list_files(file_type: str = None, owner_id: str = None,
                      page: int = Query(default=1, ge=1),
-                     page_size: int = Query(default=50, ge=1, le=200)):
+                     page_size: int = Query(default=50, ge=1, le=200),
+                     request: Request = None):
     """列出文件，支持按类型筛选"""
     storage = _get_storage()
     files = storage.list_files(
-        owner_id=owner_id, file_type=file_type,
+        owner_id=_effective_owner(request, owner_id, allow_admin_scope=True),
+        file_type=file_type,
         offset=(page - 1) * page_size, limit=page_size,
     )
-    total = storage.count_files(owner_id=owner_id, file_type=file_type)
+    total = storage.count_files(
+        owner_id=_effective_owner(request, owner_id, allow_admin_scope=True),
+        file_type=file_type
+    )
     return BaseResponse(data={
         "files": [{
             "file_id": f.file_id,

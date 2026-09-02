@@ -58,6 +58,27 @@ def test_recovery_ignores_other_conversations(tmp_path):
     ) is None
 
 
+def test_recovery_ignores_another_users_conversation(tmp_path):
+    output = tmp_path / "formatted.docx"
+    output.write_bytes(b"docx")
+    task = SimpleNamespace(
+        id="task-other-user",
+        user_id="user-2",
+        agent_name="word_agent",
+        task_type="word_process",
+        instruction="Other user's task",
+        options_json=json.dumps({"conversation_id": "conv-shared"}),
+        output_file_ids=json.dumps(["file-output"]),
+    )
+
+    assert _recover_conversation_context(
+        "conv-shared",
+        FakeRepo([task]),
+        FakeStorage({"file-output": str(output)}),
+        owner_id="user-1",
+    ) is None
+
+
 def test_revision_mode_classification():
     assert _classify_follow_up("把标题改小一点", True) == "modify"
     assert _classify_follow_up("删除最后一页", True) == "remove"

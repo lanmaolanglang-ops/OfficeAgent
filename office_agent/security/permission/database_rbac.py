@@ -108,3 +108,40 @@ class DatabasePermissionResolver:
         finally:
             if session is not None:
                 session.close()
+
+    def check_ownership(self, user_id: str, resource: str,
+                        resource_id: str) -> PermissionDecision:
+        """Require object ownership for non-admin users; failures deny access."""
+        from ...database.models import File, RoleModel, Task, User
+
+        session = None
+        try:
+            session = self._session_factory()
+            user = session.get(User, user_id)
+            if user is None or not user.is_active:
+                return PermissionDecision(False, reason="用户不存在或已停用")
+            role = session.scalar(select(RoleModel).where(
+                RoleModel.name == user.role,
+                RoleModel.is_active.is_(True),
+            ))
+            if role is None:
+                return PermissionDecision(False, role=user.role, reason="角色不存在或已停用")
+            if role.name == "admin":
+                return PermissionDecision(True, role=role.name, reason="管理员访问")
+
+            model = {"file": File, "task": Task}.get(resource)
+            if model is None:
+                return PermissionDecision(False, role=role.name, reason="未知资源类型")
+            item = session.get(model, resource_id)
+            owner_id = item.owner_id if resource == "file" and item else (
+                item.user_id if item else None
+            )
+            if not owner_id or owner_id != user_id:
+                return PermissionDecision(False, role=role.name, reason="资源不属于当前用户")
+            return PermissionDecision(True, role=role.name, reason="资源所有权检查通过")
+        except Exception as exc:
+            logger.error("Database ownership check failed closed", exc_info=True)
+            return PermissionDecision(False, reason=f"权限服务不可用: {type(exc).__name__}")
+        finally:
+            if session is not None:
+                session.close()

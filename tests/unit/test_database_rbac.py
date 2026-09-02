@@ -51,6 +51,40 @@ def test_database_permissions_change_authorization_immediately():
     assert not resolver.check("missing", "file:read").allowed
 
 
+def test_database_ownership_is_enforced_for_files_and_tasks():
+    from office_agent.database.models import File, Task, User
+    from office_agent.security.permission.database_rbac import (
+        DatabasePermissionResolver,
+        seed_default_rbac,
+    )
+
+    factory = _session_factory()
+    seed_default_rbac(factory)
+    with factory() as session:
+        session.add_all([
+            User(id="user-1", username="alice", role="user", is_active=True),
+            User(id="user-2", username="bob", role="user", is_active=True),
+            User(id="admin-1", username="admin", role="admin", is_active=True),
+        ])
+        session.flush()
+        session.add(File(
+            id="file-1", filename="x.txt", original_name="x.txt",
+            file_type="text", extension=".txt", storage_path="uploads/x.txt",
+            owner_id="user-1",
+        ))
+        session.add(Task(
+            id="task-1", task_type="general", instruction="test", user_id="user-1"
+        ))
+        session.commit()
+
+    resolver = DatabasePermissionResolver(factory)
+    assert resolver.check_ownership("user-1", "file", "file-1").allowed
+    assert resolver.check_ownership("user-1", "task", "task-1").allowed
+    assert not resolver.check_ownership("user-2", "file", "file-1").allowed
+    assert not resolver.check_ownership("user-2", "task", "task-1").allowed
+    assert resolver.check_ownership("admin-1", "file", "file-1").allowed
+
+
 def test_legacy_static_rbac_fails_closed_for_unknown_roles_and_permissions():
     from office_agent.security.permission import has_permission
 
@@ -92,6 +126,44 @@ def test_auth_middleware_enforces_database_permission_on_sensitive_routes(
     )
     response = client.get(
         "/api/settings/model", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert response.status_code == 403
+    assert response.json()["error_code"] == "PERMISSION_DENIED"
+
+
+def test_auth_middleware_denies_cross_user_object_access(monkeypatch, tmp_path):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from office_agent.api.core.config import settings
+    from office_agent.api.middleware.auth import AuthMiddleware
+    from office_agent.security.auth import JWTManager
+    from office_agent.security.permission.database_rbac import PermissionDecision
+
+    secret = "test-secret-that-is-at-least-thirty-two-bytes"
+    monkeypatch.setattr(settings, "auth_enabled", True)
+    monkeypatch.setattr(settings, "jwt_secret", secret)
+    token = JWTManager(secret_key=secret, state_dir=tmp_path).create_access_token(
+        "user-2", "bob", role="user"
+    )
+
+    class Resolver:
+        def check(self, _user_id, required):
+            assert required == ("file:read",)
+            return PermissionDecision(True, role="user")
+
+        def check_ownership(self, user_id, resource, resource_id):
+            assert (user_id, resource, resource_id) == ("user-2", "file", "file-1")
+            return PermissionDecision(False, role="user", reason="资源不属于当前用户")
+
+    monkeypatch.setattr(
+        "office_agent.api.middleware.auth.DatabasePermissionResolver",
+        lambda: Resolver(),
+    )
+    app = FastAPI()
+    app.add_middleware(AuthMiddleware)
+    app.get("/api/file/file-1")(lambda: {"ok": True})
+    response = TestClient(app).get(
+        "/api/file/file-1", headers={"Authorization": f"Bearer {token}"}
     )
     assert response.status_code == 403
     assert response.json()["error_code"] == "PERMISSION_DENIED"
