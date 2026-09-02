@@ -46,7 +46,8 @@ def _display_stem(input_path: str, options: dict) -> str:
     return stem or "output"
 
 
-def _llm_format_config(instruction: str, input_path: str, options: dict):
+def _llm_format_config(instruction: str, input_path: str, options: dict,
+                       progress=None):
     """Translate conversational Word feedback into the engine's config schema."""
     try:
         from ...model_gateway.gateway import ModelGateway
@@ -69,9 +70,11 @@ def _llm_format_config(instruction: str, input_path: str, options: dict):
                   "只允许字段：font,en_font,size,line_spacing,alignment,first_line_indent,bold,italic,"
                   "space_before,space_after,headings。headings的键只能是1到4，值可含font,size,bold,italic,"
                   "alignment,line_spacing,numbering。只输出用户明确要求或合理修正所需字段；若无法确定输出{}。")
-        response = ModelGateway().chat(user_message=prompt, system_prompt=system,
-                                       task_type=AITaskType.DOCUMENT_UNDERSTANDING,
-                                       temperature=0.1, max_tokens=1200)
+        response = ModelGateway(
+            cancel_event=getattr(progress, "cancel_event", None)
+        ).chat(user_message=prompt, system_prompt=system,
+               task_type=AITaskType.DOCUMENT_UNDERSTANDING,
+               temperature=0.1, max_tokens=1200)
         if isinstance(options, dict):
             options["model_call"] = {
                 "called": True, "success": bool(response.success),
@@ -152,7 +155,11 @@ def process_word(input_path: str, output_path: str = None,
         # old implementation passed an opaque `instruction` key to WordService,
         # which is ignored by config_from_dict and made chat requests no-ops.
         if config_dict is None and instruction:
-            config_dict = _llm_format_config(instruction, input_path, options)
+            config_dict = _llm_format_config(
+                instruction, input_path, options, progress
+            )
+            if progress:
+                progress.check_cancelled()
         if config_dict is None and instruction:
             from ...parsers.format_parser import FormatRuleParser
             parsed = FormatRuleParser().parse(instruction)

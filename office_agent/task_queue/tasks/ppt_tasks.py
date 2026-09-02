@@ -96,14 +96,17 @@ def _safe_filename(text: str, ext: str = ".pptx") -> str:
     return os.path.join(OUTPUT_DIR, f"ppt_{unique}{ext}")
 
 
-def _understand_ppt_request(instruction: str, options: dict) -> str:
+def _understand_ppt_request(instruction: str, options: dict,
+                            progress=None) -> str:
     """Use the configured LLM to resolve follow-up PPT requests into a clear brief."""
     if not instruction:
         return instruction
     try:
         from ...model_gateway import ModelGateway
         history = options.get("history", [])[-8:] if isinstance(options, dict) else []
-        response = ModelGateway().chat(
+        response = ModelGateway(
+            cancel_event=getattr(progress, "cancel_event", None)
+        ).chat(
             user_message=json.dumps({
                 "request": instruction,
                 "previous_instruction": options.get("previous_instruction", ""),
@@ -161,7 +164,9 @@ def generate_ppt(outline: str = None, input_path: str = None,
         from ...ppt_agent.ppt_orchestrator import PPTOrchestrator
         try:
             from ...model_gateway import ModelGateway
-            model_gateway = ModelGateway()
+            model_gateway = ModelGateway(
+                cancel_event=getattr(progress, "cancel_event", None)
+            )
             logger.info("ModelGateway已初始化，将使用AI生成PPT内容")
         except Exception as e:
             logger.warning(f"ModelGateway初始化失败，将使用模板: {e}")
@@ -194,7 +199,11 @@ def generate_ppt(outline: str = None, input_path: str = None,
         )
 
         # 确定主题和输出路径
-        effective_instruction = _understand_ppt_request(instruction or outline or "", options)
+        effective_instruction = _understand_ppt_request(
+            instruction or outline or "", options, progress
+        )
+        if progress:
+            progress.check_cancelled()
         # The LLM-resolved brief must take precedence during follow-ups.
         theme = effective_instruction or outline or "演示文稿"
         style = template_type or "professional"

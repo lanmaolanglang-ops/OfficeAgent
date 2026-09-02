@@ -1,5 +1,6 @@
 from office_agent.model_gateway.failover import FailoverManager
 from office_agent.models.model_schemas import AITaskType, ModelResponse
+import threading
 
 
 class _Config:
@@ -97,3 +98,56 @@ def test_permanent_exception_is_not_retried():
     gateway = FailoverManager(manager, max_retries=3, retry_delay=0)
     gateway.execute_with_failover(AITaskType.SIMPLE_TEXT, action, model_ids=["primary"])
     assert calls == 1
+
+
+def test_cancellation_interrupts_retry_wait_without_trying_backup():
+    manager = _Manager()
+
+    class CancelDuringWait:
+        def __init__(self):
+            self.cancelled = False
+            self.waited = []
+
+        def is_set(self):
+            return self.cancelled
+
+        def wait(self, timeout):
+            self.waited.append(timeout)
+            self.cancelled = True
+            return True
+
+    cancel_event = CancelDuringWait()
+    gateway = FailoverManager(manager, max_retries=3, retry_delay=5)
+    result = gateway.execute_with_failover(
+        AITaskType.SIMPLE_TEXT,
+        lambda client: client.next(),
+        cancel_event=cancel_event,
+    )
+
+    assert result.error == "任务已取消"
+    assert result.raw_response["_office_agent"]["cancelled"] is True
+    assert result.raw_response["_office_agent"]["attempts"] == 1
+    assert cancel_event.waited == [5]
+    assert manager.clients["primary"].calls == 1
+    assert manager.clients["backup"].calls == 0
+
+
+def test_cancellation_before_failover_makes_no_model_call():
+    manager = _Manager()
+    cancel_event = threading.Event()
+    cancel_event.set()
+    gateway = FailoverManager(manager, max_retries=3, retry_delay=5)
+
+    result = gateway.execute_with_failover(
+        AITaskType.SIMPLE_TEXT,
+        lambda client: client.next(),
+        cancel_event=cancel_event,
+    )
+
+    assert result.raw_response["_office_agent"] == {
+        "attempts": 0,
+        "attempted_models": [],
+        "fallback_used": False,
+        "cancelled": True,
+    }
+    assert manager.clients["primary"].calls == 0

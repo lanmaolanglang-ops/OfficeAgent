@@ -23,7 +23,8 @@ OUTPUT_DIR = os.path.join(
     "outputs")
 
 
-def _understand_excel_request(instruction: str, options: dict) -> str:
+def _understand_excel_request(instruction: str, options: dict,
+                              progress=None) -> str:
     """Normalize conversational follow-ups while retaining the original request."""
     if not instruction:
         return instruction
@@ -36,7 +37,9 @@ def _understand_excel_request(instruction: str, options: dict) -> str:
             "is_follow_up": bool(options.get("is_follow_up")),
             "history": history,
         }, ensure_ascii=False)
-        response = ModelGateway().chat(
+        response = ModelGateway(
+            cancel_event=getattr(progress, "cancel_event", None)
+        ).chat(
             user_message=prompt,
             system_prompt=("你是Excel任务解析器。将用户要求改写成一条明确、可执行的Excel操作指令。"
                            "保留原始字段、工作表、范围、公式、排序、筛选、图表和格式要求。"
@@ -171,7 +174,11 @@ def analyze_excel(input_path: str, output_path: str = None,
 
         try:
             # 调用真实存在的 Excel 处理入口：输入 xlsx -> 分析/公式/图表/格式化 -> 输出 xlsx
-            effective_instruction = _understand_excel_request(instruction, options)
+            effective_instruction = _understand_excel_request(
+                instruction, options, progress
+            )
+            if progress:
+                progress.check_cancelled()
             process_result = orchestrator.process_file(
                 file_path=input_path,
                 task=effective_instruction,

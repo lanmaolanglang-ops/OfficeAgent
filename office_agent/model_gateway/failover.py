@@ -25,6 +25,7 @@ class FailoverManager:
                               task_type: AITaskType,
                               action: Callable[[Any], ModelResponse],
                               model_ids: Optional[list[str]] = None,
+                              cancel_event=None,
                               **kwargs) -> ModelResponse:
         """
         执行调用，失败时自动切换模型
@@ -35,6 +36,9 @@ class FailoverManager:
             model_ids: 指定模型ID列表（优先级），不指定则按路由
             **kwargs: 传递给 action 的额外参数
         """
+        if self._is_cancelled(cancel_event):
+            return self._cancelled_response(0, [])
+
         # 获取候选模型列表
         if model_ids is not None:
             candidates = model_ids
@@ -70,6 +74,8 @@ class FailoverManager:
         attempted_models = []
         
         for model_id in available:
+            if self._is_cancelled(cancel_event):
+                return self._cancelled_response(attempts, attempted_models)
             attempted_models.append(model_id)
             client = self.model_manager.get_client(model_id)
             if not client:
@@ -78,9 +84,13 @@ class FailoverManager:
             
             # 尝试调用（支持重试）
             for attempt in range(self.max_retries):
+                if self._is_cancelled(cancel_event):
+                    return self._cancelled_response(attempts, attempted_models)
                 try:
                     attempts += 1
                     result = action(client, **kwargs)
+                    if self._is_cancelled(cancel_event):
+                        return self._cancelled_response(attempts, attempted_models)
                     if result.success:
                         raw = dict(result.raw_response) if isinstance(result.raw_response, dict) else {}
                         raw["_office_agent"] = {
@@ -96,7 +106,10 @@ class FailoverManager:
                         # 鉴权/参数等确定性错误重试不会恢复，直接切换备用模型。
                         if (attempt < self.max_retries - 1
                                 and self._is_retryable_error(result.error)):
-                            time.sleep(self.retry_delay)
+                            if self._wait_for_retry(cancel_event):
+                                return self._cancelled_response(
+                                    attempts, attempted_models
+                                )
                             continue
                         break
                 except Exception as e:
@@ -104,7 +117,10 @@ class FailoverManager:
                     self._record_failure(model_id)
                     if (attempt < self.max_retries - 1
                             and self._is_retryable_error(str(e))):
-                        time.sleep(self.retry_delay)
+                        if self._wait_for_retry(cancel_event):
+                            return self._cancelled_response(
+                                attempts, attempted_models
+                            )
                         continue
                     break
         
@@ -116,6 +132,33 @@ class FailoverManager:
                 "attempts": attempts,
                 "attempted_models": attempted_models,
                 "fallback_used": len(attempted_models) > 1,
+            }},
+        )
+
+    @staticmethod
+    def _is_cancelled(cancel_event) -> bool:
+        return bool(cancel_event is not None and cancel_event.is_set())
+
+    def _wait_for_retry(self, cancel_event) -> bool:
+        """Wait between retries, returning immediately when cancellation wins."""
+        if self.retry_delay <= 0:
+            return self._is_cancelled(cancel_event)
+        if cancel_event is not None:
+            return bool(cancel_event.wait(self.retry_delay))
+        time.sleep(self.retry_delay)
+        return False
+
+    @staticmethod
+    def _cancelled_response(attempts: int,
+                            attempted_models: list[str]) -> ModelResponse:
+        return ModelResponse(
+            success=False,
+            error="任务已取消",
+            raw_response={"_office_agent": {
+                "attempts": attempts,
+                "attempted_models": list(attempted_models),
+                "fallback_used": len(attempted_models) > 1,
+                "cancelled": True,
             }},
         )
 

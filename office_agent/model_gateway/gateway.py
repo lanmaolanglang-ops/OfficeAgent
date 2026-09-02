@@ -2,7 +2,7 @@
 Model Gateway - 模型网关统一入口
 提供统一的 AI 调用接口，自动路由 + 故障转移
 """
-from typing import Optional, Callable
+from typing import Optional
 
 from ..models.model_schemas import (
     ModelConfig, ModelProvider, ModelResponse, ChatMessage, AITaskType,
@@ -36,10 +36,11 @@ class ModelGateway:
         result = gateway.analyze_image("template.png", "分析PPT设计风格")
     """
     
-    def __init__(self, config_dir: Optional[str] = None):
+    def __init__(self, config_dir: Optional[str] = None, cancel_event=None):
         self.manager = ModelManager(config_dir)
         self.router = ModelRouter(self.manager)
         self.failover = FailoverManager(self.manager)
+        self.cancel_event = cancel_event
         self.last_call = None
     
     # === 配置管理 ===
@@ -214,6 +215,7 @@ class ModelGateway:
             task_type=task_type,
             action=action,
             model_ids=model_ids,
+            cancel_event=getattr(self, "cancel_event", None),
         )
         raw = response.raw_response if response and isinstance(
             getattr(response, "raw_response", None), dict
@@ -225,6 +227,7 @@ class ModelGateway:
             "model": getattr(response, "model_used", None),
             "provider": getattr(response, "provider", None),
             "fallback_used": bool(call_meta.get("fallback_used", False)),
+            "cancelled": bool(call_meta.get("cancelled", False)),
             "error": getattr(response, "error", "") if response else "no response",
             "attempts": int(call_meta.get("attempts", 1)),
         }
@@ -246,6 +249,7 @@ class ModelGateway:
             task_type=AITaskType.DOCUMENT_UNDERSTANDING,
             action=action,
             model_ids=model_ids,
+            cancel_event=getattr(self, "cancel_event", None),
         )
     
     def analyze_image(self, image_path: str, prompt: str,
@@ -265,6 +269,7 @@ class ModelGateway:
             task_type=AITaskType.VISION,
             action=action,
             model_ids=model_ids,
+            cancel_event=getattr(self, "cancel_event", None),
         )
     
     def generate_code(self, prompt: str,

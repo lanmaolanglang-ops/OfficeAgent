@@ -443,6 +443,10 @@ class LocalWorker:
     def _schedule_quality_revision(self, task_id: str, task, result: dict,
                                    output_ids: list):
         """Create a bounded child task when the generated artifact fails QA."""
+        with self._lock:
+            cancel_event = self._cancel_events.get(task_id)
+        if cancel_event is not None and cancel_event.is_set():
+            return None
         if not task or (task.revision_number or 1) >= 3:
             return None
         try:
@@ -463,7 +467,7 @@ class LocalWorker:
         model_call = {"called": False, "success": False, "fallback_used": True}
         try:
             from ..model_gateway import ModelGateway
-            response = ModelGateway().chat(
+            response = ModelGateway(cancel_event=cancel_event).chat(
                 user_message=json.dumps({
                     "original_instruction": task.instruction,
                     "quality_issues": issues,
@@ -482,6 +486,8 @@ class LocalWorker:
         except Exception as exc:
             logger.warning("质量修订LLM调用失败，使用规则修订指令: %s", exc)
         result["quality_revision_model_call"] = model_call
+        if cancel_event is not None and cancel_event.is_set():
+            return None
         instruction = llm_instruction
         child_options = {**options, "input_file_ids": output_ids,
                          "previous_instruction": task.instruction,
