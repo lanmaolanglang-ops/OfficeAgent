@@ -66,9 +66,10 @@ class AccessController:
     4. 访问审计回调
     """
 
-    def __init__(self):
+    def __init__(self, permission_checker: Callable[[AccessContext, str], bool] | None = None):
         self._custom_policies: list[Callable[[AccessContext], AccessResult | None]] = []
         self._audit_callback: Optional[Callable[[AccessContext, AccessResult], None]] = None
+        self._permission_checker = permission_checker
         # 资源所有者映射（生产环境用数据库）
         self._resource_owners: dict[str, str] = {}  # resource_id -> owner_id
 
@@ -123,7 +124,16 @@ class AccessController:
             owner_id = self._resource_owners.get(resource_id)
 
         perm_key = f"{resource_type}:{ctx.action}"
-        if not has_permission(ctx.role, perm_key):
+        try:
+            permitted = (
+                self._permission_checker(ctx, perm_key)
+                if self._permission_checker is not None
+                else has_permission(ctx.role, perm_key)
+            )
+        except Exception:
+            logger.error("Permission resolver failed closed", exc_info=True)
+            permitted = False
+        if not permitted:
             result = AccessResult(
                 decision=AccessDecision.DENY,
                 reason=f"角色 '{ctx.role}' 没有权限 '{perm_key}'",
@@ -216,5 +226,11 @@ def get_access_controller() -> AccessController:
     """获取全局访问控制器"""
     global _default_controller
     if _default_controller is None:
-        _default_controller = AccessController()
+        from .database_rbac import DatabasePermissionResolver
+        resolver = DatabasePermissionResolver()
+        _default_controller = AccessController(
+            permission_checker=lambda ctx, permission: resolver.check(
+                ctx.user_id, permission
+            ).allowed
+        )
     return _default_controller

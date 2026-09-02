@@ -8,6 +8,9 @@ from .access_control import (
     AccessController, AccessContext, AccessResult,
     AccessDecision, get_access_controller,
 )
+from .database_rbac import (
+    DatabasePermissionResolver, PermissionDecision, seed_default_rbac,
+)
 from .agent_permissions import (
     ToolRegistry, ToolInfo, AgentPermissionManager,
     RiskLevel, DEFAULT_TOOLS, AGENT_TOOL_PERMISSIONS,
@@ -19,6 +22,7 @@ __all__ = [
     "has_permission", "get_role_permissions", "get_all_permissions", "get_all_roles",
     "AccessController", "AccessContext", "AccessResult",
     "AccessDecision", "get_access_controller",
+    "DatabasePermissionResolver", "PermissionDecision", "seed_default_rbac",
     "ToolRegistry", "ToolInfo", "AgentPermissionManager",
     "RiskLevel", "DEFAULT_TOOLS", "AGENT_TOOL_PERMISSIONS",
 ]

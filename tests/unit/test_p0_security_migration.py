@@ -180,6 +180,12 @@ def test_security_migration_upgrades_and_rolls_back(tmp_path):
         )).scalar_one() == "legacy"
         assert "security_users" not in inspect(connection).get_table_names()
         assert "is_verified" in {c["name"] for c in inspect(connection).get_columns("user")}
+        assert set(connection.execute(text(
+            "SELECT name FROM security_roles"
+        )).scalars()) >= {"admin", "user", "guest"}
+        assert connection.execute(text(
+            "SELECT COUNT(*) FROM security_permissions"
+        )).scalar_one() >= 20
     command.downgrade(cfg, "006_prompt_version_uniqueness")
     assert "security_users" in inspect(engine).get_table_names()
     assert "is_verified" not in {c["name"] for c in inspect(engine).get_columns("user")}

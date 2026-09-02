@@ -6,7 +6,6 @@ from __future__ import annotations
 
 from enum import Enum
 from dataclasses import dataclass, field
-from typing import Optional
 
 
 # ========== 资源类型 ==========
@@ -176,15 +175,12 @@ ROLE_INFO: dict[str, RoleInfo] = {
 
 def get_role_permissions(role: str) -> set[str]:
     """获取角色的权限集合"""
-    return ROLE_PERMISSIONS.get(role, ROLE_PERMISSIONS[Role.GUEST])
+    return ROLE_PERMISSIONS.get(role, set())
 
 
 def has_permission(role: str, permission: str) -> bool:
     """检查角色是否拥有某权限"""
     perms = get_role_permissions(role)
-    # 管理员拥有所有权限
-    if role == Role.ADMIN:
-        return True
     return permission in perms
 
 

@@ -32,6 +32,7 @@ from office_agent.api.router import (
     health_router, chat_router, file_router, task_router, agent_router,
     config_router,
     settings_router,
+    security_router,
 )
 from office_agent.database import init_db as db_init, DATABASE_URL
 
@@ -109,6 +110,7 @@ def create_app() -> FastAPI:
     app.include_router(agent_router)
     app.include_router(config_router)
     app.include_router(settings_router)
+    app.include_router(security_router)
 
     # Metrics 端点
     @app.get("/metrics", summary="Prometheus 指标", tags=["监控"])
@@ -265,6 +267,8 @@ def create_app() -> FastAPI:
         try:
             from office_agent.security.auth import TokenManager
             from office_agent.security import get_audit_logger
+            from office_agent.security.permission import seed_default_rbac
+            seed_default_rbac()
             token_manager = TokenManager()
             token_manager.import_legacy_api_keys(settings.api_keys)
             token_manager.cleanup_expired()

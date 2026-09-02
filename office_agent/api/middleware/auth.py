@@ -12,6 +12,10 @@ from ..core.config import settings
 from ...security.auth.jwt import JWTManager
 from ...security.auth.token import TokenManager
 from ...security.audit import AuditAction, get_audit_logger
+from ...security.permission.database_rbac import (
+    DatabasePermissionResolver,
+    PermissionDecision,
+)
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
@@ -27,6 +31,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         super().__init__(app)
         self._jwt: JWTManager | None = None
         self._tokens: TokenManager | None = None
+        self._permissions: DatabasePermissionResolver | None = None
 
     def _get_jwt(self) -> JWTManager:
         if self._jwt is None:
@@ -37,6 +42,49 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if self._tokens is None:
             self._tokens = TokenManager(jwt_manager=self._get_jwt())
         return self._tokens
+
+    def _get_permissions(self) -> DatabasePermissionResolver:
+        if self._permissions is None:
+            self._permissions = DatabasePermissionResolver()
+        return self._permissions
+
+    @staticmethod
+    def _required_permissions(request: Request) -> tuple[str, ...]:
+        path = request.url.path
+        if path == "/metrics" or path.startswith((
+            "/api/logs", "/api/trace", "/api/metrics",
+        )):
+            return ("admin:audit",)
+        if path.startswith(("/api/config", "/api/settings")):
+            return ("admin:config",)
+        if path.startswith("/api/security"):
+            return ("admin:user",)
+        return ()
+
+    def _authorize(self, request: Request, user_id: str) -> JSONResponse | None:
+        required = self._required_permissions(request)
+        if not required:
+            return None
+        try:
+            decision = self._get_permissions().check(user_id, required)
+        except Exception as exc:
+            decision = PermissionDecision(
+                False, reason=f"权限服务不可用: {type(exc).__name__}"
+            )
+        if decision.allowed:
+            request.state.user_role = decision.role
+            return None
+        message = decision.reason or "权限不足"
+        self._audit(request, AuditAction.ACCESS_DENIED, "denied", user_id, message)
+        return JSONResponse(
+            status_code=403,
+            content={
+                "success": False,
+                "error_code": "PERMISSION_DENIED",
+                "message": message,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            },
+        )
 
     @staticmethod
     def _audit(request: Request, action: AuditAction, status: str,
@@ -63,7 +111,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
             elif "download" in path:
                 action = AuditAction.FILE_DOWNLOAD
         elif request.method in {"POST", "PUT", "PATCH", "DELETE"} and path.startswith(
-            ("/api/settings", "/api/config")
+            ("/api/settings", "/api/config", "/api/security")
         ):
             action = AuditAction.CONFIG_CHANGE
         if action is not None:
@@ -105,6 +153,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
             request.state.user_role = payload.role
             request.state.request_id = str(uuid.uuid4())
             self._audit(request, AuditAction.ACCESS_GRANTED, "success", payload.user_id)
+            denied = self._authorize(request, payload.user_id)
+            if denied is not None:
+                return denied
             return await self._call_and_audit(request, call_next)
 
         # 检查 API Key
@@ -129,6 +180,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
         request.state.user_role = info.role
         request.state.request_id = str(uuid.uuid4())
         self._audit(request, AuditAction.ACCESS_GRANTED, "success", info.user_id)
+
+        denied = self._authorize(request, info.user_id)
+        if denied is not None:
+            return denied
 
         return await self._call_and_audit(request, call_next)
 

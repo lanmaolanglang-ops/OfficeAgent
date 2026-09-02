@@ -23,6 +23,7 @@ from .permission import (
     has_permission, get_role_permissions,
     AccessController, AccessContext, AccessResult, AccessDecision,
     get_access_controller,
+    DatabasePermissionResolver, PermissionDecision, seed_default_rbac,
     ToolRegistry, ToolInfo, AgentPermissionManager, RiskLevel,
 )
 from .file_security import (
@@ -57,6 +58,7 @@ __all__ = [
     "has_permission", "get_role_permissions",
     "AccessController", "AccessContext", "AccessResult", "AccessDecision",
     "get_access_controller",
+    "DatabasePermissionResolver", "PermissionDecision", "seed_default_rbac",
     "ToolRegistry", "ToolInfo", "AgentPermissionManager", "RiskLevel",
     # 文件安全
     "FileScanner", "ScanResult", "ThreatLevel",
