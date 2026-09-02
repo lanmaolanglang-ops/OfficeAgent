@@ -27,6 +27,7 @@ from ..models.model_schemas import (
 from .clients import (
     BaseModelClient, OpenAIClient, DoubaoClient, ClaudeClient, GeminiClient
 )
+from ..runtime_config import get_data_root
 
 logger = logging.getLogger("office_agent.model_manager")
 
@@ -64,8 +65,7 @@ def resolve_model_config_dir(config_dir: Optional[str] = None) -> Path:
         return Path(config_dir)
 
     legacy = Path.home() / ".office_agent"
-    configured_root = os.environ.get("OFFICE_AGENT_DATA_DIR")
-    target = Path(configured_root) if configured_root else legacy
+    target = get_data_root()
     target.mkdir(parents=True, exist_ok=True)
 
     if target != legacy and legacy.exists():

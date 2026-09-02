@@ -15,19 +15,16 @@ import uuid
 import logging
 import json
 from ...security.error_sanitizer import sanitize_error
+from ...runtime_config import get_output_dir
 
 logger = logging.getLogger("office_agent.tasks.word")
 
-OUTPUT_DIR = os.path.join(
-    os.environ.get("OFFICE_AGENT_DATA_DIR") or os.path.expanduser("~/.office_agent"),
-    "outputs")
-
-
 def _safe_output(ext: str = ".docx") -> str:
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    output_dir = str(get_output_dir())
+    os.makedirs(output_dir, exist_ok=True)
     # 时间戳只精确到秒，normal 队列并发下同秒完成的任务会写同一路径互相覆盖
     unique = f"{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
-    return os.path.join(OUTPUT_DIR, f"word_{unique}{ext}")
+    return os.path.join(output_dir, f"word_{unique}{ext}")
 
 
 def _display_stem(input_path: str, options: dict) -> str:

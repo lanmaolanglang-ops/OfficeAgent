@@ -6,6 +6,7 @@ import logging
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from ...security.error_sanitizer import sanitize_error
+from ...runtime_config import get_data_root
 
 logger = logging.getLogger("office_agent.tasks.file")
 
@@ -187,9 +188,7 @@ def cleanup_temp_files(progress=None, _task_id: str = None, **kwargs) -> dict:
         if progress:
             progress.update(10, "扫描临时文件")
 
-        data_root = Path(
-            os.environ.get("OFFICE_AGENT_DATA_DIR") or os.path.expanduser("~/.office_agent")
-        )
+        data_root = get_data_root()
         dirs_to_clean = [
             data_root / "outputs",
             data_root / "temp",
@@ -259,9 +258,7 @@ def system_health_check(progress=None, _task_id: str = None, **kwargs) -> dict:
         if progress:
             progress.update(20, "检查存储")
 
-        data_dir = Path(
-            os.environ.get("OFFICE_AGENT_DATA_DIR") or os.path.expanduser("~/.office_agent")
-        )
+        data_dir = get_data_root()
         if data_dir.exists():
             total_size = sum(f.stat().st_size for f in data_dir.rglob("*") if f.is_file())
             result["checks"]["storage_mb"] = round(total_size / 1024 / 1024, 2)

@@ -17,6 +17,9 @@ from typing import Optional, Callable
 import urllib.request
 import urllib.error
 
+from ._version import __version__
+from .runtime_config import get_desktop_data_root
+
 logger = logging.getLogger("office_agent.runtime_manager")
 
 
@@ -33,7 +36,7 @@ class AppStatus(str, Enum):
 class AppConfig:
     """应用配置"""
     app_name: str = "OfficeAgent"
-    app_version: str = "0.51.1"
+    app_version: str = __version__
     host: str = "127.0.0.1"
     port: int = 8765
     backend_module: str = "office_agent.api.main:app"
@@ -53,13 +56,7 @@ class AppConfig:
 
     def __post_init__(self):
         if self.data_dir is None:
-            if sys.platform == "win32":
-                base = Path(os.environ.get("APPDATA", Path.home())) / "OfficeAgent"
-            elif sys.platform == "darwin":
-                base = Path.home() / "Library" / "Application Support" / "OfficeAgent"
-            else:
-                base = Path.home() / ".local" / "share" / "OfficeAgent"
-            self.data_dir = base
+            self.data_dir = get_desktop_data_root()
         if self.log_dir is None:
             self.log_dir = self.data_dir / "logs"
         if self.backend_dir is None:

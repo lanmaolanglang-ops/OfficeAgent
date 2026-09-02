@@ -35,13 +35,13 @@ from office_agent.api.router import (
     security_router,
 )
 from office_agent.database import init_db as db_init, DATABASE_URL
+from office_agent.runtime_config import get_data_root, get_log_dir
 
 # 初始化日志系统（在创建 app 之前）
 from office_agent.logging_system import setup_logging, get_logger
 setup_logging(
     log_level=os.environ.get("LOG_LEVEL", "INFO"),
-    log_dir=(os.environ.get("LOG_DIR") or os.environ.get("OFFICE_AGENT_LOG_DIR")
-             or os.path.expanduser("~/.office_agent/logs")),
+    log_dir=str(get_log_dir()),
     enable_db_logging=os.environ.get("ENABLE_DATABASE_LOG", "true").lower() == "true",
     enable_file_logging=True,
 )
@@ -231,9 +231,7 @@ def create_app() -> FastAPI:
         import sys as _sys
         if os.environ.get("OFFICE_AGENT_LOCAL") == "1" or getattr(_sys, "frozen", False):
             try:
-                from pathlib import Path as _Path
-                pid_path = _Path(os.environ.get("OFFICE_AGENT_DATA_DIR")
-                                 or os.path.expanduser("~/.office_agent")) / "backend.pid"
+                pid_path = get_data_root() / "backend.pid"
                 pid_path.parent.mkdir(parents=True, exist_ok=True)
                 pid_path.write_text(str(os.getpid()), encoding="utf-8")
                 app.state._pid_file = str(pid_path)

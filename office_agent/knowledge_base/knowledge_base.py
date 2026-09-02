@@ -20,6 +20,7 @@ from .document_parser import DocumentParser
 from .text_chunker import TextChunker, ChunkConfig
 from .embeddings import TfidfEmbedder, BaseEmbedder
 from .vector_store import VectorStore
+from ..runtime_config import get_data_root
 
 logger = logging.getLogger("office_agent.knowledge_base")
 
@@ -44,8 +45,7 @@ def _atomic_json_write(path: str, data: Any, *, indent=None) -> None:
 
 
 def _default_kb_storage_dir() -> str:
-    data_root = os.environ.get("OFFICE_AGENT_DATA_DIR") or os.path.expanduser("~/.office_agent")
-    return os.path.join(data_root, "kb_data")
+    return str(get_data_root() / "kb_data")
 
 
 def _locked(method):

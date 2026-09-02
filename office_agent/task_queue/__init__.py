@@ -22,9 +22,7 @@ Office Agent Task Queue - 异步任务系统
 from .config import config
 from .worker import get_worker, LocalWorker
 from .tasks import TASK_REGISTRY, TASK_TYPE_TO_QUEUE, queue_name_for_task_type
-
-__version__ = "0.51.1"
-
+from .._version import __version__
 
 def submit_task(task_name: str, args: tuple = (), kwargs: dict = None,
                 priority: str = "normal", task_id: str = None,
@@ -100,6 +98,7 @@ def init_worker():
 
 
 __all__ = [
+    "__version__",
     "config", "get_worker", "LocalWorker",
     "submit_task", "cancel_task", "init_worker", "TASK_REGISTRY",
     "TASK_TYPE_TO_QUEUE", "queue_name_for_task_type",

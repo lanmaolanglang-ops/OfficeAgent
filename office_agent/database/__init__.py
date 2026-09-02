@@ -19,9 +19,10 @@ SQLAlchemy 2.0 + Alembic 数据持久化层。
 from .connection import engine, init_db, DATABASE_URL
 from .session import SessionLocal, session_scope, get_db
 from .base import Base
+from .._version import __version__
 
-__version__ = "0.51.1"
 __all__ = [
+    "__version__",
     "engine", "init_db", "DATABASE_URL",
     "SessionLocal", "session_scope", "get_db",
     "Base",

@@ -10,13 +10,12 @@ import os
 import logging
 import threading
 import time
-from typing import Optional
 
 from .handlers import (
     create_console_handler, create_file_handler,
     create_error_file_handler, DatabaseLogHandler, ModelCallLogHandler,
 )
-from .context import get_context_dict
+from ..runtime_config import get_log_dir
 
 # 根 logger 名称
 ROOT_LOGGER_NAME = "office_agent"
@@ -57,8 +56,7 @@ def setup_logging(
     level = getattr(logging, level_name.upper(), logging.INFO)
 
     if log_dir is None:
-        log_dir = (os.environ.get("LOG_DIR") or os.environ.get("OFFICE_AGENT_LOG_DIR")
-                  or os.path.expanduser("~/.office_agent/logs"))
+        log_dir = str(get_log_dir())
 
     # 根 logger
     root = logging.getLogger(ROOT_LOGGER_NAME)

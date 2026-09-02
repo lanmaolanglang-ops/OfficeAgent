@@ -1,5 +1,5 @@
 """
-Security & Permission Layer v0.51.1
+Security & Permission Layer
 安全与权限控制系统
 
 包含：
@@ -42,10 +42,10 @@ from .audit import (
     AuditLogger, AuditEntry, AuditAction, RiskLevel as AuditRiskLevel,
     get_audit_logger,
 )
-
-__version__ = "0.51.1"
+from .._version import __version__
 
 __all__ = [
+    "__version__",
     # 配置
     "SecurityConfig", "get_security_config", "set_security_config",
     # 认证

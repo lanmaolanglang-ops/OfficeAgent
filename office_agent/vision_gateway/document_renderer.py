@@ -11,6 +11,7 @@ import logging
 import shutil
 import tempfile
 import uuid
+from functools import lru_cache
 from pathlib import Path
 from typing import List, Optional
 
@@ -18,6 +19,34 @@ from .vision_models import ImageInput, DocumentPage
 
 
 logger = logging.getLogger(__name__)
+
+
+_FONT_CANDIDATES = (
+    "msyh.ttc",
+    "Microsoft YaHei.ttf",
+    "/System/Library/Fonts/PingFang.ttc",
+    "/System/Library/Fonts/STHeiti Medium.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "DejaVuSans.ttf",
+)
+
+
+@lru_cache(maxsize=16)
+def _load_placeholder_font(size: int):
+    """Load a user-selected or platform font, falling back without failing rendering."""
+    from PIL import ImageFont
+
+    configured = os.environ.get("OFFICE_AGENT_FONT", "").strip()
+    candidates = (configured, *_FONT_CANDIDATES) if configured else _FONT_CANDIDATES
+    for candidate in candidates:
+        try:
+            return ImageFont.truetype(candidate, size)
+        except (OSError, ValueError):
+            continue
+    logger.warning("未找到可用的 TrueType 字体，PPT 占位图将使用 Pillow 默认字体")
+    return ImageFont.load_default()
 
 
 class DocumentRenderer:
@@ -242,18 +271,13 @@ class DocumentRenderer:
     def _create_placeholder_image(self, page_num: int, texts: List[str],
                                    width: int = 960, height: int = 540) -> str:
         """创建占位图片（用于无法渲染的PPT）"""
-        from PIL import Image, ImageDraw, ImageFont
+        from PIL import Image, ImageDraw
 
         img = Image.new("RGB", (width, height), "#FFFFFF")
         draw = ImageDraw.Draw(img)
 
-        # 标题
-        try:
-            font_title = ImageFont.truetype("msyh.ttc", 24)
-            font_body = ImageFont.truetype("msyh.ttc", 14)
-        except Exception:
-            font_title = ImageFont.load_default()
-            font_body = ImageFont.load_default()
+        font_title = _load_placeholder_font(24)
+        font_body = _load_placeholder_font(14)
 
         draw.text((40, 30), f"第 {page_num} 页", fill="#1F4E79", font=font_title)
         draw.line([(40, 65), (width - 40, 65)], fill="#1F4E79", width=2)

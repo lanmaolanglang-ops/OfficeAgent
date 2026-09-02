@@ -4,12 +4,13 @@ API配置
 import os
 from dataclasses import dataclass, field
 from typing import List
-from ...runtime_config import ALLOWED_UPLOAD_EXTENSIONS, get_data_root
-
-# 桌面启动器通过 OFFICE_AGENT_DATA_DIR 把所有本地数据统一重定向到
-# %APPDATA%/OfficeAgent；未设置时保持历史行为（~/.office_agent）。
-_DATA_ROOT = str(get_data_root())
-
+from ...runtime_config import (
+    ALLOWED_UPLOAD_EXTENSIONS,
+    get_log_dir,
+    get_output_dir,
+    get_upload_dir,
+)
+from ..._version import __version__
 
 def _env_bool(name: str, default: bool = False) -> bool:
     value = os.environ.get(name)
@@ -36,12 +37,12 @@ class APIConfig:
     port: int = 8765
     debug: bool = False
     title: str = "Office Agent API"
-    version: str = "0.51.1"
+    version: str = __version__
     description: str = "智能办公自动化Agent统一API服务"
 
     # 存储
-    upload_dir: str = field(default_factory=lambda: os.path.join(_DATA_ROOT, "uploads"))
-    output_dir: str = field(default_factory=lambda: os.path.join(_DATA_ROOT, "outputs"))
+    upload_dir: str = field(default_factory=lambda: str(get_upload_dir()))
+    output_dir: str = field(default_factory=lambda: str(get_output_dir()))
     max_file_size: int = 100 * 1024 * 1024  # 100MB
 
     # 允许的文件类型
@@ -69,7 +70,7 @@ class APIConfig:
     cors_headers: List[str] = field(default_factory=lambda: ["*"])
 
     # 日志
-    log_dir: str = field(default_factory=lambda: os.path.join(_DATA_ROOT, "logs"))
+    log_dir: str = field(default_factory=lambda: str(get_log_dir()))
     log_requests: bool = True
 
     def ensure_dirs(self):
@@ -93,14 +94,12 @@ class APIConfig:
             port=int(os.environ.get("OFFICE_AGENT_PORT", "8765")),
             debug=_env_bool("OFFICE_AGENT_DEBUG", False),
             upload_dir=os.environ.get(
-                "OFFICE_AGENT_UPLOAD_DIR", os.path.join(_DATA_ROOT, "uploads")
+                "OFFICE_AGENT_UPLOAD_DIR", str(get_upload_dir())
             ),
             output_dir=os.environ.get(
-                "OFFICE_AGENT_OUTPUT_DIR", os.path.join(_DATA_ROOT, "outputs")
+                "OFFICE_AGENT_OUTPUT_DIR", str(get_output_dir())
             ),
-            log_dir=os.environ.get(
-                "OFFICE_AGENT_LOG_DIR", os.path.join(_DATA_ROOT, "logs")
-            ),
+            log_dir=str(get_log_dir()),
             auth_enabled=auth_enabled,
             api_keys=api_keys,
             jwt_secret=jwt_secret,

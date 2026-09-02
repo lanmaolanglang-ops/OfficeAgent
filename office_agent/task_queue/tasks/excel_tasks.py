@@ -15,13 +15,9 @@ import uuid
 import logging
 import json
 from ...security.error_sanitizer import sanitize_error
+from ...runtime_config import get_output_dir
 
 logger = logging.getLogger("office_agent.tasks.excel")
-
-OUTPUT_DIR = os.path.join(
-    os.environ.get("OFFICE_AGENT_DATA_DIR") or os.path.expanduser("~/.office_agent"),
-    "outputs")
-
 
 def _understand_excel_request(instruction: str, options: dict,
                               progress=None) -> str:
@@ -66,10 +62,11 @@ def _understand_excel_request(instruction: str, options: dict,
 
 
 def _safe_output(ext: str = ".xlsx") -> str:
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    output_dir = str(get_output_dir())
+    os.makedirs(output_dir, exist_ok=True)
     # 时间戳只精确到秒，normal 队列并发下同秒完成的任务会写同一路径互相覆盖
     unique = f"{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
-    return os.path.join(OUTPUT_DIR, f"excel_{unique}{ext}")
+    return os.path.join(output_dir, f"excel_{unique}{ext}")
 
 
 def _display_stem(input_path: str, options: dict) -> str:
@@ -124,8 +121,9 @@ def _csv_to_xlsx(csv_path: str) -> str:
     df = _read_csv_any_encoding(csv_path)
     df = df.where(pd.notnull(df), None)
     df = df.map(_sanitize_csv_cell) if hasattr(df, "map") else df.applymap(_sanitize_csv_cell)
-    tmp = os.path.join(OUTPUT_DIR, f"csv_{int(time.time() * 1000)}_{os.getpid()}.xlsx")
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    output_dir = str(get_output_dir())
+    tmp = os.path.join(output_dir, f"csv_{int(time.time() * 1000)}_{os.getpid()}.xlsx")
+    os.makedirs(output_dir, exist_ok=True)
     df.to_excel(tmp, index=False, sheet_name="Sheet1", engine="openpyxl")
     return tmp
 

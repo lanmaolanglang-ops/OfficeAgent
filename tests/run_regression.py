@@ -2,7 +2,6 @@
 Regression Test Runner - 回归测试运行器
 每次更新自动运行核心测试集，防止新功能破坏旧功能
 """
-import os
 import sys
 import time
 import json
@@ -13,8 +12,9 @@ from datetime import datetime
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from tests.qa_framework import QATestRunner, TestCategory, TestSeverity
-from tests.qa_report import generate_report
+from tests.qa_framework import QATestRunner  # noqa: E402
+from tests.qa_report import generate_report  # noqa: E402
+from office_agent._version import __version__  # noqa: E402
 
 
 def run_pytest_suite(test_path: str = "tests/", pattern: str = None) -> dict:
@@ -83,7 +83,6 @@ def run_qa_suite(include_performance: bool = False) -> QATestRunner:
     # 恢复
     try:
         from tests.recovery.test_recovery import run_recovery_tests
-        import zipfile
         run_recovery_tests(runner)
     except Exception as e:
         print(f"Recovery tests error: {e}")
@@ -101,10 +100,10 @@ def run_qa_suite(include_performance: bool = False) -> QATestRunner:
 def run_regression(include_performance: bool = False, should_generate_report: bool = True) -> dict:
     """运行完整回归测试"""
     print("=" * 60)
-    print("OfficeAgent Regression Test Suite v0.50.0")
+    print(f"OfficeAgent Regression Test Suite v{__version__}")
     print("=" * 60)
     results = {
-        "version": "0.50.0",
+        "version": __version__,
         "timestamp": datetime.now().isoformat(),
         "pytest": None,
         "qa": None,

@@ -1,7 +1,7 @@
 """
 生图模型配置管理器
 
-将生图服务商/模型/Key 持久化到 ~/.office_agent/image_model.json，
+将生图服务商/模型/Key 持久化到统一数据目录的 image_model.json，
 Key 使用与语言模型相同的 Fernet 加密（兼容旧 XOR 数据）。
 
 生图服务商不绑死 Agnes：通过 provider + base_url + model 可配置任意

@@ -31,12 +31,9 @@ from .path_generator import (
     generate_file_id, generate_storage_path,
     BUCKET_UPLOADS, BUCKET_OUTPUTS,
 )
+from ..runtime_config import get_data_root
 
 logger = logging.getLogger("office_agent.storage")
-
-# 桌面启动器通过 OFFICE_AGENT_DATA_DIR 统一重定向本地数据目录
-_DEFAULT_DATA_ROOT = os.environ.get("OFFICE_AGENT_DATA_DIR") or os.path.expanduser("~/.office_agent")
-
 
 class StorageConfig:
     """存储配置"""
@@ -52,7 +49,7 @@ class StorageConfig:
                  temp_expire_hours: int = 24,
                  max_versions: int = 10):
         self.storage_type = storage_type
-        self.local_path = local_path or os.path.join(_DEFAULT_DATA_ROOT, "storage")
+        self.local_path = local_path or str(get_data_root() / "storage")
         self.minio_endpoint = minio_endpoint
         self.minio_access_key = minio_access_key
         self.minio_secret_key = minio_secret_key

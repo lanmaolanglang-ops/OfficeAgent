@@ -14,6 +14,7 @@ sys.path.insert(0, str(project_root))
 # 导入 Base 和所有模型
 from office_agent.database.base import Base  # noqa: E402
 from office_agent.database import models  # noqa: E402, F401
+from office_agent.runtime_config import get_data_root  # noqa: E402
 
 # Alembic Config
 config = context.config
@@ -24,10 +25,7 @@ if db_url:
     config.set_main_option("sqlalchemy.url", db_url)
 elif not config.get_main_option("sqlalchemy.url"):
     # 默认 SQLite
-    data_root = Path(
-        os.environ.get("OFFICE_AGENT_DATA_DIR")
-        or os.path.expanduser("~/.office_agent")
-    )
+    data_root = get_data_root()
     db_path = data_root / "db" / "office_agent.db"
     db_path.parent.mkdir(parents=True, exist_ok=True)
     config.set_main_option("sqlalchemy.url", f"sqlite:///{db_path}")

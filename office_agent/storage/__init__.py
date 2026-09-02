@@ -53,10 +53,10 @@ from .path_generator import (
     generate_file_id, generate_storage_path, generate_temp_path,
     BUCKET_UPLOADS, BUCKET_OUTPUTS, BUCKET_TEMP, BUCKET_CACHE, BUCKET_VERSIONS,
 )
-
-__version__ = "0.51.1"
+from .._version import __version__
 
 __all__ = [
+    "__version__",
     "StorageBackend", "LocalStorage",
     "StorageService", "StorageConfig", "FileInfo",
     "create_storage_backend", "get_storage_service",

@@ -2,7 +2,7 @@
 设置管理路由 - 本地模型配置
 
 职责：
-- 保存/读取本地 API Key 配置（~/.office_agent/models.json）
+- 保存/读取统一数据目录中的本地 API Key 配置
 - 列出已保存的模型，支持切换默认模型（无需重新输入 API Key）
 - API Key 通过 ApiKeyCrypto 加密存储，接口不回传明文
 """
@@ -124,7 +124,7 @@ def get_model_settings():
 
 @router.post("/model")
 def save_model_settings(req: ModelSettingsRequest):
-    """保存模型配置到 ~/.office_agent/models.json"""
+    """保存模型配置到统一数据目录的 models.json。"""
     provider = (req.provider or "").strip().lower()
     if provider not in _ALLOWED_PROVIDERS:
         raise HTTPException(status_code=400, detail=f"不支持的模型供应商: {provider or '(空)'}")
@@ -233,7 +233,7 @@ def get_image_model_settings():
 
 @router.post("/image-model")
 def save_image_model_settings(req: ImageModelRequest):
-    """保存生图模型配置到 ~/.office_agent/image_model.json"""
+    """保存生图模型配置到统一数据目录的 image_model.json。"""
     provider = (req.provider or "agnes").strip().lower()
     if provider not in ("agnes", "mcp"):
         raise HTTPException(status_code=400, detail=f"不支持的生图服务: {provider}（仅支持 agnes/mcp）")

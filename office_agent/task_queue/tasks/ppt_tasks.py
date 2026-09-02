@@ -16,6 +16,7 @@ import uuid
 import logging
 import json
 from ...security.error_sanitizer import sanitize_error
+from ...runtime_config import get_output_dir
 from pathlib import Path
 
 logger = logging.getLogger("office_agent.tasks.ppt")
@@ -53,12 +54,6 @@ def _image_failure_summary(error: str) -> tuple[str, str]:
     return "unknown", "生图失败，请在设置中测试生图配置"
 
 
-# 输出目录
-OUTPUT_DIR = os.path.join(
-    os.environ.get("OFFICE_AGENT_DATA_DIR") or os.path.expanduser("~/.office_agent"),
-    "outputs")
-
-
 def _display_stem(input_path: str, options: dict) -> str:
     """输出文件名应基于用户上传时的原始文件名，而非内部 file_id 路径。"""
     stem = os.path.splitext(os.path.basename(input_path or ""))[0]
@@ -90,10 +85,11 @@ def _make_registered_name(input_path: str, output_path: str, options: dict) -> s
 
 def _safe_filename(text: str, ext: str = ".pptx") -> str:
     """生成安全的文件名，避免中文/特殊字符问题"""
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    output_dir = str(get_output_dir())
+    os.makedirs(output_dir, exist_ok=True)
     # 时间戳只精确到秒，并发任务同秒完成会写同一路径互相覆盖
     unique = f"{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
-    return os.path.join(OUTPUT_DIR, f"ppt_{unique}{ext}")
+    return os.path.join(output_dir, f"ppt_{unique}{ext}")
 
 
 def _understand_ppt_request(instruction: str, options: dict,

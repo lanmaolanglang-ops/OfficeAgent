@@ -2,13 +2,18 @@
 Windows Service Manager - Windows服务管理
 支持安装/卸载/启动/停止OfficeAgent后台服务
 """
-import os
 import sys
 import time
 import logging
 import argparse
 import subprocess
 from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from office_agent.runtime_config import get_desktop_data_root  # noqa: E402
 
 logger = logging.getLogger("office_agent.service")
 
@@ -42,15 +47,16 @@ def install_service(app_dir: Path, port: int = 8765):
         run_as_admin()
         return
     try:
-        import win32serviceutil
-        import win32service
-        import win32event
-        import servicemanager
+        import win32serviceutil  # noqa: F401
+        import win32service  # noqa: F401
+        import win32event  # noqa: F401
+        import servicemanager  # noqa: F401
     except ImportError:
         print("安装pywin32: pip install pywin32")
         return False
     # 创建服务脚本
     service_script = app_dir / "service_wrapper.py"
+    service_data_dir = get_desktop_data_root()
     script_content = f'''
 import sys
 import os
@@ -58,7 +64,7 @@ sys.path.insert(0, r"{app_dir}")
 os.chdir(r"{app_dir}")
 os.environ["OFFICE_AGENT_LOCAL"] = "1"
 os.environ["AUTH_MODE"] = "local"
-os.environ["OFFICE_AGENT_DATA_DIR"] = r"{Path(os.environ.get("APPDATA", "")) / "OfficeAgent"}"
+os.environ["OFFICE_AGENT_DATA_DIR"] = r"{service_data_dir}"
 import servicemanager
 import win32event
 import win32service
@@ -171,7 +177,7 @@ def start_service():
 def stop_service():
     """停止服务"""
     try:
-        result = subprocess.run(["sc", "stop", SERVICE_NAME], capture_output=True, text=True, timeout=30)
+        subprocess.run(["sc", "stop", SERVICE_NAME], capture_output=True, text=True, timeout=30)
         print(f"✅ 服务 {SERVICE_NAME} 已停止")
         return True
     except Exception as e:

@@ -7,15 +7,11 @@
 - 数据库
 """
 import os
-import json
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, List
 from pathlib import Path
 
-from .schemas import (
-    GlobalConfig, ModelConfigSchema, AgentConfigSchema,
-    PromptConfigSchema, SkillConfigSchema, WorkflowConfigSchema,
-)
 from ..logging_system import get_logger
+from ..runtime_config import get_data_root
 
 logger = get_logger("config.loader")
 
@@ -97,10 +93,7 @@ class YamlLoader:
     def __init__(self, config_dir: str = None):
         self.config_dir = Path(config_dir or os.environ.get(
             "CONFIG_DIR",
-            os.path.join(
-                os.environ.get("OFFICE_AGENT_DATA_DIR") or os.path.expanduser("~/.office_agent"),
-                "config",
-            )
+            str(get_data_root() / "config"),
         ))
 
     def load(self, filename: str = "config.yaml") -> Dict[str, Any]:

@@ -3,10 +3,11 @@
 
 定义所有配置项的结构、默认值和校验规则。
 """
-import os
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field, field_validator
 from enum import Enum
+from ..runtime_config import get_data_root, get_log_dir
+from .._version import __version__
 
 
 # ============================================================
@@ -236,10 +237,7 @@ class FileRuleSchema(BaseModel):
 class StorageConfig(BaseModel):
     """存储配置"""
     storage_type: str = "local"
-    local_path: str = Field(default_factory=lambda: os.path.join(
-        os.environ.get("OFFICE_AGENT_DATA_DIR") or os.path.expanduser("~/.office_agent"),
-        "storage",
-    ))
+    local_path: str = Field(default_factory=lambda: str(get_data_root() / "storage"))
     max_file_size: int = 100 * 1024 * 1024
     max_versions: int = 10
     temp_expire_hours: int = 24
@@ -257,10 +255,7 @@ class QueueConfig(BaseModel):
 class LoggingConfig(BaseModel):
     """日志配置"""
     level: str = "INFO"
-    dir: str = Field(default_factory=lambda: os.path.join(
-        os.environ.get("OFFICE_AGENT_DATA_DIR") or os.path.expanduser("~/.office_agent"),
-        "logs",
-    ))
+    dir: str = Field(default_factory=lambda: str(get_log_dir()))
     enable_db_logging: bool = True
     enable_metrics: bool = True
     max_size_mb: int = 50
@@ -298,7 +293,7 @@ class GlobalConfig(BaseModel):
     enable_multimodal: bool = True
 
     # 元数据
-    version: str = "0.51.1"
+    version: str = __version__
     extra: Dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("environment")

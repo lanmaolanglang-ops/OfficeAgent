@@ -10,8 +10,6 @@ import logging
 import argparse
 from pathlib import Path
 
-APP_VERSION = "0.51.1"
-
 # ============================================================
 # PyInstaller GUI 模式兼容：sys.stdout / sys.stderr 可能为 None
 # ============================================================
@@ -43,6 +41,9 @@ if FROZEN:
 else:
     APP_DIR = Path(__file__).parent.parent
     sys.path.insert(0, str(APP_DIR))
+
+from office_agent._version import __version__ as APP_VERSION  # noqa: E402
+from office_agent.runtime_config import get_desktop_data_root  # noqa: E402
 
 
 def setup_logging(log_dir: Path):
@@ -106,10 +107,8 @@ def main():
     # 数据目录
     if args.data_dir:
         data_dir = Path(args.data_dir)
-    elif sys.platform == "win32":
-        data_dir = Path(os.environ.get("APPDATA", Path.home())) / "OfficeAgent"
     else:
-        data_dir = Path.home() / ".officeagent"
+        data_dir = get_desktop_data_root()
 
     setup_logging(data_dir / "logs")
     logger = logging.getLogger("office_agent.launcher")
