@@ -173,6 +173,10 @@ def test_security_migration_upgrades_and_rolls_back(tmp_path):
             "('legacy-user','legacy',NULL,'hash','user',1,1,NULL,NULL,0,NULL,NULL,"
             "CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)"
         ))
+        connection.execute(text(
+            "INSERT INTO task (id, task_type, status, instruction) "
+            "VALUES ('legacy-waiting', 'general', 'waiting', 'legacy')"
+        ))
     command.upgrade(cfg, "head")
     with engine.connect() as connection:
         assert connection.execute(text(
@@ -186,6 +190,9 @@ def test_security_migration_upgrades_and_rolls_back(tmp_path):
         assert connection.execute(text(
             "SELECT COUNT(*) FROM security_permissions"
         )).scalar_one() >= 20
+        assert connection.execute(text(
+            "SELECT status FROM task WHERE id='legacy-waiting'"
+        )).scalar_one() == "queued"
     command.downgrade(cfg, "006_prompt_version_uniqueness")
     assert "security_users" in inspect(engine).get_table_names()
     assert "is_verified" not in {c["name"] for c in inspect(engine).get_columns("user")}

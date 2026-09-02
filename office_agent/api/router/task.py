@@ -17,7 +17,7 @@ from ..schemas.request import TaskCreateRequest, FeedbackRequest
 from ..schemas.response import (
     TaskInfo, TaskListResponse, BaseResponse,
 )
-from ..core.task_manager import task_manager
+from ..core.task_manager import normalize_task_status, task_manager
 from ..core.exceptions import APIError, TaskNotFoundError
 from ..core.file_resolution import resolve_input_files
 from ...security.error_sanitizer import sanitize_error
@@ -268,7 +268,10 @@ async def list_tasks(status: str = None, agent: str = None,
             if user_id and user_role != "admin":
                 filters["user_id"] = user_id
             if status:
-                filters["status"] = status
+                try:
+                    filters["status"] = normalize_task_status(status)
+                except ValueError as exc:
+                    raise HTTPException(status_code=422, detail=str(exc)) from exc
             if agent:
                 filters["agent_name"] = agent
             db_tasks = repo.find(offset=(page - 1) * page_size, limit=page_size,

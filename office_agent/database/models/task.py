@@ -19,7 +19,7 @@ class Task(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(
         String(32), nullable=False, default="pending", index=True
     )
-    # pending/running/waiting/success/failed/cancelled
+    # pending/queued/running/success/failed/cancelled
     agent_name: Mapped[str] = mapped_column(String(64), nullable=True, index=True)
     instruction: Mapped[str] = mapped_column(Text, nullable=False)
     parent_task_id: Mapped[str] = mapped_column(

@@ -28,20 +28,26 @@ def test_task_state_machine_filters_paginates_and_serializes(monkeypatch):
 
     second = Task("ppt_generate", "slides", agent="ppt_agent")
     second.start()
-    second.update(progress=-5, step="plan", status=TaskStatus.WAITING.value)
+    second.update(progress=-5, step="plan", status="waiting")
+    assert second.status == TaskStatus.QUEUED.value
+    assert TaskStatus.WAITING is TaskStatus.QUEUED
     second.fail("model unavailable")
     assert second.progress == 0
     assert second.steps[-1]["status"] == "failed"
 
     pending = Task("word_format", "pending", agent="word_agent")
+    queued = Task("ppt_generate", "queued", agent="ppt_agent")
+    queued.update(status=TaskStatus.QUEUED)
     manager = TaskManager()
-    manager.tasks = {t.task_id: t for t in (first, second, pending)}
+    manager.tasks = {t.task_id: t for t in (first, second, pending, queued)}
     assert manager.get_task(first.task_id) is first
-    assert manager.get_active_count() == 1
+    assert manager.get_active_count() == 2
     filtered, total = manager.list_tasks(status="success", agent="word_agent")
     assert filtered == [first] and total == 1
     page, total = manager.list_tasks(page=2, page_size=2)
-    assert len(page) == 1 and total == 3
+    assert len(page) == 2 and total == 4
+    legacy_filtered, total = manager.list_tasks(status="waiting")
+    assert legacy_filtered == [queued] and total == 1
 
 
 def test_task_router_helpers_validate_files_and_remove_local_paths(tmp_path, monkeypatch):

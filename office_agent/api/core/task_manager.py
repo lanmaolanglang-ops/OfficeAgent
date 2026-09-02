@@ -11,11 +11,24 @@ from enum import Enum
 
 class TaskStatus(str, Enum):
     PENDING = "pending"
+    QUEUED = "queued"
     RUNNING = "running"
-    WAITING = "waiting"
+    # Compatibility alias: old callers used WAITING for the queue state.
+    WAITING = "queued"
     SUCCESS = "success"
     FAILED = "failed"
     CANCELLED = "cancelled"
+
+
+def normalize_task_status(status: str | TaskStatus) -> str:
+    """Return the canonical task status while accepting legacy waiting."""
+    value = status.value if isinstance(status, TaskStatus) else str(status)
+    if value == "waiting":
+        return TaskStatus.QUEUED.value
+    allowed = {item.value for item in TaskStatus}
+    if value not in allowed:
+        raise ValueError(f"未知任务状态: {value}")
+    return value
 
 
 class Task:
@@ -87,7 +100,7 @@ class Task:
                 "started_at": datetime.now(timezone.utc).isoformat(),
             })
         if status is not None:
-            self.status = status
+            self.status = normalize_task_status(status)
 
     def complete(self, result: Dict = None, output_files: List[str] = None,
                  quality_score: float = None):
@@ -133,7 +146,8 @@ class TaskManager:
                    page: int = 1, page_size: int = 20) -> tuple:
         tasks = list(self.tasks.values())
         if status:
-            tasks = [t for t in tasks if t.status == status]
+            normalized_status = normalize_task_status(status)
+            tasks = [t for t in tasks if t.status == normalized_status]
         if agent:
             tasks = [t for t in tasks if t.agent == agent]
         tasks.sort(key=lambda t: t.created_at, reverse=True)
@@ -143,7 +157,11 @@ class TaskManager:
 
     def get_active_count(self) -> int:
         return sum(1 for t in self.tasks.values()
-                   if t.status in (TaskStatus.PENDING.value, TaskStatus.RUNNING.value))
+                   if t.status in {
+                       TaskStatus.PENDING.value,
+                       TaskStatus.QUEUED.value,
+                       TaskStatus.RUNNING.value,
+                   })
 
 
 # 全局任务管理器
