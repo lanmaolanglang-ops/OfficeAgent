@@ -32,6 +32,9 @@ function loadSettings(): AppSettings {
     const saved = localStorage.getItem(STORAGE_KEY);
     if (saved) {
       const parsed = JSON.parse(saved);
+      if (!['auto', 'word', 'ppt', 'excel'].includes(parsed.default_agent)) {
+        parsed.default_agent = 'auto';
+      }
       // 清除历史版本可能残留的 API Key
       parsed.models = stripApiKeys(parsed.models || []);
       // 旧版本模型名称自动升级到最新推荐模型

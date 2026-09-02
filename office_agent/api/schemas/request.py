@@ -33,10 +33,31 @@ class ChatRequest(BaseModel):
     def filter_message_secrets(cls, value: str) -> str:
         return _filter_sensitive(value)
 
+    @field_validator("file_ids")
+    @classmethod
+    def enforce_single_primary_file(cls, value):
+        if value and len(value) > 1:
+            raise ValueError("当前 Office 任务只支持一个主文件，请一次附加一个文件")
+        return value
+
     @field_validator("context", mode="before")
     @classmethod
     def filter_context_secrets(cls, value):
         return _filter_sensitive(value)
+
+    @field_validator("agent_hint", mode="before")
+    @classmethod
+    def normalize_agent_hint(cls, value):
+        if value is None:
+            return None
+        hint = str(value).strip().lower()
+        if hint.endswith("_agent"):
+            hint = hint[:-6]
+        if hint in {"orchestrator", "workflow"}:
+            hint = "auto"
+        if hint not in {"auto", "word", "ppt", "excel"}:
+            raise ValueError("agent_hint 仅支持 auto/word/ppt/excel")
+        return hint
 
 
 class TaskCreateRequest(BaseModel):
@@ -53,6 +74,13 @@ class TaskCreateRequest(BaseModel):
     @classmethod
     def filter_instruction_secrets(cls, value: str) -> str:
         return _filter_sensitive(value)
+
+    @field_validator("file_ids")
+    @classmethod
+    def enforce_single_primary_file(cls, value):
+        if value and len(value) > 1:
+            raise ValueError("当前 Office 任务只支持一个主文件，请一次提交一个文件")
+        return value
 
     @field_validator("options", mode="before")
     @classmethod

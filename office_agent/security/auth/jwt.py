@@ -10,8 +10,13 @@ import hmac
 import hashlib
 import base64
 import secrets
+import os
+import threading
+from pathlib import Path
 from typing import Any, Optional
 from dataclasses import dataclass
+
+from ...runtime_config import get_data_root
 
 
 def _b64encode(data: bytes) -> str:
@@ -73,18 +78,86 @@ class JWTManager:
 
     def __init__(self, secret_key: str | None = None,
                  access_token_expire: int = 3600,
-                 refresh_token_expire: int = 86400 * 7):
+                 refresh_token_expire: int = 86400 * 7,
+                 state_dir: str | Path | None = None):
         """
         Args:
-            secret_key: 签名密钥，默认随机生成（生产环境必须从配置读取）
+            secret_key: 签名密钥；未提供时使用环境变量或本地持久化密钥
             access_token_expire: Access Token过期秒数（默认1小时）
             refresh_token_expire: Refresh Token过期秒数（默认7天）
         """
-        self.secret_key = (secret_key or secrets.token_hex(32)).encode("utf-8")
+        self._state_dir = Path(state_dir) if state_dir else get_data_root() / "security"
+        self._secret_path = self._state_dir / "jwt_secret"
+        self._revocation_path = self._state_dir / "jwt_revocations.json"
+        self._state_lock = threading.RLock()
+        resolved_secret = secret_key or os.environ.get("OFFICE_AGENT_JWT_SECRET")
+        if not resolved_secret:
+            resolved_secret = self._load_or_create_secret()
+        self.secret_key = resolved_secret.encode("utf-8")
         self.access_token_expire = access_token_expire
         self.refresh_token_expire = refresh_token_expire
-        # 已撤销的token列表（生产环境用Redis）
-        self._revoked: set[str] = set()
+        self._revoked: dict[str, float] = self._load_revocations()
+
+    def _ensure_state_dir(self) -> None:
+        self._state_dir.mkdir(parents=True, exist_ok=True)
+
+    def _atomic_write(self, path: Path, content: str) -> None:
+        self._ensure_state_dir()
+        temp_path = path.with_suffix(path.suffix + f".{secrets.token_hex(6)}.tmp")
+        try:
+            with temp_path.open("w", encoding="utf-8") as handle:
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temp_path, path)
+            try:
+                path.chmod(0o600)
+            except OSError:
+                pass
+        finally:
+            temp_path.unlink(missing_ok=True)
+
+    def _load_or_create_secret(self) -> str:
+        with self._state_lock:
+            try:
+                secret = self._secret_path.read_text(encoding="utf-8").strip()
+            except FileNotFoundError:
+                secret = ""
+            if secret:
+                return secret
+            secret = secrets.token_urlsafe(48)
+            self._atomic_write(self._secret_path, secret)
+            return secret
+
+    def _load_revocations(self) -> dict[str, float]:
+        with self._state_lock:
+            try:
+                raw = json.loads(self._revocation_path.read_text(encoding="utf-8"))
+            except (FileNotFoundError, json.JSONDecodeError, OSError):
+                return {}
+            now = time.time()
+            return {
+                str(jti): float(expires_at)
+                for jti, expires_at in raw.items()
+                if isinstance(expires_at, (int, float)) and expires_at > now
+            }
+
+    def _persist_revocations(self) -> None:
+        now = time.time()
+        self._revoked = {
+            jti: expires_at for jti, expires_at in self._revoked.items()
+            if expires_at > now
+        }
+        self._atomic_write(
+            self._revocation_path,
+            json.dumps(self._revoked, ensure_ascii=False, sort_keys=True),
+        )
+
+    def _is_revoked(self, jti: str) -> bool:
+        with self._state_lock:
+            # Reload so separate worker processes observe revocations promptly.
+            self._revoked.update(self._load_revocations())
+            return self._revoked.get(jti, 0) > time.time()
 
     def _sign(self, header_b64: str, payload_b64: str) -> str:
         """HMAC-SHA256签名"""
@@ -129,7 +202,7 @@ class JWTManager:
         signature = self._sign(header_b64, payload_b64)
         return f"{header_b64}.{payload_b64}.{signature}"
 
-    def decode(self, token: str) -> TokenPayload:
+    def decode(self, token: str, expected_type: str | None = "access") -> TokenPayload:
         """
         解码并验证Token
         Raises:
@@ -150,6 +223,13 @@ class JWTManager:
             header = json.loads(_b64decode(header_b64))
             if header.get("alg") != "HS256":
                 raise ValueError("不支持的算法")
+            if header.get("typ") != "JWT":
+                raise ValueError("Token 类型头无效")
+            token_type = header.get("ttype")
+            if token_type not in {"access", "refresh"}:
+                raise ValueError("Token 用途无效")
+            if expected_type is not None and token_type != expected_type:
+                raise ValueError(f"需要 {expected_type} token，收到 {token_type} token")
 
             # 解码payload
             payload_data = json.loads(_b64decode(payload_b64))
@@ -160,7 +240,7 @@ class JWTManager:
                 raise ValueError("Token已过期")
 
             # 检查是否已撤销
-            if payload.jti in self._revoked:
+            if self._is_revoked(payload.jti):
                 raise ValueError("Token已被撤销")
 
             return payload
@@ -171,7 +251,7 @@ class JWTManager:
 
     def refresh_access_token(self, refresh_token: str) -> str:
         """使用Refresh Token获取新的Access Token"""
-        payload = self.decode(refresh_token)
+        payload = self.decode(refresh_token, expected_type="refresh")
         return self.create_access_token(
             user_id=payload.user_id,
             username=payload.username,
@@ -181,8 +261,10 @@ class JWTManager:
     def revoke(self, token: str) -> bool:
         """撤销Token（登出）"""
         try:
-            payload = self.decode(token)
-            self._revoked.add(payload.jti)
+            payload = self.decode(token, expected_type=None)
+            with self._state_lock:
+                self._revoked[payload.jti] = payload.exp
+                self._persist_revocations()
             return True
         except ValueError:
             return False

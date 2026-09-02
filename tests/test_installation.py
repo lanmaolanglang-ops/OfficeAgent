@@ -20,6 +20,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 
 class TestStatus(str, Enum):
+    __test__ = False
     PASS = "pass"
     FAIL = "fail"
     SKIP = "skip"

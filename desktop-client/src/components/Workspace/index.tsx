@@ -1,12 +1,12 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowRight, Bot, FileText, Presentation, Sheet, Sparkles, User } from 'lucide-react';
+import { ArrowRight, Bot, Download, FileText, Presentation, Sheet, User } from 'lucide-react';
 import FileUploader from './FileUploader';
 import TaskTimeline, { type TimelineStep } from './TaskTimeline';
 import ChatInput from './ChatInput';
 import { useChatStore, useTaskStore, useSettingsStore } from '../../stores';
+import { getFileUrl } from '../../services/api';
 import type { Task, AgentType } from '../../types';
-import heroAsset from '../../assets/hero.png';
 
 interface WorkspaceProps { title?: string; subtitle?: string; agent?: AgentType; }
 
@@ -21,23 +21,25 @@ function taskToSteps(task: Task | undefined): TimelineStep[] {
 }
 
 const agents = [
-  { path: '/word', title: 'Word Agent', description: '文档整理、格式优化与内容处理', icon: FileText, tone: 'agent-word' },
-  { path: '/ppt', title: 'PPT Agent', description: '主题生成、内容规划与演示设计', icon: Presentation, tone: 'agent-ppt' },
-  { path: '/excel', title: 'Excel Agent', description: '数据分析、汇总与图表生成', icon: Sheet, tone: 'agent-excel' },
+  { path: '/word', index: '01', title: 'Word Agent', description: '整理结构、统一格式并交付可编辑文档', icon: FileText, tone: 'agent-word' },
+  { path: '/ppt', index: '02', title: 'PPT Agent', description: '规划叙事、生成内容并完成演示设计', icon: Presentation, tone: 'agent-ppt' },
+  { path: '/excel', index: '03', title: 'Excel Agent', description: '清洗数据、提炼结论并生成图表', icon: Sheet, tone: 'agent-excel' },
 ];
 
 export default function Workspace({ title = '工作台', subtitle = '智能办公助手', agent = 'auto' }: WorkspaceProps) {
   const navigate = useNavigate();
   const { messages, sending, sendMessage, setAgent } = useChatStore();
-  const { tasks, loadTasks } = useTaskStore();
+  const { tasks, startPolling, stopPolling } = useTaskStore();
   const defaultAgent = useSettingsStore((s) => s.settings.default_agent);
   const [localSteps, setLocalSteps] = useState<TimelineStep[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  // 回形针 → 触发常驻上传区的文件选择框（跟进消息也能附加文件）
+  const openUploaderRef = useRef<(() => void) | null>(null);
 
   // 工作台（agent='auto'）使用用户设置的默认 Agent，其余页面用各自的 Agent
   const effectiveAgent: AgentType = agent === 'auto' ? (defaultAgent ?? 'auto') : agent;
 
-  useEffect(() => { const interval = setInterval(() => { loadTasks(); }, 2000); return () => clearInterval(interval); }, [loadTasks]);
+  useEffect(() => { startPolling(); return () => stopPolling(); }, [startPolling, stopPolling]);
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
   // 页面切换时同步当前 Agent 模式
   useEffect(() => { setAgent(effectiveAgent); }, [effectiveAgent, setAgent]);
@@ -53,63 +55,82 @@ export default function Workspace({ title = '工作台', subtitle = '智能办�
   };
 
   return (
-    <div className="flex-1 flex flex-col h-full bg-[#f4f6fa] min-w-0">
-      <div className="flex-1 overflow-y-auto px-5 pt-5 pb-3">
-        <div className="max-w-[980px] mx-auto space-y-4">
+    <div className="flex-1 flex flex-col h-full bg-bg min-w-0">
+      <div className="flex-1 overflow-y-auto px-7 pb-4 pt-7">
+        <div className="mx-auto max-w-[1040px] space-y-5">
           {messages.length === 0 && !currentTask && (
             <>
               <section className="welcome-banner">
-                <div className="relative z-10 max-w-[610px]">
-                  <span className="eyebrow"><Sparkles className="w-3.5 h-3.5" /> Office AI Workspace</span>
-                  <h1 className="mt-3 text-[25px] font-bold text-[#172036] leading-tight">{isDashboard ? '今天想处理什么办公任务？' : title}</h1>
-                  <p className="mt-2 text-sm text-[#66718a]">{isDashboard ? '上传文件并描述目标，AI 会自动选择合适的处理方式。' : subtitle}</p>
+                <div className="welcome-copy">
+                  <h1 className="display-face">{isDashboard ? '把一份文件，变成可交付的成果。' : title}</h1>
+                  <p>{isDashboard ? '选择一个主文件，说明你想要的结果。系统会在本机完成解析、执行与版本留存。' : subtitle}</p>
                 </div>
-                <img src={heroAsset} className="hero-asset" alt="" />
+                <ol className="workflow-ledger" aria-label="任务流程">
+                  <li><span>01</span><strong>输入</strong><small>上传主文件</small></li>
+                  <li><span>02</span><strong>执行</strong><small>选择专业 Agent</small></li>
+                  <li><span>03</span><strong>交付</strong><small>下载与版本留存</small></li>
+                </ol>
               </section>
 
               {isDashboard && (
-                <section className="agent-grid">
+                <section className="agent-register" aria-labelledby="agent-register-title">
+                  <div className="register-heading">
+                    <div><h2 id="agent-register-title">专业执行席位</h2><p>按交付物类型进入专属工作流</p></div>
+                    <span>3 个专业席位</span>
+                  </div>
                   {agents.map((agent) => {
                     const Icon = agent.icon;
                     return (
-                      <button key={agent.path} onClick={() => navigate(agent.path)} className="agent-tile">
+                      <button key={agent.path} onClick={() => navigate(agent.path)} className="agent-row">
+                        <span className="agent-index">{agent.index}</span>
                         <div className={`agent-icon ${agent.tone}`}><Icon className="w-5 h-5" /></div>
-                        <div className="min-w-0 text-left">
-                          <p className="text-sm font-semibold text-[#25304a]">{agent.title}</p>
-                          <p className="text-[11px] text-[#8a94a8] mt-1 leading-relaxed">{agent.description}</p>
+                        <div className="agent-copy min-w-0 text-left">
+                          <p>{agent.title}</p>
+                          <span>{agent.description}</span>
                         </div>
-                        <ArrowRight className="w-4 h-4 text-[#9ca6b8] ml-auto flex-shrink-0" />
+                        <ArrowRight className="agent-arrow" aria-hidden="true" />
                       </button>
                     );
                   })}
                 </section>
               )}
 
-              <section className="surface-panel p-4">
-                <div className="flex items-center justify-between mb-3">
-                  <div><h2 className="text-sm font-semibold text-[#27324a]">添加任务文件</h2><p className="text-[11px] text-[#98a1b3] mt-0.5">文件上传成功后将自动附加到下一条任务</p></div>
-                </div>
-                <FileUploader />
-              </section>
             </>
           )}
 
+          <section className="surface-panel p-4">
+            <div className="section-heading mb-3">
+              <span>01</span>
+              <div><h2>添加任务文件</h2><p>文件上传成功后将自动附加到下一条任务</p></div>
+            </div>
+            <FileUploader registerOpen={(fn) => { openUploaderRef.current = fn; }} />
+          </section>
+
           {messages.length > 0 && (
-            <section className="surface-panel p-5 min-h-[420px]">
-              <div className="flex items-center justify-between pb-4 mb-5 border-b border-[#edf0f5]">
-                <div><h1 className="text-base font-semibold text-[#25304a]">智能对话</h1><p className="text-[11px] text-[#98a1b3] mt-1">{subtitle}</p></div>
+            <section className="surface-panel min-h-[420px] p-6">
+              <div className="section-heading mb-6 border-b border-line pb-5">
+                <span>02</span><div><h1>任务对话</h1><p>{subtitle}</p></div>
               </div>
               <div className="space-y-5">
                 {messages.map(msg => (
                   <div key={msg.id} className={`flex gap-3 animate-fade-in ${msg.role === 'user' ? 'flex-row-reverse' : ''}`}>
                     <div className={`message-avatar ${msg.role === 'user' ? 'message-avatar-user' : 'message-avatar-ai'}`}>{msg.role === 'user' ? <User className="w-4 h-4" /> : <Bot className="w-4 h-4" />}</div>
-                    <div className={`max-w-[78%] rounded-lg px-4 py-3 text-sm leading-relaxed ${msg.role === 'user' ? 'bg-[#edf3ff] text-[#30446d]' : 'bg-[#f7f8fb] text-[#4a556d] border border-[#edf0f5]'}`}>
+                    <div aria-live={msg.role === 'assistant' ? 'polite' : undefined} className={`message-bubble max-w-[78%] px-4 py-3 text-sm leading-relaxed ${msg.role === 'user' ? 'message-bubble-user' : 'message-bubble-ai'}`}>
                       <p className="whitespace-pre-wrap">{msg.content}</p>
-                      {msg.role === 'assistant' && msg.task_status === 'processing' && <div className="mt-3 h-1.5 bg-[#e7eaf0] rounded-full overflow-hidden"><div className="h-full bg-[#557cf3] rounded-full transition-all duration-500" style={{ width: `${msg.task_progress || 0}%` }} /></div>}
+                      {msg.role === 'assistant' && msg.output_files && msg.output_files.length > 0 && (
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          {msg.output_files.map((file) => (
+                            <a key={file.file_id} href={getFileUrl(file.file_id)} target="_blank" rel="noopener" download={file.filename} className="inline-flex min-h-9 items-center gap-2 rounded-lg bg-brand px-3 py-2 text-xs font-medium text-white hover:bg-brand-hover">
+                              <Download className="h-3.5 w-3.5" />下载 {file.filename}
+                            </a>
+                          ))}
+                        </div>
+                      )}
+                      {msg.role === 'assistant' && msg.task_status === 'processing' && <div className="mt-3 h-1.5 bg-muted rounded-full overflow-hidden"><div className="h-full bg-brand rounded-full transition-all duration-500" style={{ width: `${msg.task_progress || 0}%` }} /></div>}
                     </div>
                   </div>
                 ))}
-                {sending && !messages.some(m => m.task_status === 'processing') && <div className="flex gap-3"><div className="message-avatar message-avatar-ai"><Bot className="w-4 h-4" /></div><div className="bg-[#f7f8fb] border border-[#edf0f5] rounded-lg px-4 py-3 flex gap-1"><span className="typing-dot" /><span className="typing-dot [animation-delay:150ms]" /><span className="typing-dot [animation-delay:300ms]" /></div></div>}
+                {sending && !messages.some(m => m.task_status === 'processing') && <div className="flex gap-3"><div className="message-avatar message-avatar-ai"><Bot className="w-4 h-4" /></div><div className="bg-muted border border-line rounded-lg px-4 py-3 flex gap-1"><span className="typing-dot" /><span className="typing-dot [animation-delay:150ms]" /><span className="typing-dot [animation-delay:300ms]" /></div></div>}
                 <div ref={messagesEndRef} />
               </div>
             </section>
@@ -119,8 +140,8 @@ export default function Workspace({ title = '工作台', subtitle = '智能办�
         </div>
       </div>
 
-      <div className="px-5 pb-4 pt-2 flex-shrink-0 bg-[#f4f6fa]">
-        <div className="max-w-[980px] mx-auto"><ChatInput onSend={handleSend} disabled={sending} /></div>
+      <div className="composer-dock flex-shrink-0 px-7 pb-3 pt-2">
+        <div className="mx-auto max-w-[1040px]"><ChatInput onSend={handleSend} disabled={sending} onAttach={() => openUploaderRef.current?.()} /></div>
       </div>
     </div>
   );

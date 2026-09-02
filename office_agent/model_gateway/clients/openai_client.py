@@ -3,6 +3,7 @@ OpenAI 兼容客户端
 支持：OpenAI、DeepSeek、通义千问、以及其他兼容 OpenAI API 格式的服务
 """
 import json
+import re
 import time
 from typing import Optional
 from urllib.request import Request, urlopen
@@ -22,6 +23,20 @@ class OpenAIClient(BaseModelClient):
             self.chat_url = f"{self.base_url}/chat/completions"
         else:
             self.chat_url = self.base_url
+
+    def _is_reasoning_model(self) -> bool:
+        name = (self.model or "").lower()
+        return bool(re.match(r"^(o1|o3|o4)(?:-|$)", name) or name.startswith("gpt-5"))
+
+    def _apply_generation_params(self, payload: dict,
+                                 temperature: Optional[float],
+                                 max_tokens: Optional[int]) -> None:
+        token_limit = self._get_max_tokens(max_tokens)
+        if self._is_reasoning_model():
+            payload["max_completion_tokens"] = token_limit
+        else:
+            payload["temperature"] = self._get_temperature(temperature)
+            payload["max_tokens"] = token_limit
     
     def chat(self, messages: list[dict[str, str]],
              system_prompt: Optional[str] = None,
@@ -40,14 +55,13 @@ class OpenAIClient(BaseModelClient):
         payload = {
             "model": self.model,
             "messages": full_messages,
-            "temperature": self._get_temperature(temperature),
-            "max_tokens": self._get_max_tokens(max_tokens),
             "stream": False,
         }
-        # DeepSeek 思考模型（deepseek-reasoner / deepseek-v4 等）默认输出 reasoning_content
-        # 思维链，会挤占 max_tokens 导致正文被截断。禁用思考，直接输出正文（JSON）。
+        self._apply_generation_params(payload, temperature, max_tokens)
+        # DeepSeek OpenAI 格式使用 thinking.type 控制思考模式；旧的
+        # reasoning.enabled 不是官方 Chat Completions 参数，兼容网关可能直接 400。
         if getattr(self.config, "provider", None) and self.config.provider.value == "deepseek":
-            payload["reasoning"] = {"enabled": False}
+            payload["thinking"] = {"type": "disabled"}
         
         # 支持视觉的模型添加图片支持参数
         if self.config.supports_vision:
@@ -93,7 +107,7 @@ class OpenAIClient(BaseModelClient):
             error_body = ""
             try:
                 error_body = e.read().decode("utf-8")
-            except:
+            except Exception:
                 pass
             return self._make_error(
                 f"HTTP {e.code}: {e.reason} {error_body[:200]}", start
@@ -116,7 +130,15 @@ class OpenAIClient(BaseModelClient):
         
         try:
             # 读取图片并 base64 编码
-            img_data = Path(image_path).read_bytes()
+            image = Path(image_path)
+            max_image_bytes = int(self.config.extra_params.get(
+                "max_image_bytes", 20 * 1024 * 1024
+            ))
+            if image.stat().st_size > max_image_bytes:
+                return self._make_error(
+                    f"图片超过请求大小限制（{max_image_bytes} bytes）", start
+                )
+            img_data = image.read_bytes()
             img_b64 = base64.b64encode(img_data).decode("utf-8")
             
             # 判断 MIME 类型
@@ -143,9 +165,8 @@ class OpenAIClient(BaseModelClient):
             payload = {
                 "model": self.model,
                 "messages": messages,
-                "temperature": self._get_temperature(None),
-                "max_tokens": self._get_max_tokens(None),
             }
+            self._apply_generation_params(payload, None, None)
             
             headers = {
                 "Content-Type": "application/json",

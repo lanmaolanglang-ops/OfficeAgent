@@ -2,11 +2,11 @@ import { CheckCircle, AlertCircle, Loader2, Clock, XCircle } from 'lucide-react'
 import type { TaskStatus } from '../../types';
 
 const STATUS_CONFIG: Record<TaskStatus, { label: string; class: string; icon: typeof Clock }> = {
-  pending: { label: '等待中', class: 'bg-yellow-500/10 text-yellow-400', icon: Clock },
-  processing: { label: '处理中', class: 'bg-indigo-500/10 text-indigo-400', icon: Loader2 },
-  completed: { label: '已完成', class: 'bg-green-500/10 text-green-400', icon: CheckCircle },
-  failed: { label: '失败', class: 'bg-red-500/10 text-red-400', icon: AlertCircle },
-  cancelled: { label: '已取消', class: 'bg-gray-500/10 text-gray-400', icon: XCircle },
+  pending: { label: '等待中', class: 'bg-muted text-fg-soft', icon: Clock },
+  processing: { label: '处理中', class: 'bg-brand-soft text-brand', icon: Loader2 },
+  completed: { label: '已完成', class: 'bg-ok-soft text-ok', icon: CheckCircle },
+  failed: { label: '失败', class: 'bg-danger-soft text-danger', icon: AlertCircle },
+  cancelled: { label: '已取消', class: 'bg-muted text-fg-muted', icon: XCircle },
 };
 
 /**

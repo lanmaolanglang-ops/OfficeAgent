@@ -2,9 +2,9 @@
 Model Router - 智能路由器
 根据任务类型和模型能力选择最合适的模型
 """
-from typing import Optional
+from typing import Any, Optional
 
-from ..models.model_schemas import AITaskType, ModelConfig
+from ..models.model_schemas import AITaskType
 from .model_manager import ModelManager
 
 
@@ -36,8 +36,14 @@ class ModelRouter:
                     routing = self.model_manager.get_routing(task_type)
                     result = [prefer_model]
                     for mid in routing:
-                        if mid != prefer_model:
-                            result.append(mid)
+                        if mid == prefer_model:
+                            continue
+                        candidate = self.model_manager.get_model(mid)
+                        if not candidate or not candidate.enabled or not candidate.api_key:
+                            continue
+                        if require_vision and not candidate.supports_vision:
+                            continue
+                        result.append(mid)
                     return result
         
         # 按路由策略获取候选
@@ -59,19 +65,38 @@ class ModelRouter:
                 if model.supports_vision:
                     available.append(model.id)
         
+        # 视觉任务绝不能退化到纯文本模型；宁可明确返回“无可用模型”。
+        if require_vision and not available:
+            return []
+
         # 如果没有可用模型，返回所有有 API Key 的模型
         if not available:
             available = [m.id for m in self.model_manager.list_available_models()]
         
         return available
     
-    def infer_task_type(self, user_input: str,
+    def infer_task_type(self, user_input: Any,
                        has_file: bool = False,
                        file_type: Optional[str] = None) -> AITaskType:
         """
         根据用户输入推断 AI 任务类型
         """
-        text = user_input.lower()
+        if isinstance(user_input, str):
+            text = user_input
+        elif isinstance(user_input, (list, tuple)):
+            parts = []
+            for message in user_input:
+                content = (
+                    message.get("content", "")
+                    if isinstance(message, dict)
+                    else getattr(message, "content", "")
+                )
+                if isinstance(content, str):
+                    parts.append(content)
+            text = "\n".join(parts)
+        else:
+            text = str(user_input or "")
+        text = text.lower()
         
         # 视觉/图片相关
         vision_keywords = ["图片", "照片", "截图", "模板分析", "视觉", "看图",

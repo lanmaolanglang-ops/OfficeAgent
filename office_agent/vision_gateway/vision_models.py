@@ -46,7 +46,7 @@ class ImageInput:
     path: str = ""
     url: str = ""
     base64_data: str = ""
-    mime_type: str = "image/png"
+    mime_type: str = ""
     buffer: bytes = b""
     width: int = 0
     height: int = 0
@@ -223,10 +223,14 @@ class DocumentVisionResult:
     combined_result: Optional[StructuredVisionResult] = None
     tables: List[TableData] = field(default_factory=list)
     error: str = ""
+    successful_pages: int = 0
+    failed_pages: int = 0
+    failed_page_numbers: List[int] = field(default_factory=list)
+    partial: bool = False
 
     @property
     def success(self) -> bool:
-        return self.error == "" and len(self.responses) > 0
+        return self.error == "" and self.successful_pages > 0
 
     def get_all_tables(self) -> List[TableData]:
         tables = list(self.tables)

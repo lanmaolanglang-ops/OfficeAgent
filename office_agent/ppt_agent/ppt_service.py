@@ -2,13 +2,14 @@
 PPT Service - PPT 底层生成服务
 封装 python-pptx，提供幻灯片创建、布局、样式等原子操作
 """
+import logging
 from pathlib import Path
-from typing import Optional, List, Tuple
+from typing import Optional
 
 from pptx import Presentation
-from pptx.util import Inches, Pt, Emu
+from pptx.util import Inches, Pt
 from pptx.dml.color import RGBColor
-from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
+from pptx.enum.text import PP_ALIGN, MSO_ANCHOR, MSO_AUTO_SIZE
 from pptx.enum.shapes import MSO_SHAPE
 from pptx.chart.data import CategoryChartData
 from pptx.enum.chart import XL_CHART_TYPE, XL_LEGEND_POSITION, XL_LABEL_POSITION
@@ -16,8 +17,11 @@ from pptx.oxml.ns import qn
 
 from .models import (
     PPTOutline, SlideContent, ColorScheme, FontScheme,
-    SlideLayout, PPTGenerationResult,
+    PPTGenerationResult,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 # ==========================================
@@ -68,7 +72,13 @@ DEFAULT_FONTS = FontScheme()
 
 def hex_to_rgb(hex_color: str) -> RGBColor:
     """十六进制颜色转 RGBColor"""
-    h = hex_color.lstrip("#")
+    if not isinstance(hex_color, str):
+        raise ValueError("颜色值必须是字符串")
+    h = hex_color.strip().lstrip("#")
+    if len(h) == 3:
+        h = "".join(ch * 2 for ch in h)
+    if len(h) != 6 or any(ch not in "0123456789abcdefABCDEF" for ch in h):
+        raise ValueError(f"无效的十六进制颜色: {hex_color!r}")
     return RGBColor(int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
 
 
@@ -80,12 +90,37 @@ class PPTService:
     每种版式对应一个 _render_* 方法。
     """
 
+    # 16:9 设计稿坐标 → 实际页面坐标的缩放因子（4:3 模板等场景）
+    _sx: float = 1.0
+    _sy: float = 1.0
+
     def __init__(self):
         self.prs: Optional[Presentation] = None
         self.colors: ColorScheme = THEME_COLORS["professional"]
         self.fonts: FontScheme = DEFAULT_FONTS
         self.changes: list = []
         self.template_config = None  # TemplateConfig，设置后遵循模板布局
+
+    def _x(self, v: float):
+        """设计稿 x/宽度 → 实际 Emu"""
+        return Inches(v * self._sx)
+
+    def _y(self, v: float):
+        """设计稿 y/高度 → 实际 Emu"""
+        return Inches(v * self._sy)
+
+    def _surface_color(self, alternate: bool = False) -> str:
+        """Return a readable card/table surface for both light and dark themes."""
+        bg = self.colors.bg or "#FFFFFF"
+        raw = bg.lstrip("#")
+        try:
+            red, green, blue = (int(raw[i:i + 2], 16) for i in (0, 2, 4))
+            is_dark = (0.2126 * red + 0.7152 * green + 0.0722 * blue) < 128
+        except (TypeError, ValueError):
+            is_dark = False
+        if is_dark:
+            return self.colors.line if alternate else bg
+        return "#F5F7FA" if alternate else "#FFFFFF"
 
     def generate(self, outline: PPTOutline, output_path: str) -> PPTGenerationResult:
         """
@@ -100,14 +135,46 @@ class PPTService:
         """
         try:
             self.changes = []
-            self.prs = Presentation()
+
+            # 基底模板：以用户模板文件为容器（继承其母版/主题/背景/页面尺寸），
+            # 只清空内容页。任何一步失败都回退到全新空白演示文稿。
+            base_path = getattr(outline, '_base_template_path', None)
+            self.prs = None
+            self._base_deck = False
+            if (base_path and Path(base_path).exists()
+                    and Path(base_path).resolve() != Path(output_path).resolve()):
+                try:
+                    from pptx.oxml.ns import qn as _qn
+                    base_prs = Presentation(base_path)
+                    slide_ids = base_prs.slides._sldIdLst
+                    for sld_id in list(slide_ids):
+                        rel_id = sld_id.get(_qn('r:id'))
+                        base_prs.part.drop_rel(rel_id)
+                        slide_ids.remove(sld_id)
+                    self.prs = base_prs
+                    self._base_deck = True
+                    # 页面尺寸以模板实际值为准（渲染缩放因子基于它计算）
+                    outline.slide_width = self.prs.slide_width / 914400
+                    outline.slide_height = self.prs.slide_height / 914400
+                    self.changes.append(f"使用模板: {Path(base_path).name}（保留母版与主题）")
+                except Exception as exc:
+                    logger.warning("模板基底加载失败，回退空白演示文稿: %s", exc)
+                    self.prs = None
+                    self._base_deck = False
+            if self.prs is None:
+                self.prs = Presentation()
 
             # 模板配置（如果有）
             self.template_config = getattr(outline, '_template_config', None)
 
-            # 页面尺寸
-            self.prs.slide_width = Inches(outline.slide_width)
-            self.prs.slide_height = Inches(outline.slide_height)
+            # 页面尺寸（无基底模板时按 outline 设置）
+            if not self._base_deck:
+                self.prs.slide_width = Inches(outline.slide_width)
+                self.prs.slide_height = Inches(outline.slide_height)
+            # 渲染器均按 16:9 (13.333 x 7.5 英寸) 设计稿取坐标，
+            # 模板尺寸不同（如 4:3）时等比缩放，避免元素越界出页
+            self._sx = outline.slide_width / 13.333
+            self._sy = outline.slide_height / 7.5
 
             # 配色（模板配置优先）
             if self.template_config:
@@ -217,13 +284,25 @@ class PPTService:
 
     def _add_blank_slide(self) -> object:
         """添加空白幻灯片"""
-        layout = self.prs.slide_layouts[6]  # 空白布局
+        # 任意模板的版式集合不保证 [6] 是空白布局：优先选无占位符的版式
+        layout = None
+        for cand in self.prs.slide_layouts:
+            try:
+                if len(cand.placeholders) == 0:
+                    layout = cand
+                    break
+            except Exception:
+                continue
+        if layout is None:
+            layouts = list(self.prs.slide_layouts)
+            layout = layouts[6] if len(layouts) > 6 else layouts[0]
         slide = self.prs.slides.add_slide(layout)
-        # 设置背景色
-        bg = slide.background
-        fill = bg.fill
-        fill.solid()
-        fill.fore_color.rgb = hex_to_rgb(self.colors.bg)
+        # 基底模板时保留母版背景（覆盖填充会抹掉模板的背景/装饰）
+        if not self._base_deck:
+            bg = slide.background
+            fill = bg.fill
+            fill.solid()
+            fill.fore_color.rgb = hex_to_rgb(self.colors.bg)
         return slide
 
     def _set_shape_bg(self, shape, color: str):
@@ -239,15 +318,20 @@ class PPTService:
                       anchor: str = "top") -> object:
         """添加文本框"""
         box = slide.shapes.add_textbox(
-            Inches(left), Inches(top), Inches(width), Inches(height)
+            self._x(left), self._y(top), self._x(width), self._y(height)
         )
         tf = box.text_frame
         tf.word_wrap = True
-        tf.auto_size = None
+        tf.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
+        tf.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
 
         # 垂直对齐
         anchor_map = {"top": MSO_ANCHOR.TOP, "middle": MSO_ANCHOR.MIDDLE, "bottom": MSO_ANCHOR.BOTTOM}
         tf.vertical_anchor = anchor_map.get(anchor, MSO_ANCHOR.TOP)
+
+        # 叶子层防御：None/数字等一律转字符串（p.text = None 会抛 TypeError）
+        if not isinstance(text, str):
+            text = "" if text is None else str(text)
 
         p = tf.paragraphs[0]
         p.text = text
@@ -270,7 +354,7 @@ class PPTService:
                          line_spacing: float = 1.5) -> object:
         """添加要点列表"""
         box = slide.shapes.add_textbox(
-            Inches(left), Inches(top), Inches(width), Inches(height)
+            self._x(left), self._y(top), self._x(width), self._y(height)
         )
         tf = box.text_frame
         tf.word_wrap = True
@@ -282,16 +366,20 @@ class PPTService:
                 p = tf.add_paragraph()
 
             if isinstance(bullet, dict):
-                text = bullet.get("text", "")
-                level = bullet.get("level", 0)
-                sub_bullets = bullet.get("children", [])
+                raw_text = bullet.get("text", "")
+                text = "" if raw_text is None else str(raw_text)
+                try:
+                    level = max(0, min(4, int(bullet.get("level", 0))))
+                except (TypeError, ValueError):
+                    level = 0
+                sub_bullets = bullet.get("children", []) or []
             else:
-                text = str(bullet)
+                text = "" if bullet is None else str(bullet)
                 level = 0
                 sub_bullets = []
 
             p.text = f"{'  ' * level}{bullet_char} {text}"
-            p.font.size = Pt(font_size - level * 2)
+            p.font.size = Pt(max(8, font_size - level * 2))
             p.font.color.rgb = hex_to_rgb(color or self.colors.text)
             p.font.name = self.fonts.body_cn
             self._set_cn_font(p, self.fonts.body_cn)
@@ -301,7 +389,7 @@ class PPTService:
             # 子要点
             for sub in sub_bullets:
                 sp = tf.add_paragraph()
-                sp.text = f"    ◦ {sub}"
+                sp.text = f"    ◦ {'' if sub is None else str(sub)}"
                 sp.font.size = Pt(font_size - 2)
                 sp.font.color.rgb = hex_to_rgb(self.colors.text_muted)
                 sp.font.name = self.fonts.body_cn
@@ -316,7 +404,7 @@ class PPTService:
         """添加装饰线"""
         line = slide.shapes.add_shape(
             MSO_SHAPE.RECTANGLE,
-            Inches(left), Inches(top), Inches(width), Inches(height)
+            self._x(left), self._y(top), self._x(width), self._y(height)
         )
         self._set_shape_bg(line, color or self.colors.secondary)
         return line
@@ -326,7 +414,7 @@ class PPTService:
         """添加矩形色块"""
         shape = slide.shapes.add_shape(
             MSO_SHAPE.RECTANGLE,
-            Inches(left), Inches(top), Inches(width), Inches(height)
+            self._x(left), self._y(top), self._x(width), self._y(height)
         )
         self._set_shape_bg(shape, color or self.colors.primary)
         return shape
@@ -336,7 +424,7 @@ class PPTService:
         """添加圆角矩形"""
         shape = slide.shapes.add_shape(
             MSO_SHAPE.ROUNDED_RECTANGLE,
-            Inches(left), Inches(top), Inches(width), Inches(height)
+            self._x(left), self._y(top), self._x(width), self._y(height)
         )
         self._set_shape_bg(shape, color or self.colors.primary)
         return shape
@@ -349,7 +437,6 @@ class PPTService:
             color=self.colors.text_muted, alignment="right"
         )
 
-    @staticmethod
     @staticmethod
     def _set_cn_font(run_or_para, font_name: str):
         """设置中文字体（通过 lxml，兼容 PPT drawingml）"""
@@ -429,10 +516,8 @@ class PPTService:
 
         # 目录项
         items = content.bullets or content.left_content or []
-        if not items:
-            items = [f"目录项 {i+1}" for i in range(5)]
 
-        for i, item in enumerate(items):
+        for i, item in enumerate(items[:6]):
             y = 2.0 + i * 0.85
             # 序号
             self._add_text_box(
@@ -441,7 +526,12 @@ class PPTService:
                 color=self.colors.secondary, alignment="center"
             )
             # 文本
-            text = item if isinstance(item, str) else item.get("text", "")
+            if isinstance(item, str):
+                text = item
+            elif isinstance(item, dict):
+                text = str(item.get("text", ""))
+            else:
+                text = str(item)
             self._add_text_box(
                 slide, 2.2, y, 8, 0.6,
                 text, font_size=20, color=self.colors.text,
@@ -497,16 +587,17 @@ class PPTService:
 
         # 要点
         bullets = content.bullets or []
+        body_font_size = content.body_font_size or self.fonts.body_size
         if bullets:
             self._add_bullet_list(
                 slide, 1.0, 1.8, 11.333, 5.0,
-                bullets, font_size=self.fonts.body_size,
+                bullets, font_size=body_font_size,
                 color=self.colors.text
             )
         elif content.body_text:
             self._add_text_box(
                 slide, 1.0, 1.8, 11.333, 5.0,
-                content.body_text, font_size=self.fonts.body_size,
+                content.body_text, font_size=body_font_size,
                 color=self.colors.text
             )
 
@@ -526,10 +617,11 @@ class PPTService:
 
         # 左侧要点
         bullets = content.bullets or content.left_content or []
+        body_font_size = content.body_font_size or self.fonts.body_size
         if bullets:
             self._add_bullet_list(
                 slide, 0.8, 1.8, 6.5, 5.0,
-                bullets, font_size=self.fonts.body_size,
+                bullets, font_size=body_font_size,
                 color=self.colors.text
             )
 
@@ -538,8 +630,8 @@ class PPTService:
             try:
                 slide.shapes.add_picture(
                     content.image_path,
-                    Inches(7.8), Inches(1.8),
-                    Inches(4.8), Inches(4.5)
+                    self._x(7.8), self._y(1.8),
+                    width=self._x(4.8)
                 )
             except Exception:
                 self._add_image_placeholder(slide, 7.8, 1.8, 4.8, 4.5)
@@ -579,7 +671,7 @@ class PPTService:
         right_items = content.right_content or content.bullets or []
 
         # 左栏背景
-        self._add_rounded_rect(slide, 0.6, 1.8, 5.8, 5.0, "#F5F7FA")
+        self._add_rounded_rect(slide, 0.6, 1.8, 5.8, 5.0, self._surface_color(True))
         if left_items:
             self._add_bullet_list(
                 slide, 1.0, 2.0, 5.0, 4.6,
@@ -587,7 +679,7 @@ class PPTService:
             )
 
         # 右栏背景
-        self._add_rounded_rect(slide, 6.9, 1.8, 5.8, 5.0, "#F5F7FA")
+        self._add_rounded_rect(slide, 6.9, 1.8, 5.8, 5.0, self._surface_color(True))
         if right_items:
             self._add_bullet_list(
                 slide, 7.3, 2.0, 5.0, 4.6,
@@ -613,7 +705,6 @@ class PPTService:
 
         items = content.bullets or []
         cols = 2
-        rows = (len(items) + cols - 1) // cols
 
         for i, item in enumerate(items[:8]):  # 最多8项
             col = i % cols
@@ -621,12 +712,18 @@ class PPTService:
             x = 0.8 + col * 6.2
             y = 1.8 + row * 1.3
 
-            text = item if isinstance(item, str) else item.get("text", str(item))
+            if isinstance(item, str):
+                text = item
+            elif isinstance(item, dict):
+                raw = item.get("text", "")
+                text = "" if raw is None else str(raw)
+            else:
+                text = "" if item is None else str(item)
 
             # 序号圆
             circle = slide.shapes.add_shape(
                 MSO_SHAPE.OVAL,
-                Inches(x), Inches(y), Inches(0.5), Inches(0.5)
+                self._x(x), self._y(y), self._x(0.5), self._y(0.5)
             )
             self._set_shape_bg(circle, self.colors.secondary)
             tf = circle.text_frame
@@ -660,9 +757,7 @@ class PPTService:
         self._add_decorative_line(slide, 0.8, 1.3, 11.7, 0.04, self.colors.secondary)
 
         data = content.data or []
-        if not data:
-            data = [("指标一", "100", "%"), ("指标二", "200", "+"),
-                    ("指标三", "50", "万"), ("指标四", "99", "%")]
+        data = list(data[:4])
 
         card_width = 2.6
         gap = 0.35
@@ -688,7 +783,7 @@ class PPTService:
             card_color = colors[i % len(colors)]
 
             # 卡片背景
-            card = self._add_rounded_rect(slide, x, 2.2, card_width, 3.0, card_color)
+            self._add_rounded_rect(slide, x, 2.2, card_width, 3.0, card_color)
 
             # 数值
             self._add_text_box(
@@ -726,23 +821,16 @@ class PPTService:
         self._add_decorative_line(slide, 0.8, 1.3, 11.7, 0.04, self.colors.secondary)
 
         items = content.timeline_items or []
-        if not items:
-            items = [
-                ("2024 Q1", "启动", "项目立项"),
-                ("2024 Q2", "开发", "核心功能"),
-                ("2024 Q3", "测试", "质量保障"),
-                ("2024 Q4", "上线", "正式发布"),
-            ]
-
         n = len(items)
         if n == 0:
             return
 
-        # 时间线主轴
+        # 时间线主轴（节点文本框左右各占约 1.2 英寸，
+        # 首末节点内收，避免描述文本越出页面右缘）
         line_y = 3.8
-        self._add_decorative_line(slide, 1.0, line_y, 11.333, 0.04, self.colors.secondary)
+        self._add_decorative_line(slide, 1.0, line_y, 9.6, 0.04, self.colors.secondary)
 
-        spacing = 11.333 / max(n - 1, 1) if n > 1 else 0
+        spacing = 9.6 / max(n - 1, 1) if n > 1 else 0
 
         for i, item in enumerate(items):
             if isinstance(item, (list, tuple)):
@@ -756,13 +844,13 @@ class PPTService:
             else:
                 time_str, title, desc = str(item), "", ""
 
-            x = 1.0 + i * spacing
+            x = 1.3 + i * spacing
 
             # 节点圆
             node = slide.shapes.add_shape(
                 MSO_SHAPE.OVAL,
-                Inches(x - 0.15), Inches(line_y - 0.15),
-                Inches(0.3), Inches(0.3)
+                self._x(x - 0.15), self._y(line_y - 0.15),
+                self._x(0.3), self._y(0.3)
             )
             self._set_shape_bg(node, self.colors.accent)
 
@@ -896,15 +984,32 @@ class PPTService:
             table_data = [["项目", "内容"]] + [[b, ""] for b in content.bullets]
 
         if table_data:
-            rows = len(table_data)
-            cols = max(len(r) for r in table_data)
-            # 表格位置
-            t_left, t_top = 0.8, 1.6
-            t_width, t_height = 11.733, min(5.2, 0.5 * rows + 0.3)
-            self._add_table(
-                slide, t_left, t_top, t_width, t_height,
-                table_data, has_header=content.table_header
-            )
+            # 规范化：丢掉非列表行/空行，全部转字符串
+            norm_rows = []
+            for row in table_data:
+                if isinstance(row, (list, tuple)) and len(row) > 0:
+                    norm_rows.append([str(c) if c is not None else "" for c in row])
+                elif isinstance(row, str):
+                    norm_rows.append([row])
+            table_data = norm_rows
+            if table_data:
+                max_cols = max(len(r) for r in table_data)
+                if max_cols == 0 or len(table_data) == 0:
+                    table_data = []
+            if table_data:
+                if len(table_data) > 40:
+                    overflow = len(table_data) - 40
+                    table_data = table_data[:40]
+                    if not content.body_text:
+                        content.body_text = f"（内容较长，仅显示前 40 行，省略 {overflow} 行）"
+                rows = len(table_data)
+                # 表格位置
+                t_left, t_top = 0.8, 1.6
+                t_width, t_height = 11.733, min(5.2, 0.5 * rows + 0.3)
+                self._add_table(
+                    slide, t_left, t_top, t_width, t_height,
+                    table_data, has_header=content.table_header
+                )
 
         # 备注/说明
         if content.body_text:
@@ -928,12 +1033,14 @@ class PPTService:
             has_header: 第一行是否为表头
         """
         rows = len(data)
-        cols = max(len(r) for r in data)
+        cols = max((len(r) for r in data), default=0)
+        if rows == 0 or cols == 0:
+            return None
 
         table_shape = slide.shapes.add_table(
             rows, cols,
-            Inches(left), Inches(top),
-            Inches(width), Inches(height)
+            self._x(left), self._y(top),
+            self._x(width), self._y(height)
         )
         table = table_shape.table
 
@@ -964,10 +1071,10 @@ class PPTService:
                     cell.fill.fore_color.rgb = hex_to_rgb(self.colors.primary)
                 elif r_idx % 2 == 0:
                     cell.fill.solid()
-                    cell.fill.fore_color.rgb = hex_to_rgb("#F5F7FA")
+                    cell.fill.fore_color.rgb = hex_to_rgb(self._surface_color(True))
                 else:
                     cell.fill.solid()
-                    cell.fill.fore_color.rgb = hex_to_rgb("#FFFFFF")
+                    cell.fill.fore_color.rgb = hex_to_rgb(self._surface_color(False))
 
                 # 垂直居中
                 cell.vertical_anchor = MSO_ANCHOR.MIDDLE
@@ -996,8 +1103,16 @@ class PPTService:
 
         # 如果没有显式图表数据，尝试从 data 字段转换
         if not categories and content.data:
-            categories = [d[0] for d in content.data]
-            series = [("数值", [d[1] for d in content.data])]
+            pairs = []
+            for item in content.data:
+                if isinstance(item, dict):
+                    label = item.get("label", item.get("name", item.get("category", "")))
+                    value = item.get("value", item.get("amount", 0))
+                    pairs.append((label, value))
+                elif isinstance(item, (list, tuple)) and len(item) >= 2:
+                    pairs.append((item[0], item[1]))
+            categories = [pair[0] for pair in pairs]
+            series = [("数值", [pair[1] for pair in pairs])] if pairs else []
 
         if categories and series:
             chart_type = content.chart_type
@@ -1048,17 +1163,52 @@ class PPTService:
         }
         xl_type = chart_type_map.get(chart_type, XL_CHART_TYPE.COLUMN_CLUSTERED)
 
-        # 构建图表数据
+        # 构建图表数据（类别与数值强类型化：非法数值会写出损坏的
+        # c:numCache XML，导致 PowerPoint/WPS 打开时提示修复）
+        def _chart_num(v):
+            if isinstance(v, bool) or v is None:
+                return 0.0
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return 0.0
+
+        normalized_series = []
+        for item in series or []:
+            if isinstance(item, dict):
+                name = item.get("name", item.get("label", "系列"))
+                values = item.get("values", item.get("data", []))
+            elif isinstance(item, (list, tuple)) and len(item) >= 2:
+                name, values = item[0], item[1]
+            else:
+                continue
+            if not isinstance(values, (list, tuple)):
+                values = [values]
+            normalized_series.append((name, values))
+
+        if not normalized_series:
+            return None
+
+        normalized_categories = [str(c) for c in (categories or [])]
+        if not normalized_categories:
+            raise ValueError("图表类别不能为空")
+        expected_len = len(normalized_categories)
+        for name, values in normalized_series:
+            if len(values) != expected_len:
+                raise ValueError(
+                    f"图表系列 {name!r} 有 {len(values)} 个值，但类别有 {expected_len} 个"
+                )
+
         chart_data = CategoryChartData()
-        chart_data.categories = categories
-        for name, values in series:
-            chart_data.add_series(name, values)
+        chart_data.categories = normalized_categories
+        for name, values in normalized_series:
+            chart_data.add_series(str(name), [_chart_num(v) for v in (values or [])])
 
         # 添加图表
         chart_frame = slide.shapes.add_chart(
             xl_type,
-            Inches(left), Inches(top),
-            Inches(width), Inches(height),
+            self._x(left), self._y(top),
+            self._x(width), self._y(height),
             chart_data
         )
         chart = chart_frame.chart
@@ -1077,7 +1227,7 @@ class PPTService:
             chart.has_title = False
 
         # 图例
-        if len(series) > 1 and chart_type != "pie":
+        if len(normalized_series) > 1 and chart_type != "pie":
             chart.has_legend = True
             chart.legend.position = XL_LEGEND_POSITION.BOTTOM
             chart.legend.include_in_layout = False
@@ -1100,9 +1250,11 @@ class PPTService:
 
         # 饼图数据标签
         if chart_type == "pie":
-            for s in chart.series:
-                for point in s.points:
-                    point.data_label.has_text_frame = True
-                    point.data_label.font.size = Pt(self.fonts.caption_size)
+            plot = chart.plots[0]
+            plot.has_data_labels = True
+            plot.data_labels.show_percentage = True
+            plot.data_labels.show_category_name = True
+            plot.data_labels.position = XL_LABEL_POSITION.BEST_FIT
+            plot.data_labels.font.size = Pt(self.fonts.caption_size)
 
         return chart_frame

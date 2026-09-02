@@ -7,6 +7,8 @@
 - API Key 通过 ApiKeyCrypto 加密存储，接口不回传明文
 """
 import logging
+import tempfile
+import asyncio
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
@@ -14,12 +16,15 @@ from pydantic import BaseModel
 
 from ...models.model_schemas import ModelProvider, DEFAULT_MODEL_CONFIGS
 from ...image_generation.config import ImageModelConfigManager
+from ...image_generation.gateway import ImageGenerationGateway
 
 logger = logging.getLogger("office_agent.api.settings")
 router = APIRouter(prefix="/api/settings", tags=["设置"])
 
 # 合法供应商白名单（对应 ModelProvider 枚举）
-_ALLOWED_PROVIDERS = {"openai", "deepseek", "doubao", "qwen", "claude", "gemini", "agnes"}
+_ALLOWED_PROVIDERS = {
+    provider.value for provider in ModelProvider if provider is not ModelProvider.CUSTOM
+}
 
 
 class ModelSettingsRequest(BaseModel):
@@ -58,6 +63,34 @@ def _get_gateway():
     return ModelGateway()
 
 
+def _model_test_error(error: str) -> str:
+    text = (error or "").lower()
+    if "401" in text or "403" in text or "authentication" in text or "api key" in text:
+        return "鉴权失败，请更新 API Key"
+    if "429" in text or "rate limit" in text or "限流" in text:
+        return "请求过于频繁或额度不足，请稍后重试"
+    if "timeout" in text or "timed out" in text or "连接超时" in text:
+        return "连接超时，请检查网络或服务地址"
+    return "模型连接失败，请检查模型名称、服务地址和网络"
+
+
+def _image_test_error(error: str) -> str:
+    text = (error or "").lower()
+    if "401" in text or "403" in text or "authentication" in text or "api key" in text:
+        return "生图服务鉴权失败，请更新 API Key"
+    if "429" in text or "rate limit" in text or "quota" in text or "额度" in text:
+        return "生图服务额度不足或请求受限，请稍后重试"
+    if "http 400" in text:
+        return "生图请求被拒绝，请检查模型名称和参数"
+    if "http 404" in text:
+        return "未找到生图端点或模型，请检查 Base URL 和模型名称"
+    if "getaddrinfo" in text or "name resolution" in text or "连接失败" in error:
+        return "无法连接生图服务，请检查 Base URL 和网络"
+    if "timeout" in text or "timed out" in text or "超时" in error:
+        return "生图请求超时，请检查网络后重试"
+    return "生图测试失败，请检查模型名称、服务地址和网络"
+
+
 @router.get("/model")
 def get_model_settings():
     """获取已配置的模型列表与当前默认模型（不回传 API Key）"""
@@ -84,9 +117,9 @@ def get_model_settings():
             "default_model_id": default_id,
             "models": models,
         }
-    except Exception as e:
+    except Exception:
         logger.exception("读取模型配置失败")
-        raise HTTPException(status_code=500, detail=f"读取模型配置失败: {e}")
+        raise HTTPException(status_code=500, detail="读取模型配置失败，请稍后重试")
 
 
 @router.post("/model")
@@ -117,9 +150,9 @@ def save_model_settings(req: ModelSettingsRequest):
         logger.info("模型配置已保存: provider=%s model=%s", provider, model)
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         logger.exception("保存模型配置失败")
-        raise HTTPException(status_code=500, detail=f"保存模型配置失败: {e}")
+        raise HTTPException(status_code=500, detail="保存模型配置失败，请检查配置后重试")
 
     return {
         "configured": True,
@@ -148,9 +181,35 @@ def set_default_model(req: SetDefaultModelRequest):
         }
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         logger.exception("切换默认模型失败")
-        raise HTTPException(status_code=500, detail=f"切换默认模型失败: {e}")
+        raise HTTPException(status_code=500, detail="切换默认模型失败，请稍后重试")
+
+
+@router.post("/model/{model_id}/test")
+async def test_model_connection(model_id: str):
+    """按需发起一条短请求，验证已保存模型的真实可用性。"""
+    gateway = _get_gateway()
+    client = gateway.manager.get_client(model_id)
+    if not client:
+        raise HTTPException(status_code=404, detail="模型不存在、未启用或缺少 API Key")
+    timeout = max(1, min(int(getattr(client.config, "timeout", 60)) + 5, 180))
+    try:
+        result = await asyncio.wait_for(
+            asyncio.to_thread(client.simple_chat, "只回复 OK", max_tokens=128),
+            timeout=timeout,
+        )
+    except asyncio.TimeoutError:
+        return {
+            "success": False, "model_id": model_id, "latency_ms": timeout * 1000,
+            "message": "连接超时，请检查网络或服务地址",
+        }
+    return {
+        "success": result.success,
+        "model_id": model_id,
+        "latency_ms": result.latency_ms,
+        "message": "连接成功" if result.success else _model_test_error(result.error),
+    }
 
 
 @router.get("/image-model")
@@ -167,9 +226,9 @@ def get_image_model_settings():
             "mcp_url": cfg["mcp_url"],
             "api_key_mask": _mask_key(cfg["api_key"]),
         }
-    except Exception as e:
+    except Exception:
         logger.exception("读取生图模型配置失败")
-        raise HTTPException(status_code=500, detail=f"读取生图模型配置失败: {e}")
+        raise HTTPException(status_code=500, detail="读取生图模型配置失败，请稍后重试")
 
 
 @router.post("/image-model")
@@ -197,6 +256,42 @@ def save_image_model_settings(req: ImageModelRequest):
         }
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         logger.exception("保存生图模型配置失败")
-        raise HTTPException(status_code=500, detail=f"保存生图模型配置失败: {e}")
+        raise HTTPException(status_code=500, detail="保存生图模型配置失败，请检查配置后重试")
+
+
+@router.post("/image-model/test")
+async def test_image_model_connection():
+    """生成并立即删除一张测试图，验证保存的生图配置是否真实可用。"""
+    mgr = ImageModelConfigManager()
+    cfg = mgr.get_config()
+    if not mgr.is_configured():
+        raise HTTPException(status_code=400, detail="请先保存生图配置")
+    gateway = ImageGenerationGateway(
+        api_key=cfg.get("api_key", ""),
+        base_url=cfg.get("base_url", ""),
+        model=cfg.get("model", ""),
+        provider=cfg.get("provider", ""),
+        mcp_url=cfg.get("mcp_url", ""),
+    )
+    try:
+        result = await asyncio.wait_for(
+            asyncio.to_thread(gateway.test_connection, output_dir=tempfile.gettempdir()),
+            timeout=180,
+        )
+        return {
+            **result,
+            "provider": gateway.provider,
+            "model": gateway.model,
+            "message": "测试图生成成功，配置可用",
+        }
+    except (Exception, asyncio.TimeoutError) as exc:
+        logger.warning("生图配置测试失败: %s", _image_test_error(str(exc)))
+        return {
+            "success": False,
+            "provider": gateway.provider,
+            "model": gateway.model,
+            "latency_ms": 0,
+            "message": _image_test_error(str(exc)),
+        }

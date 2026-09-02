@@ -7,12 +7,11 @@ Word Quality Scorer - Word文档质量评分引擎
 3. 排版一致性 (layout_consistency): 同类元素格式是否一致
 """
 import os
-from typing import Dict, List, Any, Optional, Tuple
+import re
+from typing import Dict, List, Any
 from dataclasses import dataclass, field
 
 from docx import Document
-from docx.shared import Pt, RGBColor, Emu
-from docx.enum.text import WD_ALIGN_PARAGRAPH
 
 
 @dataclass
@@ -154,13 +153,16 @@ class WordQualityScorer:
                     run_info["color"] = str(run.font.color.rgb)
                 info["runs"].append(run_info)
 
-            # 主字体和字号（取第一个非空run）
-            for r in info["runs"]:
-                if r["font_name"]:
-                    info["main_font"] = r["font_name"]
-                    info["main_size"] = r["font_size"]
-                    info["main_bold"] = r["bold"]
-                    break
+            # 中文正文优先从包含中文的 run 取主字体；再按承载字符数选择，
+            # 避免段首英文/数字 run 把西文字体误当作中文主字体。
+            candidates = [r for r in info["runs"] if r["font_name"] and r["text"]]
+            cjk_candidates = [r for r in candidates if re.search(r"[\u3400-\u9fff]", r["text"])]
+            dominant = max(cjk_candidates or candidates,
+                           key=lambda item: len(item["text"]), default=None)
+            if dominant:
+                info["main_font"] = dominant["font_name"]
+                info["main_size"] = dominant["font_size"]
+                info["main_bold"] = dominant["bold"]
             else:
                 info["main_font"] = None
                 info["main_size"] = None
@@ -184,19 +186,17 @@ class WordQualityScorer:
             is_heading = False
             heading_level = 0
 
-            if style.startswith("Heading") or style.startswith("标题"):
-                is_heading = True
-                try:
-                    if " " in style:
-                        heading_level = int(style.split()[-1])
-                    elif "标题" in style:
-                        heading_level = 1
-                except ValueError:
-                    heading_level = 1
-            elif style == "Title" or style == "标题":
+            if style == "Title" or style == "标题":
                 is_heading = True
                 heading_level = 0  # 文档标题
                 title_found = True
+            elif style.startswith("Heading") or style.startswith("标题"):
+                is_heading = True
+                try:
+                    level_match = re.search(r"(?:Heading|标题)\s*(\d+)", style, re.IGNORECASE)
+                    heading_level = int(level_match.group(1)) if level_match else 1
+                except ValueError:
+                    heading_level = 1
             elif p["main_bold"] and p["main_size"] and p["main_size"] >= 16:
                 # 加粗且字号大，可能是手动设置的标题
                 is_heading = True
@@ -399,13 +399,26 @@ class WordQualityScorer:
         if format_info.get("line_spacing_ratio", 0) >= 0.5:
             score += 7
 
-        # 如果有期望格式，检查是否匹配
+        # 如果提供期望格式，以用户期望参与评分，而不是始终按内置模板打分。
         if expected:
-            if expected.get("title_font") and format_info.get("main_font"):
-                # 简单检查
-                pass
+            expected_font = expected.get("body_font", expected.get("font"))
+            expected_size = expected.get("body_size", expected.get("size"))
+            expected_indent = expected.get("first_line_indent")
+            expected_spacing = expected.get("line_spacing")
+            if expected_font and format_info.get("main_font") != expected_font:
+                score -= 15
+            if expected_size is not None and format_info.get("main_size") is not None:
+                try:
+                    if abs(float(format_info["main_size"]) - float(expected_size)) > 0.5:
+                        score -= 15
+                except (TypeError, ValueError):
+                    score -= 5
+            if expected_indent and format_info.get("indent_ratio", 0) < 0.8:
+                score -= 10
+            if expected_spacing and format_info.get("line_spacing_ratio", 0) < 0.8:
+                score -= 10
 
-        return min(100, score)
+        return max(0, min(100, score))
 
     def _score_headings(self, heading_info: Dict) -> float:
         """标题识别率评分"""

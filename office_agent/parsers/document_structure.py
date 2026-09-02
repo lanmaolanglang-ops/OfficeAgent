@@ -24,15 +24,16 @@ Document Structure Analyzer - 文档结构分析器
 4. 语义关键词（摘要/Abstract/参考文献/References 等）
 5. LLM 语义判断（可选回调）
 """
+import logging
 import re
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional, Callable, Any
 from pathlib import Path
+from typing import Optional, Callable
 
 from docx import Document
-from docx.oxml.ns import qn
 
+logger = logging.getLogger(__name__)
 
 # ==========================================
 # 数据结构
@@ -574,7 +575,7 @@ class DocumentStructureAnalyzer:
 
     def _llm_refinement(self, nodes: list):
         """使用 LLM 对不确定的节点进行语义判断"""
-        for node in nodes:
+        for position, node in enumerate(nodes):
             # 只对不确定的节点（正文但可能是标题，或未知类型）调用 LLM
             if node.type not in ("paragraph", "unknown"):
                 continue
@@ -585,7 +586,7 @@ class DocumentStructureAnalyzer:
                 "font_size": node.font_size,
                 "bold": node.bold,
                 "alignment": node.alignment,
-                "prev_types": [n.type for n in nodes[max(0, node.index-3):node.index]],
+                "prev_types": [n.type for n in nodes[max(0, position - 3):position]],
             }
 
             try:
@@ -595,7 +596,7 @@ class DocumentStructureAnalyzer:
                     node.level = NODE_LEVEL.get(NodeType(result), 0)
                     node.metadata["llm_verified"] = True
             except Exception:
-                pass  # LLM 调用失败不影响规则匹配结果
+                logger.exception("LLM 文档结构细化失败，保留规则识别结果")
 
     def _build_tree(self, tree: DocumentTree, nodes: list):
         """根据层级构建树结构"""
@@ -624,27 +625,32 @@ class DocumentStructureAnalyzer:
 
     def _get_font_info(self, para) -> tuple:
         """获取段落的主要字号和加粗状态"""
-        max_size = 0.0
-        is_bold = False
-        has_run = False
+        size_weights = {}
+        bold_chars = 0
+        total_chars = 0
 
         for run in para.runs:
             if not run.text.strip():
                 continue
-            has_run = True
-            if run.font.size:
-                max_size = max(max_size, run.font.size.pt)
+            char_count = len(run.text.strip())
+            total_chars += char_count
+            size = run.font.size.pt if run.font.size else None
+            if size is not None:
+                size_weights[size] = size_weights.get(size, 0) + char_count
             if run.font.bold:
-                is_bold = True
+                bold_chars += char_count
 
-        # 如果没有 run 级别的信息，尝试从样式获取
-        if not has_run and para.style and para.style.font:
+        # 以承载字符最多的字号为主字号，避免单个大号符号/局部强调
+        # 把整段正文误判为标题。
+        main_size = max(size_weights, key=size_weights.get) if size_weights else 0.0
+        is_bold = bool(total_chars and bold_chars >= total_chars / 2)
+        if not main_size and para.style and para.style.font:
             if para.style.font.size:
-                max_size = para.style.font.size.pt
+                main_size = para.style.font.size.pt
             if para.style.font.bold:
                 is_bold = True
 
-        return max_size, is_bold
+        return main_size, is_bold
 
     def _get_alignment(self, para) -> str:
         """获取对齐方式"""

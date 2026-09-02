@@ -8,20 +8,44 @@ Key 使用与语言模型相同的 Fernet 加密（兼容旧 XOR 数据）。
 OpenAI 兼容的 /images/generations 端点，或通过 mcp_url 走 MCP 网关。
 """
 import json
-from pathlib import Path
 from typing import Optional
 
-from ..model_gateway.model_manager import ApiKeyCrypto
+from ..model_gateway.model_manager import ApiKeyCrypto, resolve_model_config_dir
+
+AGNES_DEFAULT_BASE_URL = "https://apihub.agnes-ai.com/v1"
+AGNES_DEFAULT_MODEL = "agnes-image-2.0-flash"
+
+
+def normalize_image_model_config(config: dict) -> dict:
+    """规范化已知 Agnes 配置别名，同时保留自定义兼容端点。"""
+    normalized = dict(config or {})
+    provider = str(normalized.get("provider") or "agnes").strip().lower()
+    normalized["provider"] = provider
+    normalized["api_key"] = str(normalized.get("api_key") or "").strip()
+    normalized["mcp_url"] = str(normalized.get("mcp_url") or "").strip().rstrip("/")
+
+    base_url = str(normalized.get("base_url") or "").strip().rstrip("/")
+    model = str(normalized.get("model") or "").strip()
+    if provider == "agnes":
+        # 修复历史设置页曾允许保存的常见拼写错误。
+        if base_url.lower() == "https://apihub-agnes-ai.com/v1":
+            base_url = AGNES_DEFAULT_BASE_URL
+        if not base_url:
+            base_url = AGNES_DEFAULT_BASE_URL
+        if model.lower().startswith("agnes-image-"):
+            model = "-".join(model.split())
+        if not model:
+            model = AGNES_DEFAULT_MODEL
+    normalized["base_url"] = base_url
+    normalized["model"] = model
+    return normalized
 
 
 class ImageModelConfigManager:
     """生图模型配置管理器"""
 
     def __init__(self, config_dir: Optional[str] = None):
-        if config_dir:
-            self.config_dir = Path(config_dir)
-        else:
-            self.config_dir = Path.home() / ".office_agent"
+        self.config_dir = resolve_model_config_dir(config_dir)
         self.config_dir.mkdir(parents=True, exist_ok=True)
         self.config_file = self.config_dir / "image_model.json"
         self._encryption = ApiKeyCrypto(self.config_dir)
@@ -32,16 +56,16 @@ class ImageModelConfigManager:
             try:
                 with open(self.config_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                return {
+                return normalize_image_model_config({
                     "provider": data.get("provider", "agnes"),
                     "api_key": self._encryption.decrypt(data.get("api_key_enc", "")),
                     "base_url": data.get("base_url", ""),
                     "model": data.get("model", ""),
                     "mcp_url": data.get("mcp_url", ""),
-                }
+                })
             except Exception:
                 pass
-        return {"provider": "agnes", "api_key": "", "base_url": "", "model": "", "mcp_url": ""}
+        return normalize_image_model_config({"provider": "agnes", "api_key": ""})
 
     def get_config(self) -> dict:
         """返回生图配置（api_key 为明文，供内部调用）"""
@@ -56,15 +80,15 @@ class ImageModelConfigManager:
         """保存配置；api_key 留空表示保留已保存的 Key"""
         provider = (provider or self._config["provider"] or "agnes").strip()
         effective_key = api_key.strip() if api_key else self._config["api_key"]
-        self._config = {
+        self._config = normalize_image_model_config({
             "provider": provider,
             "api_key": effective_key,
             "base_url": (base_url or self._config["base_url"]).strip(),
             "model": (model or self._config["model"]).strip(),
             "mcp_url": (mcp_url or self._config["mcp_url"]).strip(),
-        }
+        })
         data = {
-            "provider": provider,
+            "provider": self._config["provider"],
             "api_key_enc": self._encryption.encrypt(effective_key),
             "base_url": self._config["base_url"],
             "model": self._config["model"],

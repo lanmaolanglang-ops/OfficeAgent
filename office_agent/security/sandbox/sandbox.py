@@ -1,21 +1,9 @@
-"""
-Sandbox Environment - 代码执行沙箱
-用于Excel数据分析等需要执行Python代码的场景
+"""Fail-closed gate for legacy local Python execution.
 
-安全措施：
-1. 独立子进程执行
-2. 超时控制
-3. 模块白名单
-4. 禁止危险内置函数
-5. 输出大小限制
-6. 内存限制（通过子进程）
-7. 文件系统隔离（临时目录）
-
-生产环境建议使用Docker容器：
-- CPU限制
-- 内存限制
-- 网络禁用
-- 只读文件系统
+A child process, temporary working directory and source filtering are not an
+OS security boundary. Production execution is therefore disabled by default.
+The explicit ``allow_unsafe_subprocess`` switch exists only for trusted local
+tests and development while an external isolated executor is not configured.
 """
 from __future__ import annotations
 
@@ -24,13 +12,17 @@ import sys
 import json
 import time
 import uuid
-import signal
 import tempfile
 import subprocess
 from pathlib import Path
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional, Any
+from typing import Any
+
+from ..error_sanitizer import sanitize_error
+from .policy import (
+    ALLOWED_MODULES, BLOCKED_ATTRS, BLOCKED_BUILTINS, validate_code,
+)
 
 try:
     from office_agent.logging_system import get_logger
@@ -63,48 +55,6 @@ class SandboxResult:
     @property
     def success(self) -> bool:
         return self.status == SandboxStatus.SUCCESS
-
-
-# 允许的模块白名单
-ALLOWED_MODULES: set[str] = {
-    # 数据处理
-    "pandas", "numpy", "openpyxl", "xlsxwriter",
-    # 数学/统计
-    "math", "statistics", "decimal", "fractions", "random",
-    # 日期
-    "datetime", "time", "calendar",
-    # 工具
-    "json", "csv", "re", "string", "collections", "itertools",
-    "functools", "operator", "copy", "pprint",
-    # 图表
-    "matplotlib", "matplotlib.pyplot",
-    # IO（受限）
-    "io", "tempfile",
-    # 类型
-    "typing", "dataclasses", "enum",
-    # 编码
-    "base64", "hashlib", "uuid",
-}
-
-# 禁止的内置函数
-BLOCKED_BUILTINS: set[str] = {
-    "eval", "exec", "compile", "__import__",
-    "open", "input",
-    "globals", "locals", "vars",
-    "getattr", "setattr", "delattr",
-    "memoryview",
-    "breakpoint",
-    "exit", "quit",
-}
-
-# 禁止的属性访问
-BLOCKED_ATTRS: set[str] = {
-    "__globals__", "__code__", "__builtins__",
-    "__subclasses__", "__mro__", "__bases__",
-    "__class__", "__dict__", "__getattribute__",
-    "__reduce__", "__reduce_ex__",
-    "_os", "_sys", "_subprocess",
-}
 
 
 SANDBOX_RUNNER_TEMPLATE = '''
@@ -176,10 +126,10 @@ sys.stdout.write(json.dumps(output, ensure_ascii=False))
 
 class Sandbox:
     """
-    代码执行沙箱
+    代码执行入口（默认失败关闭）
 
     用法:
-        sandbox = Sandbox(timeout=30, max_memory=512)
+        sandbox = Sandbox()
         code = "result = 1 + 2"
         result = sandbox.execute(code)
         if result.success:
@@ -188,17 +138,20 @@ class Sandbox:
 
     def __init__(self,
                  timeout_seconds: int = 30,
-                 max_memory_mb: int = 512,
                  max_output_bytes: int = 1024 * 1024,  # 1MB
                  allowed_modules: set[str] | None = None,
                  work_dir: str | Path | None = None,
-                 docker_image: str | None = None):
+                 allow_unsafe_subprocess: bool = False):
         self.timeout_seconds = timeout_seconds
-        self.max_memory_mb = max_memory_mb
         self.max_output_bytes = max_output_bytes
-        self.allowed_modules = allowed_modules or ALLOWED_MODULES
-        self.work_dir = Path(work_dir) if work_dir else Path(tempfile.mkdtemp(prefix="sandbox_"))
-        self.docker_image = docker_image  # 生产环境用Docker
+        self.allowed_modules = frozenset(allowed_modules or ALLOWED_MODULES)
+        self._temporary_directory = None
+        if work_dir is None:
+            self._temporary_directory = tempfile.TemporaryDirectory(prefix="sandbox_")
+            self.work_dir = Path(self._temporary_directory.name)
+        else:
+            self.work_dir = Path(work_dir)
+        self.allow_unsafe_subprocess = allow_unsafe_subprocess
         self.work_dir.mkdir(parents=True, exist_ok=True)
 
     def execute(self, code: str, input_data: dict | None = None) -> SandboxResult:
@@ -207,6 +160,14 @@ class Sandbox:
         代码中可以直接使用 result 变量作为返回值
         """
         start_time = time.time()
+
+        if not self.allow_unsafe_subprocess:
+            return SandboxResult(
+                status=SandboxStatus.BLOCKED,
+                error=("未配置操作系统级隔离执行器，已拒绝运行代码。"
+                       "生产环境请保持 ENABLE_SANDBOX=false。"),
+                execution_time=0,
+            )
 
         # 预检查代码
         pre_check = self._pre_check_code(code)
@@ -236,6 +197,9 @@ class Sandbox:
                 "PYTHONDONTWRITEBYTECODE": "1",
                 "SANDBOX_WORKDIR": str(self.work_dir),
             }
+            for key in ("SystemRoot", "WINDIR", "TEMP", "TMP"):
+                if os.environ.get(key):
+                    env[key] = os.environ[key]
 
             proc = subprocess.run(
                 [sys.executable, str(runner_path)],
@@ -248,19 +212,29 @@ class Sandbox:
 
             execution_time = time.time() - start_time
 
-            # 解析输出
-            stdout = proc.stdout[:self.max_output_bytes]
-            stderr = proc.stderr[:self.max_output_bytes]
+            # runner 输出本身是 JSON。必须先解析完整 JSON，再分别截断其中的
+            # stdout/stderr；先截断 JSON 会制造“解析失败但仍返回成功”的假成功。
+            raw_stdout = proc.stdout
+            raw_stderr = proc.stderr
 
             try:
-                output = json.loads(stdout)
-                stdout = output.get("stdout", "")
-                stderr = output.get("stderr", "") or stderr
+                output = json.loads(raw_stdout)
+                stdout = str(output.get("stdout", ""))[:self.max_output_bytes]
+                stderr = str(output.get("stderr", "") or raw_stderr)[:self.max_output_bytes]
                 result = output.get("result")
                 error = output.get("error")
-            except json.JSONDecodeError:
-                result = None
-                error = None
+            except (json.JSONDecodeError, TypeError, AttributeError) as exc:
+                return SandboxResult(
+                    status=SandboxStatus.ERROR,
+                    stdout=raw_stdout[:self.max_output_bytes],
+                    stderr=raw_stderr[:self.max_output_bytes],
+                    return_code=proc.returncode,
+                    execution_time=execution_time,
+                    error=f"沙箱输出格式无效: {exc}",
+                )
+
+            if proc.returncode != 0 and not error:
+                error = f"沙箱进程异常退出（代码 {proc.returncode}）"
 
             if error:
                 return SandboxResult(
@@ -290,7 +264,7 @@ class Sandbox:
         except Exception as e:
             return SandboxResult(
                 status=SandboxStatus.ERROR,
-                error=str(e),
+                error=sanitize_error(e, "代码执行失败"),
                 execution_time=time.time() - start_time,
             )
         finally:
@@ -301,33 +275,8 @@ class Sandbox:
                 pass
 
     def _pre_check_code(self, code: str) -> str | None:
-        """预检查代码，返回拒绝原因或None"""
-        # 检查危险导入
-        dangerous_imports = ["os", "sys", "subprocess", "shutil", "pathlib",
-                           "socket", "http", "urllib", "requests",
-                           "ctypes", "multiprocessing", "threading",
-                           "signal", "resource", "gc", "inspect"]
-        for mod in dangerous_imports:
-            if f"import {mod}" in code or f"from {mod}" in code:
-                # 但白名单中的模块允许
-                if mod in self.allowed_modules:
-                    continue
-                return f"禁止导入模块: {mod}"
-
-        # 检查危险属性访问
-        for attr in BLOCKED_ATTRS:
-            if attr in code:
-                return f"禁止访问属性: {attr}"
-
-        # 检查文件操作
-        if "open(" in code or "with open" in code:
-            return "禁止直接文件操作，使用提供的API"
-
-        # 检查网络
-        if "socket" in code or "connect(" in code or "urlopen" in code:
-            return "禁止网络访问"
-
-        return None
+        """使用 AST 与运行时白名单同口径预检，拒绝空白/别名绕过。"""
+        return validate_code(code, self.allowed_modules)
 
     def execute_data_analysis(self, code: str, data: Any = None) -> SandboxResult:
         """
@@ -340,14 +289,21 @@ import numpy as np
 import json
 """
         if data is not None:
-            setup += f"\n# 输入数据已提供\n"
+            # 通过 JSON 文本注入，避免 repr 中的自定义对象执行任意代码，且
+            # 保证布尔值/null 等跨 Python/JSON 类型可正确还原。
+            serialized = json.dumps(data, ensure_ascii=False, default=str)
+            setup += f"\ndata = json.loads({serialized!r})\n"
         full_code = setup + "\n" + code
         return self.execute(full_code)
 
     def cleanup(self):
         """清理工作目录"""
-        import shutil
-        try:
-            shutil.rmtree(self.work_dir, ignore_errors=True)
-        except Exception:
-            pass
+        if self._temporary_directory is not None:
+            self._temporary_directory.cleanup()
+            self._temporary_directory = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.cleanup()

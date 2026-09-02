@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import Workspace from '../Workspace';
-import { useBackendStore, useTaskStore } from '../../stores';
+import { useBackendStore } from '../../stores';
 import type { AgentType } from '../../types';
 
 interface AgentPageProps {
@@ -16,13 +16,12 @@ interface AgentPageProps {
  */
 export default function AgentPage({ title, subtitle, agent = 'auto' }: AgentPageProps) {
   const { startPolling, stopPolling } = useBackendStore();
-  const { loadTasks } = useTaskStore();
 
+  // 任务列表轮询由 Workspace 内的 taskStore.startPolling 负责，这里只管健康轮询
   useEffect(() => {
     startPolling();
-    loadTasks();
     return () => stopPolling();
-  }, [startPolling, stopPolling, loadTasks]);
+  }, [startPolling, stopPolling]);
 
   return <Workspace title={title} subtitle={subtitle} agent={agent} />;
 }

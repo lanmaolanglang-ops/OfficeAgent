@@ -7,12 +7,17 @@
 - 扫描文档（图片PDF）→ 直接截图
 """
 import os
-import io
+import logging
+import shutil
 import tempfile
+import uuid
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 from .vision_models import ImageInput, DocumentPage
+
+
+logger = logging.getLogger(__name__)
 
 
 class DocumentRenderer:
@@ -21,7 +26,7 @@ class DocumentRenderer:
     # 支持的图片格式
     IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tiff", ".webp"}
     PDF_EXTENSIONS = {".pdf"}
-    PPT_EXTENSIONS = {".pptx", ".ppt"}
+    PPT_EXTENSIONS = {".pptx"}
 
     def __init__(self, dpi: int = 200, max_pages: int = 50,
                  output_dir: Optional[str] = None):
@@ -33,8 +38,21 @@ class DocumentRenderer:
         """
         self.dpi = dpi
         self.max_pages = max_pages
+        self._owns_output_dir = output_dir is None
         self.output_dir = output_dir or tempfile.mkdtemp(prefix="vision_")
         os.makedirs(self.output_dir, exist_ok=True)
+
+    def close(self):
+        """清理由渲染器自行创建的临时目录。"""
+        if self._owns_output_dir and self.output_dir:
+            shutil.rmtree(self.output_dir, ignore_errors=True)
+            self.output_dir = ""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, _exc_type, _exc, _tb):
+        self.close()
 
     def render(self, file_path: str) -> List[DocumentPage]:
         """
@@ -77,38 +95,29 @@ class DocumentRenderer:
 
         pages = []
         doc = pymupdf.open(file_path)
+        try:
+            zoom = self.dpi / 72  # 72 是 PDF 默认 DPI
+            matrix = pymupdf.Matrix(zoom, zoom)
+            total = min(len(doc), self.max_pages)
 
-        zoom = self.dpi / 72  # 72 是 PDF 默认 DPI
-        matrix = pymupdf.Matrix(zoom, zoom)
-
-        total = min(len(doc), self.max_pages)
-
-        for i in range(total):
-            page = doc[i]
-
-            # 渲染为图片
-            pix = page.get_pixmap(matrix=matrix, alpha=False)
-
-            # 保存
-            img_path = os.path.join(self.output_dir, f"page_{i+1:04d}.png")
-            pix.save(img_path)
-
-            # 提取文字提示
-            text = page.get_text().strip()[:500]
-
-            img = ImageInput.from_file(img_path, page_number=i+1)
-            img.width = pix.width
-            img.height = pix.height
-
-            pages.append(DocumentPage(
-                page_number=i + 1,
-                image=img,
-                width=pix.width,
-                height=pix.height,
-                text_hint=text,
-            ))
-
-        doc.close()
+            for i in range(total):
+                page = doc[i]
+                pix = page.get_pixmap(matrix=matrix, alpha=False)
+                img_path = os.path.join(self.output_dir, f"page_{i+1:04d}.png")
+                pix.save(img_path)
+                text = page.get_text().strip()[:500]
+                img = ImageInput.from_file(img_path, page_number=i+1)
+                img.width = pix.width
+                img.height = pix.height
+                pages.append(DocumentPage(
+                    page_number=i + 1,
+                    image=img,
+                    width=pix.width,
+                    height=pix.height,
+                    text_hint=text,
+                ))
+        finally:
+            doc.close()
         return pages
 
     def _render_pptx(self, file_path: str) -> List[DocumentPage]:
@@ -122,7 +131,13 @@ class DocumentRenderer:
         # 尝试 LibreOffice 转 PDF
         pdf_path = self._convert_pptx_to_pdf(file_path)
         if pdf_path and os.path.exists(pdf_path):
-            return self._render_pdf(pdf_path)
+            try:
+                return self._render_pdf(pdf_path)
+            finally:
+                try:
+                    os.unlink(pdf_path)
+                except OSError:
+                    pass
 
         # 降级：提取每页文本信息
         return self._extract_pptx_text_pages(file_path)
@@ -130,7 +145,6 @@ class DocumentRenderer:
     def _convert_pptx_to_pdf(self, file_path: str) -> Optional[str]:
         """使用 LibreOffice 将 PPTX 转为 PDF"""
         import subprocess
-        import shutil
 
         # 查找 LibreOffice
         soffice = shutil.which("soffice") or shutil.which("libreoffice")
@@ -148,31 +162,40 @@ class DocumentRenderer:
         if not soffice:
             return None
 
+        conversion_dir = tempfile.mkdtemp(prefix="lo-convert-", dir=self.output_dir)
+        profile_dir = tempfile.mkdtemp(prefix="lo-profile-")
         try:
+            converted_pdf = os.path.join(conversion_dir, Path(file_path).stem + ".pdf")
             out_pdf = os.path.join(
-                self.output_dir,
-                Path(file_path).stem + ".pdf"
+                self.output_dir, f"{Path(file_path).stem}-{uuid.uuid4().hex[:8]}.pdf"
             )
             cmd = [
-                soffice, "--headless", "--convert-to", "pdf",
-                "--outdir", self.output_dir,
+                soffice, "--headless",
+                f"-env:UserInstallation={Path(profile_dir).resolve().as_uri()}",
+                "--convert-to", "pdf",
+                "--outdir", conversion_dir,
                 file_path
             ]
             result = subprocess.run(
                 cmd, capture_output=True, timeout=60,
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
             )
-            if result.returncode == 0 and os.path.exists(out_pdf):
+            if result.returncode == 0 and os.path.exists(converted_pdf):
+                shutil.move(converted_pdf, out_pdf)
                 return out_pdf
-        except Exception:
-            pass
+            output = result.stderr or result.stdout or b""
+            logger.warning("LibreOffice 转换失败: %s", output.decode(errors="replace"))
+        except Exception as exc:
+            logger.warning("LibreOffice 转换异常: %s", exc, exc_info=True)
+        finally:
+            shutil.rmtree(conversion_dir, ignore_errors=True)
+            shutil.rmtree(profile_dir, ignore_errors=True)
 
         return None
 
     def _extract_pptx_text_pages(self, file_path: str) -> List[DocumentPage]:
         """降级方案：从 PPTX 提取文本（无图片渲染）"""
         from pptx import Presentation
-        from pptx.util import Inches, Emu
 
         prs = Presentation(file_path)
         pages = []
@@ -242,7 +265,7 @@ class DocumentRenderer:
     def render_images_from_bytes(self, data: bytes, filename: str = "") -> List[DocumentPage]:
         """从字节数据渲染"""
         ext = Path(filename).suffix.lower() if filename else ".png"
-        tmp_path = os.path.join(self.output_dir, f"input{ext}")
+        tmp_path = os.path.join(self.output_dir, f"input-{uuid.uuid4().hex}{ext}")
         with open(tmp_path, "wb") as f:
             f.write(data)
         return self.render(tmp_path)

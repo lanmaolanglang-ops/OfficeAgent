@@ -8,6 +8,7 @@ from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .exceptions import APIError
+from ...security.error_sanitizer import sanitize_error
 
 logger = logging.getLogger("office_agent.api")
 
@@ -34,7 +35,7 @@ def register_exception_handlers(app):
         errors = []
         for err in exc.errors():
             errors.append({
-                "field": ".".join(str(l) for l in err.get("loc", [])),
+                "field": ".".join(str(location) for location in err.get("loc", [])),
                 "message": err.get("msg", ""),
                 "type": err.get("type", ""),
             })
@@ -70,15 +71,15 @@ def register_exception_handlers(app):
                 "success": False,
                 "error_code": "INTERNAL_ERROR",
                 "message": "服务器内部错误",
-                "details": str(exc) if _is_debug() else None,
+                "details": sanitize_error(exc) if _is_debug() else None,
                 "timestamp": _now(),
             },
         )
 
 
 def _now() -> str:
-    from datetime import datetime
-    return datetime.now().isoformat()
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _is_debug() -> bool:

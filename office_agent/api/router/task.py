@@ -11,41 +11,36 @@
 """
 import json
 import logging
-import os
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
 from ..schemas.request import TaskCreateRequest, FeedbackRequest
 from ..schemas.response import (
     TaskInfo, TaskListResponse, BaseResponse,
 )
 from ..core.task_manager import task_manager
-from ..core.exceptions import TaskNotFoundError
+from ..core.exceptions import APIError, TaskNotFoundError
+from ..core.file_resolution import resolve_input_files
+from ...security.error_sanitizer import sanitize_error
 
 router = APIRouter(prefix="/api/task", tags=["任务"])
 
 
 logger = logging.getLogger("office_agent.api.task")
 
+# Backward-compatible private name for integrations that imported the old helper.
+_resolve_input_files = resolve_input_files
 
-def _resolve_input_files(file_ids, file_repo):
-    """Resolve Storage file IDs to verified local paths before task creation."""
-    from ...storage.storage_service import get_storage_service
 
-    storage = get_storage_service()
-    input_paths = []
-    for file_id in file_ids:
-        db_file = file_repo.get_by_id(file_id)
-        if not db_file or db_file.status == "deleted":
-            raise HTTPException(status_code=404, detail=f"文件不存在或已删除: {file_id}")
-        try:
-            local_path = storage.get_file_path(file_id)
-        except FileNotFoundError as exc:
-            raise HTTPException(status_code=404, detail=f"文件不存在或已删除: {file_id}") from exc
-        if not local_path or not os.path.isfile(local_path):
-            raise HTTPException(status_code=422, detail=f"文件存储内容不可用: {file_id}")
-        input_paths.append(local_path)
-        logger.info("已解析任务输入文件: file_id=%s", file_id)
-    return input_paths
+def _safe_json_object(raw: str | None, default):
+    if not raw:
+        return default
+    try:
+        value = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        logger.warning("任务记录包含损坏的 JSON，已隔离")
+        return default
+    return value
+
 
 def _file_id_list_to_infos(file_id_list, file_repo) -> list:
     """Convert file IDs to stable output/input file info objects (response layer only)."""
@@ -92,6 +87,10 @@ async def create_task(req: TaskCreateRequest):
     """
     from ...database.session import session_scope
     from ...database.repository import TaskRepository, FileRepository
+    from ...task_queue import TASK_TYPE_TO_QUEUE
+
+    if req.task_type not in TASK_TYPE_TO_QUEUE:
+        raise HTTPException(status_code=422, detail=f"不支持的任务类型: {req.task_type}")
 
     priority = (req.priority or "normal") if hasattr(req, "priority") else "normal"
     if priority not in ("high", "normal", "low"):
@@ -107,7 +106,7 @@ async def create_task(req: TaskCreateRequest):
         # 获取输入文件路径
         input_paths = []
         if req.file_ids:
-            input_paths = _resolve_input_files(req.file_ids, file_repo)
+            input_paths = resolve_input_files(req.file_ids, file_repo)
             input_files = list(req.file_ids)
 
         db_task = task_repo.create_task(
@@ -138,7 +137,12 @@ async def create_task(req: TaskCreateRequest):
             kwargs={
                 "input_path": input_path,
                 "instruction": req.instruction,
-                "options": {**options, "input_file_ids": input_files},
+                "input_paths": input_paths,
+                "options": {
+                    **options,
+                    "input_file_ids": input_files,
+                    "input_paths": input_paths,
+                },
                 "output_format": getattr(req, "output_format", None),
             },
             priority=priority,
@@ -149,9 +153,10 @@ async def create_task(req: TaskCreateRequest):
         status = "queued"
     except Exception as e:
         # 队列不可用时把数据库任务标记为失败，避免双账本（内存任务与数据库记录不一致）
-        logger.error(f"任务队列不可用: {e}", exc_info=True)
+        safe_error = sanitize_error(e, "任务队列不可用")
+        logger.error("任务队列不可用: %s", safe_error, exc_info=True)
         with session_scope() as session:
-            TaskRepository(session).fail_task(task_id, f"任务队列不可用: {e}")
+            TaskRepository(session).fail_task(task_id, f"任务队列不可用: {safe_error}")
         status = "failed"
 
     return BaseResponse(data=TaskInfo(
@@ -190,9 +195,9 @@ async def get_task(task_id: str):
                     current_step=db_task.current_step,
                     instruction=db_task.instruction,
                     error=db_task.error_message,
-                    input_files=_file_id_list_to_infos(json.loads(db_task.input_file_ids) if db_task.input_file_ids else [], file_repo),
-                    output_files=_file_id_list_to_infos(json.loads(db_task.output_file_ids) if db_task.output_file_ids else [], file_repo),
-                    result=_sanitize_result(json.loads(db_task.result_json)) if db_task.result_json else None,
+                    input_files=_file_id_list_to_infos(_safe_json_object(db_task.input_file_ids, []), file_repo),
+                    output_files=_file_id_list_to_infos(_safe_json_object(db_task.output_file_ids, []), file_repo),
+                    result=_sanitize_result(_safe_json_object(db_task.result_json, {})) if db_task.result_json else None,
                     created_at=str(db_task.created_at) if db_task.created_at else "",
                     started_at=str(db_task.started_at) if db_task.started_at else None,
                     completed_at=str(db_task.finished_at) if db_task.finished_at else None,
@@ -215,7 +220,8 @@ async def get_task(task_id: str):
 @router.get("/", response_model=BaseResponse[TaskListResponse],
             summary="任务列表")
 async def list_tasks(status: str = None, agent: str = None,
-                     page: int = 1, page_size: int = 20):
+                     page: int = Query(default=1, ge=1),
+                     page_size: int = Query(default=20, ge=1, le=200)):
     """列出任务，支持按状态/Agent筛选"""
     session = _get_db_session()
     if session:
@@ -228,15 +234,16 @@ async def list_tasks(status: str = None, agent: str = None,
                 filters["status"] = status
             if agent:
                 filters["agent_name"] = agent
-            db_tasks = repo.find(offset=(page - 1) * page_size, limit=page_size, **filters)
-            total = repo.count()
+            db_tasks = repo.find(offset=(page - 1) * page_size, limit=page_size,
+                                 order_by="created_at", descending=True, **filters)
+            total = repo.count(**filters)
             task_infos = [TaskInfo(
                 task_id=t.id, task_type=t.task_type, agent=t.agent_name or "",
                 status=t.status, progress=t.progress or 0,
                 current_step=t.current_step, instruction=t.instruction,
-                input_files=_file_id_list_to_infos(json.loads(t.input_file_ids) if t.input_file_ids else [], file_repo),
-                output_files=_file_id_list_to_infos(json.loads(t.output_file_ids) if t.output_file_ids else [], file_repo),
-                result=_sanitize_result(json.loads(t.result_json)) if t.result_json else None,
+                input_files=_file_id_list_to_infos(_safe_json_object(t.input_file_ids, []), file_repo),
+                output_files=_file_id_list_to_infos(_safe_json_object(t.output_file_ids, []), file_repo),
+                result=_sanitize_result(_safe_json_object(t.result_json, {})) if t.result_json else None,
                 error=t.error_message,
                 created_at=str(t.created_at) if t.created_at else "",
                 duration_ms=t.duration_ms, quality_score=t.quality_score,
@@ -294,19 +301,30 @@ async def cancel_task(task_id: str):
 async def task_feedback(task_id: str, req: FeedbackRequest):
     """对任务结果提交反馈"""
     session = _get_db_session()
-    if session:
-        try:
-            from ...database.repository import TaskRepository
-            repo = TaskRepository(session)
-            if repo.get_by_id(task_id):
-                repo.add_feedback(task_id, req.rating, req.comment)
-                session.commit()
-                return BaseResponse(message="反馈已提交", data={
-                    "task_id": task_id, "rating": req.rating, "comment": req.comment,
-                })
-        finally:
-            session.close()
+    if session is None:
+        task = task_manager.get_task(task_id)
+        if task is not None:
+            task.feedback_rating = req.rating
+            task.feedback_comment = req.comment
+            return BaseResponse(message="反馈已提交", data={
+                "task_id": task_id, "rating": req.rating, "comment": req.comment,
+                "storage": "memory",
+            })
+        raise APIError(
+            "数据库暂不可用，反馈未保存",
+            error_code="DATABASE_UNAVAILABLE",
+            status_code=503,
+        )
 
-    return BaseResponse(message="反馈已提交", data={
-        "task_id": task_id, "rating": req.rating, "comment": req.comment,
-    })
+    try:
+        from ...database.repository import TaskRepository
+        repo = TaskRepository(session)
+        if not repo.get_by_id(task_id):
+            raise TaskNotFoundError(f"任务不存在: {task_id}")
+        repo.add_feedback(task_id, req.rating, req.comment)
+        session.commit()
+        return BaseResponse(message="反馈已提交", data={
+            "task_id": task_id, "rating": req.rating, "comment": req.comment,
+        })
+    finally:
+        session.close()

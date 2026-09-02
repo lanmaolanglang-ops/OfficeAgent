@@ -10,7 +10,7 @@ class APIError(Exception):
     status_code: int = 500
 
     def __init__(self, message: str, error_code: str = None,
-                 status_code: int = None, details: Any = None):
+                 status_code: Optional[int] = None, details: Any = None):
         self.message = message
         if error_code:
             self.error_code = error_code

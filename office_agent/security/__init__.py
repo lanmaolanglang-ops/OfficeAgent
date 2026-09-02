@@ -1,5 +1,5 @@
 """
-Security & Permission Layer v0.50.0
+Security & Permission Layer v0.51.1
 安全与权限控制系统
 
 包含：
@@ -31,7 +31,7 @@ from .file_security import (
 )
 from .prompt import (
     PromptSecurityScanner, ModelSecurityManager,
-    SecurityScanResult, InjectionMatch, InjectionType,
+    SecurityScanResult, InjectionMatch, InjectionType, PromptAction,
 )
 from .sandbox import (
     Sandbox, SandboxResult, SandboxStatus,
@@ -42,7 +42,7 @@ from .audit import (
     get_audit_logger,
 )
 
-__version__ = "0.50.0"
+__version__ = "0.51.1"
 
 __all__ = [
     # 配置
@@ -63,7 +63,7 @@ __all__ = [
     "FileSecurityManager", "UserFileSpace",
     # Prompt安全
     "PromptSecurityScanner", "ModelSecurityManager",
-    "SecurityScanResult", "InjectionMatch", "InjectionType",
+    "SecurityScanResult", "InjectionMatch", "InjectionType", "PromptAction",
     # 沙箱
     "Sandbox", "SandboxResult", "SandboxStatus",
     "ALLOWED_MODULES", "BLOCKED_BUILTINS",

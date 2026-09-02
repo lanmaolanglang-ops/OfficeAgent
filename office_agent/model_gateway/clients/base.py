@@ -3,6 +3,7 @@
 定义统一的模型调用接口
 """
 import time
+from pathlib import Path
 from abc import ABC, abstractmethod
 from typing import Any, Optional
 
@@ -56,8 +57,22 @@ class BaseModelClient(ABC):
         支持视觉的子类可重写为真正的文件上传
         """
         try:
-            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-                content = f.read()
+            path = Path(file_path)
+            ext = path.suffix.lower()
+            if ext in {".docx", ".pptx", ".xlsx", ".csv", ".pdf", ".md", ".txt"}:
+                from ...knowledge_base.document_parser import DocumentParser
+                content = DocumentParser().parse(str(path)).full_text
+            else:
+                # 未知格式只在能严格解码为文本时接受，禁止把二进制文件
+                # errors=ignore 后的乱码泄露给模型。
+                content = path.read_text(encoding="utf-8", errors="strict")
+
+            if not content.strip():
+                return ModelResponse(
+                    success=False,
+                    error="文档未提取到可分析的文本内容",
+                    model_used=self.config.id,
+                )
             
             # 截断过长内容
             max_chars = self.config.max_tokens * 3  # 粗略估算

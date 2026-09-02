@@ -7,12 +7,12 @@ Formula Generator - Excel 公式生成器
 - 聚合：SUM, AVERAGE, COUNT, COUNTA, MAX, MIN, MEDIAN, STDEV, PRODUCT
 - 条件：SUMIF, SUMIFS, COUNTIF, COUNTIFS, AVERAGEIF, AVERAGEIFS
 - 查找：VLOOKUP, XLOOKUP, HLOOKUP, INDEX, MATCH, INDEX+MATCH
-- 逻辑：IF, IF嵌套, AND, OR, NOT, IFS
+- 逻辑：IF, IFS
 - 数学：增长率(环比/同比), 占比, 排名, 累计, 去重计数
 - 日期：YEAR, MONTH, DAY, DATEDIF, TODAY, EOMONTH
 """
 import re
-from typing import Optional, List, Dict, Tuple, Any
+from typing import Optional, List, Dict, Tuple
 from .models import FormulaSpec, DataProfile, ColumnInfo, SheetInfo
 
 
@@ -193,7 +193,7 @@ FORMULA_TEMPLATES: Dict[str, FormulaTemplate] = {
     "percent_of_total": FormulaTemplate(
         "percent_of_total",
         [r"占比", r"占总", r"百分比", r"proportion", r"份额", r"比重"],
-        "=IFERROR({cell}/{total},0)",
+        "=IFERROR({cell}/SUM({range}),0)",
         "math", "占比",
         row_wise=True, target_col_offset=1,
     ),
@@ -214,7 +214,7 @@ FORMULA_TEMPLATES: Dict[str, FormulaTemplate] = {
     "dedup_count": FormulaTemplate(
         "dedup_count",
         [r"去重计数", r"不重复", r"唯一值", r"distinct", r"unique count"],
-        "=SUMPRODUCT(1/COUNTIF({range},{range}))",
+        '=SUMPRODUCT(({range}<>"")/COUNTIF({range},{range}&""))',
         "math", "去重计数",
     ),
 }
@@ -260,10 +260,11 @@ class FormulaGenerator:
         """
         formulas = []
         sheet = self.profile.get_sheet(sheet_name) if self.profile else None
-        text_lower = text.lower()
-
         # 1. 识别函数类型
         detected_types = self._detect_formula_types(text)
+        # “去重计数”会同时命中泛化的“计数”，仅保留更具体的语义。
+        if "dedup_count" in detected_types:
+            detected_types = [t for t in detected_types if t != "count"]
 
         # 2. 识别目标列
         target_cols = self._detect_target_columns(text, sheet)
@@ -282,6 +283,7 @@ class FormulaGenerator:
 
         # 跟踪逐行公式已使用的结果列
         next_result_col = sheet.col_count if sheet else 10
+        aggregate_row_offset = 0
 
         for ftype in detected_types:
             tpl = FORMULA_TEMPLATES[ftype]
@@ -319,15 +321,28 @@ class FormulaGenerator:
             elif tpl.category == "aggregate":
                 # 聚合函数
                 agg_formulas = self._generate_aggregate(
-                    tpl, target_cols, sheet, data_start_row
+                    tpl, target_cols, sheet, data_start_row,
+                    result_row_offset=aggregate_row_offset,
                 )
                 formulas.extend(agg_formulas)
+                if agg_formulas:
+                    aggregate_row_offset += 1
 
             elif tpl.category == "logical":
                 logical_formulas = self._generate_logical(
                     tpl, target_cols, sheet, data_start_row, text
                 )
                 formulas.extend(logical_formulas)
+
+            elif tpl.category == "math":
+                # 非逐行数学模板（当前为去重计数）按整列聚合输出。
+                math_formulas = self._generate_aggregate(
+                    tpl, target_cols, sheet, data_start_row,
+                    result_row_offset=aggregate_row_offset,
+                )
+                formulas.extend(math_formulas)
+                if math_formulas:
+                    aggregate_row_offset += 1
 
         # 去重
         seen = set()
@@ -347,9 +362,12 @@ class FormulaGenerator:
     def _generate_aggregate(self, tpl: FormulaTemplate,
                              target_cols: List[ColumnInfo],
                              sheet: SheetInfo,
-                             data_start_row: int) -> List[FormulaSpec]:
+                             data_start_row: int,
+                             result_row_offset: int = 0) -> List[FormulaSpec]:
         """生成聚合公式（SUM/AVERAGE/COUNT等）"""
         formulas = []
+        if sheet and sheet.row_count <= 0:
+            return formulas
         if not target_cols and sheet:
             target_cols = [c for c in sheet.columns if c.data_type == "number"]
         if not target_cols:
@@ -363,7 +381,8 @@ class FormulaGenerator:
             formula = tpl.template.format(range=range_str)
 
             # 找一个空行放结果
-            result_row = end_row + 2 + len(formulas) % 3
+            # 同一种聚合的各列放在同一行；不同聚合由调用方全局错行。
+            result_row = end_row + 2 + result_row_offset
             target_cell = f"{col_letter}{result_row}"
 
             formulas.append(FormulaSpec(
@@ -383,6 +402,8 @@ class FormulaGenerator:
                             start_result_col: int = 0) -> List[FormulaSpec]:
         """生成逐行公式（增长率/占比/排名/累计）"""
         formulas = []
+        if sheet and sheet.row_count <= 0:
+            return formulas
         if not target_cols and sheet:
             target_cols = [c for c in sheet.columns if c.data_type == "number"]
         if not target_cols:
@@ -398,11 +419,25 @@ class FormulaGenerator:
             range_str = f"{col_letter}{data_start_row}:{col_letter}{end_row}"
 
             if tpl.name in ("growth", "growth_mom", "growth_yoy"):
-                # 增长率：从第二行数据开始，每行 =(当期-上期)/上期
-                for row in range(data_start_row + 1, end_row + 1):
+                # 环比取上一期；同比按数据粒度取上一年同期，不能与环比共用上一行。
+                lag = 1
+                if tpl.name == "growth_yoy":
+                    if re.search(r"季度|季报|\bq[1-4]\b", text, re.IGNORECASE):
+                        lag = 4
+                    elif re.search(r"周|weekly", text, re.IGNORECASE):
+                        lag = 52
+                    elif re.search(r"日|daily", text, re.IGNORECASE):
+                        lag = 365
+                    elif re.search(r"年度|按年|每年|yearly", text, re.IGNORECASE):
+                        lag = 1
+                    else:
+                        # 月度是业务报表中最常见的同比粒度；没有明确粒度时采用 12 期。
+                        lag = 12
+                for row in range(data_start_row + lag, end_row + 1):
                     cur = f"{col_letter}{row}"
                     prev = f"{col_letter}{row - 1}"
-                    formula = tpl.template.format(cur=cur, prev=prev, prev_year=prev)
+                    prev_year = f"{col_letter}{row - lag}"
+                    formula = tpl.template.format(cur=cur, prev=prev, prev_year=prev_year)
                     formulas.append(FormulaSpec(
                         formula=formula,
                         target_cell=f"{result_col_letter}{row}",
@@ -418,11 +453,11 @@ class FormulaGenerator:
                 ))
 
             elif tpl.name == "percent_of_total":
-                # 占比：每行/总和
-                total_cell = f"{col_letter}{end_row + 1}"  # 假设合计在这
+                # 占比：每行 / SUM(数据区)。分母用 SUM 自包含，
+                # 不依赖外部合计行（原实现对空单元格除法得到全 0）
                 for row in range(data_start_row, end_row + 1):
                     cell = f"{col_letter}{row}"
-                    formula = tpl.template.format(cell=cell, total=total_cell)
+                    formula = tpl.template.format(cell=cell, range=range_str)
                     formulas.append(FormulaSpec(
                         formula=formula,
                         target_cell=f"{result_col_letter}{row}",
@@ -497,7 +532,8 @@ class FormulaGenerator:
 
         result_row = end_row + 3
         for val_idx, val in enumerate(unique_values[:20]):  # 最多20个分类
-            criteria = f'"{val}"' if isinstance(val, str) else str(val)
+            # Excel 字符串字面量中的双引号必须双写。
+            criteria = f'"{val.replace(chr(34), chr(34) * 2)}"' if isinstance(val, str) else str(val)
 
             for col in target_cols:
                 col_letter = self._col_letter(col.index)
@@ -569,7 +605,7 @@ class FormulaGenerator:
             return_letter = self._col_letter(return_col.index) if return_col else "B"
 
         # 查找表范围
-        table_range = f"A:{self._col_letter(sheet.col_count)}"
+        table_range = f"A:{self._col_letter(sheet.col_count - 1)}"
         col_index_num = return_col.index + 1 if return_col else 2
 
         # 在数据右侧生成查找公式
@@ -595,7 +631,7 @@ class FormulaGenerator:
                 formulas.append(FormulaSpec(
                     formula=formula,
                     target_cell=f"{result_col}{row}",
-                    description=f"XLOOKUP查找",
+                    description="XLOOKUP查找",
                     category=tpl.name,
                 ))
 
@@ -608,7 +644,7 @@ class FormulaGenerator:
                 formulas.append(FormulaSpec(
                     formula=formula,
                     target_cell=f"{result_col}{row}",
-                    description=f"INDEX+MATCH查找",
+                    description="INDEX+MATCH查找",
                     category=tpl.name,
                 ))
 
@@ -621,23 +657,37 @@ class FormulaGenerator:
                            text: str = "") -> List[FormulaSpec]:
         """生成逻辑公式"""
         formulas = []
-        if not target_cols or not sheet:
+        if not target_cols or not sheet or sheet.row_count <= 0:
             return formulas
 
         end_row = data_start_row + sheet.row_count - 1
         col = target_cols[0]
         col_letter = self._col_letter(col.index)
-        result_col = self._col_letter(col.index + 1)
+        # 逻辑结果必须写到数据区右侧，不能覆盖目标列旁边的用户数据。
+        result_col = self._col_letter(sheet.col_count)
 
-        # 简单IF：尝试解析条件
+        # 尝试从自然语言解析条件；IFS 至少保留显式兜底分支。
         condition, true_val, false_val = self._parse_if_condition(text, col)
+        ifs_branches, ifs_default = self._parse_ifs_branches(text)
 
         for row in range(data_start_row, end_row + 1):
             cell = f"{col_letter}{row}"
             cond = condition.replace("{cell}", cell) if condition else f"{cell}>0"
             tv = true_val.replace("{cell}", cell) if true_val else '"达标"'
             fv = false_val.replace("{cell}", cell) if false_val else '"未达标"'
-            formula = f'=IF({cond},{tv},{fv})'
+            if tpl.name == "ifs" and ifs_branches:
+                parts = []
+                for branch_condition, branch_value in ifs_branches:
+                    parts.extend([
+                        branch_condition.replace("{cell}", cell),
+                        self._formula_value(branch_value),
+                    ])
+                parts.extend(["TRUE", self._formula_value(ifs_default)])
+                formula = f'=IFS({",".join(parts)})'
+            elif tpl.name == "ifs":
+                formula = f'=IFS({cond},{tv},TRUE,{fv})'
+            else:
+                formula = f'=IF({cond},{tv},{fv})'
             formulas.append(FormulaSpec(
                 formula=formula,
                 target_cell=f"{result_col}{row}",
@@ -665,7 +715,7 @@ class FormulaGenerator:
             sum_cols = [c.index for c in sheet.columns if c.data_type == "number"]
 
         for col_idx in sum_cols:
-            col_letter = self._col_letter(col_idx + 1)
+            col_letter = self._col_letter(col_idx)
             range_str = f"{col_letter}{data_start_row}:{col_letter}{end_row}"
             formulas.append(FormulaSpec(
                 formula=f"=SUM({range_str})",
@@ -682,8 +732,8 @@ class FormulaGenerator:
         """生成增长率公式（逐行）"""
         formulas = []
         end_row = data_start_row + sheet.row_count - 1
-        col_letter = self._col_letter(col_idx + 1)
-        result_col = self._col_letter(col_idx + 2)
+        col_letter = self._col_letter(col_idx)
+        result_col = self._col_letter(sheet.col_count)
 
         label = "环比增长率" if growth_type == "mom" else "同比增长率"
         formulas.append(FormulaSpec(
@@ -710,8 +760,8 @@ class FormulaGenerator:
         """生成排名公式"""
         formulas = []
         end_row = data_start_row + sheet.row_count - 1
-        col_letter = self._col_letter(col_idx + 1)
-        result_col = self._col_letter(col_idx + 2)
+        col_letter = self._col_letter(col_idx)
+        result_col = self._col_letter(sheet.col_count)
         range_str = f"{col_letter}{data_start_row}:{col_letter}{end_row}"
 
         for row in range(data_start_row, end_row + 1):
@@ -731,8 +781,8 @@ class FormulaGenerator:
         """生成 VLOOKUP 公式"""
         formulas = []
         end_row = data_start_row + sheet.row_count - 1
-        lookup_letter = self._col_letter(lookup_col_idx + 1)
-        table_range = f"A:{self._col_letter(sheet.col_count)}"
+        lookup_letter = self._col_letter(lookup_col_idx)
+        table_range = f"A:{self._col_letter(sheet.col_count - 1)}"
 
         for row in range(data_start_row, end_row + 1):
             formulas.append(FormulaSpec(
@@ -770,7 +820,7 @@ class FormulaGenerator:
         Returns:
             (output_path, formulas)
         """
-        from .excel_service import ExcelService
+        from .excel_service import ExcelService, _derive_output_path
 
         service = ExcelService()
         service.open(file_path)
@@ -795,7 +845,7 @@ class FormulaGenerator:
         self.apply_to_sheet(service, sheet_name, formulas)
 
         if output_path is None:
-            output_path = file_path.replace(".xlsx", "_formulas.xlsx")
+            output_path = _derive_output_path(file_path, "_formulas")
 
         service.save(output_path)
         return output_path, formulas
@@ -867,7 +917,7 @@ class FormulaGenerator:
 
         # "按XX" / "各XX" / "分XX" 模式
         for pattern in [r"按(.{2,8}?)(?:的|统计|求和|计数|计算|分组|分类|$)",
-                        r"各(.{2,8}?)(?:的|的|统计|$)",
+                        r"各(.{2,8}?)(?:的|统计|$)",
                         r"分(.{2,8}?)(?:的|统计|$)"]:
             m = re.search(pattern, text)
             if m:
@@ -934,11 +984,44 @@ class FormulaGenerator:
 
         return condition, true_val, false_val
 
+    def _parse_ifs_branches(self, text: str) -> Tuple[List[Tuple[str, str]], str]:
+        """解析“>=90 为优秀，>=60 为及格，否则不及格”一类分级表达。"""
+        operator_map = {
+            "大于等于": ">=", "不低于": ">=", "大于": ">", "超过": ">",
+            "小于等于": "<=", "不高于": "<=", "小于": "<", "低于": "<",
+        }
+        pair_pattern = re.compile(
+            r"(大于等于|不低于|小于等于|不高于|大于|超过|小于|低于)"
+            r"\s*(-?\d+(?:\.\d+)?)\s*(?:判定为|显示为|则为|则|为|显示)?\s*"
+            r"([^，,；;。]+)"
+        )
+        branches = []
+        for operator, threshold, value in pair_pattern.findall(text):
+            cleaned = re.split(r"\s*(?:否则|其余|其他)\s*", value, maxsplit=1)[0].strip()
+            if cleaned:
+                branches.append((f"{{cell}}{operator_map[operator]}{threshold}", cleaned))
+
+        default_match = re.search(
+            r"(?:否则|其余|其他)\s*(?:判定为|显示为|则为|则|为|显示)?\s*([^，,；;。]+)",
+            text,
+        )
+        default = default_match.group(1).strip() if default_match else "未达标"
+        return branches, default
+
+    @staticmethod
+    def _formula_value(value: str) -> str:
+        """把自然语言分级结果安全转换为 Excel 字面量。"""
+        value = str(value).strip().strip('"“”')
+        if re.fullmatch(r"-?\d+(?:\.\d+)?", value):
+            return value
+        return f'"{value.replace(chr(34), chr(34) * 2)}"'
+
     def _get_unique_values(self, sheet: SheetInfo,
                             col: ColumnInfo,
                             max_count: int = 20) -> list:
-        """获取列的唯一值（需要从数据中读取，这里用样本值近似）"""
-        # 优先用 sample_values
+        """获取列的唯一值；样本值仅作为旧画像的兼容回退。"""
+        if col.unique_values:
+            return col.unique_values[:max_count]
         if col.sample_values:
             seen = []
             for v in col.sample_values:

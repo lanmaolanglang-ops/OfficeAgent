@@ -1,8 +1,8 @@
 // OfficeAgent Desktop Client - 类型定义
-// 与后端 OfficeAgent v0.50.0 API 对齐
+// 与后端 OfficeAgent v0.51.1 API 对齐
 
 // Agent类型
-export type AgentType = 'auto' | 'word' | 'ppt' | 'excel' | 'workflow';
+export type AgentType = 'auto' | 'word' | 'ppt' | 'excel';
 
 // 任务状态（后端状态映射到前端状态）
 export type TaskStatus = 'pending' | 'processing' | 'completed' | 'failed' | 'cancelled';
@@ -107,6 +107,7 @@ export interface UploadedFile {
   file_type: string;
   size: number;
   uploaded_at: string;
+  deleted_at?: string;
   // Compatibility aliases used by existing file list components.
   id: string;
   name: string;
@@ -127,6 +128,7 @@ export interface ChatMessage {
   task_progress?: number;
   task_step?: string;
   task_result?: Record<string, unknown>;
+  output_files?: TaskOutputFile[];
   task_error?: string;
   is_follow_up?: boolean;
   parent_task_id?: string;

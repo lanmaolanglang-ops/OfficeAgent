@@ -1,0 +1,267 @@
+"""
+PPT 生成链修复的回归测试
+
+覆盖：
+- LLM 畸形输出（null 标题 / 非字符串要点 / 空表行 / 超量卡片 / 字符串图表值）不崩溃
+- 4:3 等非 16:9 页面所有元素不越界
+- 图表 numCache 仅含数值（避免 PowerPoint/WPS 报修复）
+- 页数预算强制（LLM 超量返回被裁剪）
+- 模板基底生成（主题继承 + 旧页清除）
+"""
+import sys
+import re
+import zipfile
+from pathlib import Path
+
+import pytest
+from pptx import Presentation
+from pptx.util import Emu, Inches
+from pptx.shapes.graphfrm import GraphicFrame
+
+PROJECT_ROOT = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from office_agent.ppt_agent.ppt_service import PPTService, hex_to_rgb  # noqa: E402
+from office_agent.ppt_agent.content_planner import ContentPlanner  # noqa: E402
+from office_agent.ppt_agent.slide_designer import SlideDesigner  # noqa: E402
+from office_agent.ppt_agent.slide_planner import SlidePlanner  # noqa: E402
+from office_agent.ppt_agent.models import PPTOutline, SlideContent  # noqa: E402
+from office_agent.ppt_agent.quality_checker import PPTQualityChecker  # noqa: E402
+
+
+def _hostile_outline() -> PPTOutline:
+    outline = PPTOutline(title="测试")
+    outline.add_slide(SlideContent(layout="cover", title=None, subtitle=None))
+    outline.add_slide(SlideContent(layout="toc", title="目录",
+                                   bullets=[1, 2, {"text": "三"}, None]))
+    outline.add_slide(SlideContent(layout="table", title="表格页",
+                                   table_data=[[], ["列A", "列B"], [None, 42], "标量行"]))
+    outline.add_slide(SlideContent(layout="data_cards", title="卡片页",
+                                   data=[(f"项{i}", str(i * 10), "%") for i in range(8)]))
+    outline.add_slide(SlideContent(layout="chart", title="图表页", chart_type="column",
+                                   chart_categories=["一月", "二月", "三月"],
+                                   chart_series=[("销售额", ["100", "abc", None]),
+                                                 ("成本", [1, 2, 3])]))
+    outline.add_slide(SlideContent(layout="content_list", title="列表页",
+                                   bullets=["项目" + "长" * 80, 3.14]))
+    outline.add_slide(SlideContent(layout="two_column", title="两栏",
+                                   left_content=[None, 5], right_content=[{"x": 1}]))
+    outline.add_slide(SlideContent(layout="timeline", title="时间线",
+                                   timeline_items=[("Q1", 42, None), ("Q2", "b", "c")]))
+    outline.add_slide(SlideContent(layout="summary", title="总结", bullets=["谢谢"]))
+    return outline
+
+
+def _assert_shapes_within(prs: Presentation):
+    w, h = prs.slide_width, prs.slide_height
+    for slide in prs.slides:
+        for shape in slide.shapes:
+            if shape.left is None:
+                continue
+            assert (shape.left + (shape.width or 0)) <= w, \
+                f"元素越出右边界: {shape.shape_type}"
+            assert (shape.top + (shape.height or 0)) <= h, \
+                f"元素越出下边界: {shape.shape_type}"
+
+
+class TestPPTHostileContent:
+    def test_hostile_outline_generates(self, temp_dir):
+        """畸形 LLM 输出不应让生成崩溃"""
+        out = temp_dir / "hostile.pptx"
+        result = PPTService().generate(_hostile_outline(), str(out))
+        assert result.success, result.message
+        prs = Presentation(str(out))
+        _assert_shapes_within(prs)
+
+    def test_chart_numcache_numeric_only(self, temp_dir):
+        """字符串/None 数值必须被转为数字（否则 numCache 非法，PowerPoint 报修复）"""
+        out = temp_dir / "hostile.pptx"
+        assert PPTService().generate(_hostile_outline(), str(out)).success
+
+        prs = Presentation(str(out))
+        charts = [s.chart for slide in prs.slides for s in slide.shapes
+                  if isinstance(s, GraphicFrame) and s.has_chart]
+        assert charts, "应生成图表"
+        xml = charts[0]._chartSpace.xml
+        num_caches = re.findall(r"<c:numCache>.*?</c:numCache>", xml, re.S)
+        assert num_caches, "无 numCache"
+        for cache in num_caches:
+            vals = re.findall(r"<c:v>([^<]*)</c:v>", cache)
+            assert all(re.match(r"^-?\d+(\.\d+)?$", v) for v in vals), vals
+
+    def test_chart_rejects_series_category_length_mismatch(self):
+        service = PPTService()
+        service.prs = Presentation()
+        slide = service.prs.slides.add_slide(service.prs.slide_layouts[6])
+        with pytest.raises(ValueError, match="类别有 2 个"):
+            service._add_chart(slide, 1, 1, 5, 3, "column",
+                               ["一月", "二月"], [("销售", [1])])
+
+    def test_hex_color_validation_and_short_form(self):
+        assert tuple(hex_to_rgb("#abc")) == (170, 187, 204)
+        with pytest.raises(ValueError, match="无效"):
+            hex_to_rgb("#12GG00")
+
+
+class TestPPTScaling:
+    def test_4x3_no_overflow(self, temp_dir):
+        """4:3 模板尺寸下所有版式的元素都应在页面内"""
+        outline = PPTOutline(title="43", slide_width=10.0, slide_height=7.5)
+        for slide in [
+            SlideContent(layout="cover", title="封面"),
+            SlideContent(layout="content", title="内容", bullets=["a", "b"]),
+            SlideContent(layout="data_cards", title="卡片",
+                         data=[("x", "1", ""), ("y", "2", "")]),
+            SlideContent(layout="timeline", title="时间线",
+                         timeline_items=[("Q1", "启动", "立项"), ("Q2", "开发", "核心")]),
+            SlideContent(layout="table", title="表格",
+                         table_data=[["头1", "头2"], ["a", "b"]]),
+            SlideContent(layout="summary", title="总结"),
+        ]:
+            outline.add_slide(slide)
+
+        out = temp_dir / "43.pptx"
+        result = PPTService().generate(outline, str(out))
+        assert result.success, result.message
+        _assert_shapes_within(Presentation(str(out)))
+
+
+class TestSlideBudget:
+    def test_budget_trims_middle_keeps_summary(self):
+        planner = ContentPlanner()
+        outline = PPTOutline(title="测试")
+        for i in range(30):
+            outline.add_slide(SlideContent(layout="content", title=f"页{i}"))
+        outline.add_slide(SlideContent(layout="summary", title="总结"))
+
+        trimmed = planner._enforce_slide_budget(outline, 10)
+        assert len(trimmed.slides) == 10
+        assert trimmed.slides[-1].layout == "summary"
+
+    def test_dense_content_is_not_truncated(self):
+        bullets = [f"要点{i}-" + "长" * 80 for i in range(8)]
+        slide = SlideContent(layout="content", title="密集", bullets=bullets.copy())
+        designed = SlideDesigner().design(PPTOutline(title="x", slides=[slide]))
+        assert designed.slides[0].bullets == bullets
+        assert "自动缩字" in designed.slides[0].notes
+
+    def test_outline_data_preserves_chart_and_table_fields(self):
+        outline = ContentPlanner().plan_from_outline_data("x", [{
+            "layout": "chart", "title": "图表",
+            "chart_type": "line", "chart_title": "趋势",
+            "chart_categories": ["Q1", "Q2"],
+            "chart_series": [["收入", [1, 2]]],
+            "table_data": [["A"], ["B"]], "table_header": False,
+        }])
+        slide = outline.slides[0]
+        assert slide.chart_categories == ["Q1", "Q2"]
+        assert slide.chart_series == [["收入", [1, 2]]]
+        assert slide.table_data == [["A"], ["B"]]
+        assert slide.table_header is False
+
+    def test_slide_reduction_preserves_order_summary_and_section_followers(self):
+        outline = PPTOutline(title="x", slides=[
+            SlideContent(layout="cover", title="封面"),
+            SlideContent(layout="toc", title="目录"),
+            SlideContent(layout="section", title="章节一"),
+            SlideContent(layout="content", title="内容一"),
+            SlideContent(layout="content", title="内容一扩展"),
+            SlideContent(layout="section", title="章节二"),
+            SlideContent(layout="content", title="内容二"),
+            SlideContent(layout="summary", title="总结"),
+        ])
+        adjusted = ContentPlanner()._adjust_slide_count(outline, 6)
+        titles = [slide.title for slide in adjusted.slides]
+        assert titles[-1] == "总结"
+        assert titles.index("章节一") < titles.index("内容一")
+        assert titles.index("章节二") < titles.index("内容二")
+
+    def test_missing_document_is_an_error_not_template_fallback(self, tmp_path):
+        with pytest.raises(FileNotFoundError):
+            SlidePlanner().plan_from_document("x", str(tmp_path / "missing.docx"))
+
+    def test_budget_noop_when_within(self):
+        planner = ContentPlanner()
+        outline = PPTOutline(title="测试")
+        for i in range(5):
+            outline.add_slide(SlideContent(layout="content", title=f"页{i}"))
+        assert len(planner._enforce_slide_budget(outline, 10).slides) == 5
+
+    def test_designer_paginates_without_losing_bullets_cards_or_rows(self):
+        outline = PPTOutline(slides=[
+            SlideContent(layout="content_list", title="列表", bullets=[str(i) for i in range(17)]),
+            SlideContent(layout="data_cards", title="卡片", data=list(range(9))),
+            SlideContent(layout="table", title="表格",
+                         table_data=[["表头"]] + [[str(i)] for i in range(85)]),
+        ])
+        designed = SlideDesigner().design(outline)
+        bullets = [item for slide in designed.slides for item in slide.bullets]
+        cards = [item for slide in designed.slides for item in slide.data]
+        table_rows = []
+        for slide in designed.slides:
+            if slide.layout == "table":
+                table_rows.extend(slide.table_data[1:])
+        assert bullets == [str(i) for i in range(17)]
+        assert cards == list(range(9))
+        assert table_rows == [[str(i)] for i in range(85)]
+
+    def test_fix_outline_is_copy_on_write_and_reduces_font(self):
+        outline = PPTOutline(slides=[
+            SlideContent(layout="content", title="密集", bullets=["长" * 500]),
+        ])
+        report = PPTQualityChecker().check_outline(outline)
+        fixed = PPTQualityChecker().fix_outline(outline, report)
+        assert fixed is not outline
+        assert outline.slides[0].body_font_size is None
+        dense = next(slide for slide in fixed.slides if slide.title == "密集")
+        assert dense.body_font_size is not None
+        assert dense.bullets == outline.slides[0].bullets
+
+
+class TestTemplateBaseDeck:
+    def test_theme_inherited_and_slides_cleared(self, temp_dir):
+        """以模板为基底：主题部件继承、模板内容页清除、输出尺寸继承"""
+        from office_agent.ppt_agent.ppt_orchestrator import PPTOrchestrator
+
+        template = temp_dir / "tpl.pptx"
+        tpl = Presentation()
+        tpl.slide_width = Inches(10)
+        tpl.slide_height = Inches(7.5)
+        s = tpl.slides.add_slide(tpl.slide_layouts[6])
+        s.shapes.add_textbox(Inches(1), Inches(1), Inches(4), Inches(1)).text_frame.text = (
+            "OLD CONTENT TO BE CLEARED"
+        )
+        tpl.save(str(template))
+        # 在主题 XML 植入标记色，验证继承
+        marker_file = temp_dir / "tpl_marked.pptx"
+        with zipfile.ZipFile(str(template)) as zin, \
+                zipfile.ZipFile(str(marker_file), "w", zipfile.ZIP_DEFLATED) as zout:
+            for item in zin.namelist():
+                data = zin.read(item)
+                if item.startswith("ppt/theme/theme"):
+                    data = data.replace(b'<a:srgbClr val="4F81BD"/>',
+                                        b'<a:srgbClr val="CA00CA"/>')
+                zout.writestr(item, data)
+
+        out = temp_dir / "out.pptx"
+        orch = PPTOrchestrator(model_gateway=None, image_gateway=None)
+        result = orch.generate_with_template(template_path=str(marker_file),
+                                             theme="季度经营汇报", slide_count=5,
+                                             output_path=str(out))
+        assert result.success, result.message
+
+        # 主题标记继承
+        with zipfile.ZipFile(str(out)) as z:
+            themes = [n for n in z.namelist() if n.startswith("ppt/theme/theme")]
+            assert any(b"CA00CA" in z.read(n) for n in themes), "主题未继承"
+
+        prs = Presentation(str(out))
+        # 模板尺寸继承（4:3）
+        assert abs(Emu(prs.slide_width).inches - 10.0) < 0.01
+        assert abs(Emu(prs.slide_height).inches - 7.5) < 0.01
+        # 模板旧内容页被清除
+        assert not any(
+            sh.has_text_frame and "OLD CONTENT" in sh.text_frame.text
+            for slide in prs.slides for sh in slide.shapes
+        )
+        _assert_shapes_within(prs)

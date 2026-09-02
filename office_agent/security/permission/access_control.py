@@ -5,14 +5,12 @@ Access Control - 访问控制
 from __future__ import annotations
 
 import time
-import uuid
 from dataclasses import dataclass, field
 from typing import Optional, Callable
 from enum import Enum
 
 from .roles import (
-    Role, Permission, PERMISSIONS, ROLE_PERMISSIONS,
-    has_permission, get_role_permissions,
+    Role, has_permission,
 )
 
 try:
@@ -103,7 +101,14 @@ class AccessController:
                     self._audit(ctx, result)
                     return result
             except Exception as e:
-                logger.warning(f"Policy error: {e}")
+                result = AccessResult(
+                    decision=AccessDecision.DENY,
+                    reason=f"访问策略执行失败: {type(e).__name__}",
+                    context=ctx,
+                )
+                logger.error("Policy failed closed", exc_info=True)
+                self._audit(ctx, result)
+                return result
 
         # 2. RBAC权限检查
         # resource可能是资源类型(file)或具体资源ID(file_001)
@@ -127,7 +132,17 @@ class AccessController:
             self._audit(ctx, result)
             return result
 
-        # 3. 所有权检查（非管理员只能访问自己的资源）
+        # 3. 所有权检查（非管理员只能访问自己的资源）。资源明确到 ID 时，
+        # 未能解析 owner 不能等价于“公共资源”，否则漏注册即可绕过隔离。
+        if resource_id and not owner_id and ctx.role != Role.ADMIN:
+            result = AccessResult(
+                decision=AccessDecision.DENY,
+                reason=f"资源 '{resource_id}' 未注册所有者，拒绝访问",
+                context=ctx,
+            )
+            self._audit(ctx, result)
+            return result
+
         if owner_id and ctx.role != Role.ADMIN:
             if owner_id != ctx.user_id:
                 result = AccessResult(

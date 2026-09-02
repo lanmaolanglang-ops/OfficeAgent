@@ -118,3 +118,56 @@ class TestGenerateWithTemplateSlideCount:
         orch.generate_with_template(template_path="fake.pptx", theme="产品介绍")
 
         assert captured["slide_count"] == 10
+
+
+class TestPPTImageGeneration:
+    def test_content_list_is_promoted_to_image_layout(self, tmp_path):
+        from office_agent.ppt_agent.models import PPTOutline, SlideContent
+        from office_agent.ppt_agent.ppt_orchestrator import PPTOrchestrator
+
+        image = tmp_path / "image.png"
+        image.write_bytes(b"image")
+
+        class FakeGateway:
+            def available(self):
+                return True
+
+            def generate(self, *_args, **_kwargs):
+                return str(image)
+
+        outline = PPTOutline(title="测试")
+        outline.add_slide(SlideContent(
+            layout="content_list", title="内容页", bullets=["要点一", "要点二"]
+        ))
+        orchestrator = PPTOrchestrator(image_gateway=FakeGateway(), max_generated_images=1)
+        result = orchestrator._generate_marked_images(outline)
+
+        assert result.slides[0].layout == "content_image"
+        assert result.slides[0].image_path == str(image)
+        assert orchestrator.image_generation["generated"] == 1
+
+    def test_fatal_image_error_stops_repeated_calls(self):
+        from office_agent.ppt_agent.models import PPTOutline, SlideContent
+        from office_agent.ppt_agent.ppt_orchestrator import PPTOrchestrator
+
+        class FailingGateway:
+            calls = 0
+
+            def available(self):
+                return True
+
+            def generate(self, *_args, **_kwargs):
+                self.calls += 1
+                raise RuntimeError("图像服务连接失败: getaddrinfo failed")
+
+        gateway = FailingGateway()
+        outline = PPTOutline(title="测试")
+        for index in range(3):
+            outline.add_slide(SlideContent(
+                layout="content", title=f"内容页{index}", bullets=["要点"]
+            ))
+        orchestrator = PPTOrchestrator(image_gateway=gateway, max_generated_images=3)
+        orchestrator._generate_marked_images(outline)
+
+        assert gateway.calls == 1
+        assert orchestrator.image_generation["attempted"] == 1

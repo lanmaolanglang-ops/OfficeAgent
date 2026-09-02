@@ -21,7 +21,7 @@ from .services import WordService
 from .ppt_agent import PPTOrchestrator, PPTService
 from .excel_agent import ExcelOrchestrator, ExcelService
 
-__version__ = "0.50.0"
+__version__ = "0.51.1"
 
 __all__ = [
     "__version__",

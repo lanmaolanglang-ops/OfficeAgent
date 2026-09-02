@@ -11,11 +11,12 @@ Word Service - Word 文档自动排版引擎
 6. 自定义规则接口 FormatConfig
 """
 import re
+import logging
 from pathlib import Path
-from typing import Optional, Union
+from typing import Optional
 
 from docx import Document
-from docx.shared import Pt, Cm, RGBColor, Emu
+from docx.shared import Pt, Cm, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING
 from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.oxml.ns import qn, nsdecls
@@ -26,6 +27,8 @@ from ..models.schemas import (
     TableConfig, Alignment, ProcessResult, PageSetupConfig,
 )
 from ..parsers.document_structure import DocumentStructureAnalyzer, DocumentTree
+
+logger = logging.getLogger("office_agent.services.word")
 
 
 # ============== 常量映射 ==============
@@ -232,73 +235,6 @@ class WordService:
 
         return self.structure
 
-    def _detect_heading_level(self, para, idx: int) -> Optional[int]:
-        """检测段落的标题级别"""
-        text = para.text.strip()
-        style_name = para.style.name if para.style else ""
-
-        # 1. 样式名判定（最可靠）
-        if style_name.startswith("Heading"):
-            try:
-                level = int(style_name.split()[-1])
-                if 1 <= level <= 4:
-                    return level
-            except (ValueError, IndexError):
-                pass
-
-        # 2. 编号模式判定
-        # "第X章"、"第X节" 作为一级标题
-        if re.match(r"^第[一二三四五六七八九十百千\d]+[章节部分篇]", text) and len(text) < 40:
-            return 1
-
-        # 多级编号比较可靠（1.1, 1.1.1, 1.1.1.1）
-        # 注意：编号后可能没有空格，如"1.1研究背景"
-        # 四级：1.1.1.1 xxx
-        if re.match(r"^\d+\.\d+\.\d+\.\d+\s*\S", text) and len(text) < 60:
-            return 4
-        # 三级：1.1.1 xxx
-        if re.match(r"^\d+\.\d+\.\d+\s*\S", text) and len(text) < 60:
-            return 3
-        # 二级：1.1 xxx（编号后可无空格）
-        if re.match(r"^\d+\.\d+\s*\S", text) and len(text) < 50:
-            return 2
-
-        # 中文数字编号（一、二、）比较可靠
-        if re.match(r"^[一二三四五六七八九十]+[、\.]\s*\S", text) and len(text) < 40:
-            return 1
-        if re.match(r"^（[一二三四五六七八九十]+）\s*\S", text) and len(text) < 40:
-            return 2
-
-        # 单级阿拉伯数字编号（1. xxx）容易和列表混淆
-        # 要求：很短（<20字）、且不以常见动词开头（排除列表项）
-        if re.match(r"^\d+[\.、]\s+\S", text) and len(text) < 25:
-            # 排除常见列表项开头
-            list_starts = ["完成", "实现", "建立", "支持", "提供", "增加",
-                          "修改", "删除", "添加", "检查", "确保", "进行",
-                          "采用", "使用", "通过", "根据", "按照", "首先",
-                          "其次", "然后", "最后", "另外", "同时", "此外"]
-            first_word = re.sub(r"^\d+[\.、]\s*", "", text)[:2]
-            if not any(first_word.startswith(w) for w in list_starts):
-                return 1
-
-        # 3. 字体大小判定（如果有 run）
-        if para.runs:
-            max_size = 0
-            is_bold = False
-            for run in para.runs:
-                if run.font.size:
-                    max_size = max(max_size, run.font.size.pt)
-                if run.font.bold:
-                    is_bold = True
-
-            # 大于15pt且加粗，可能是一级标题
-            if max_size >= 16 and is_bold and len(text) < 40:
-                return 1
-            if max_size >= 14 and is_bold and len(text) < 50:
-                return 2
-
-        return None
-
     # ==========================================
     # 3. 格式处理引擎
     # ==========================================
@@ -381,8 +317,10 @@ class WordService:
                         doc2.save(output_path)
                         # 重新检查
                         quality_report = checker.check(output_path, merged, input_path)
-            except Exception:
-                pass  # 质量检查失败不影响主流程
+            except Exception as exc:
+                # 质量检查失败不影响主流程，但必须留痕便于排查
+                self.changes.append(f"质量检查跳过: {type(exc).__name__}")
+                logger.debug("Word quality check skipped: %s", exc)
 
             suggestions = [
                 "建议检查标题层级是否正确",
@@ -501,8 +439,10 @@ class WordService:
         return ".".join(parts)
 
     def _prepend_number(self, para, number_str: str):
-        """在标题前添加编号（会先移除已有编号）"""
-        text = para.text.strip()
+        """在标题前添加编号，同时保留原有 run 级字体、语言和强调格式。"""
+        raw_text = "".join(run.text or "" for run in para.runs)
+        text = raw_text.lstrip()
+        leading_chars = len(raw_text) - len(text)
 
         # 匹配已有编号的模式：
         # 1. 多级数字编号: 1, 1.1, 1.1.1, 1.1.1.1（后面可跟.、、空格或直接跟中文）
@@ -518,24 +458,32 @@ class WordService:
             r"^\d+[、\.][\s]+",                 # 1. （必须跟空格，避免匹配"1.1"）
         ]
 
-        clean_text = text
-        has_existing = False
+        remove_chars = leading_chars
         for pattern in existing_num_patterns:
             m = re.match(pattern, text)
             if m:
-                clean_text = text[m.end():].strip()
-                has_existing = True
+                remove_chars += m.end()
                 break
 
-        new_text = f"{number_str} {clean_text}" if clean_text else number_str
-
-        # 清空所有run，设置新文本
+        # 仅从 run 序列头部删掉原编号；其余 run 不重建，局部加粗、
+        # 中英文字体和超链接等格式均保持原位。
+        remaining = remove_chars
         for run in para.runs:
-            run.text = ""
-        if para.runs:
-            para.runs[0].text = new_text
-        else:
-            para.add_run(new_text)
+            if remaining <= 0:
+                break
+            text_len = len(run.text or "")
+            if text_len <= remaining:
+                run.text = ""
+                remaining -= text_len
+            else:
+                run.text = run.text[remaining:].lstrip()
+                remaining = 0
+
+        target_run = next((run for run in para.runs if run.text), None)
+        if target_run is None:
+            target_run = para.runs[0] if para.runs else para.add_run()
+        separator = " " if any(run.text for run in para.runs) else ""
+        target_run.text = f"{number_str}{separator}{target_run.text}"
 
     def _apply_paragraph_format(self, para, font_cfg: FontConfig,
                                 para_cfg: ParagraphConfig):
@@ -550,15 +498,21 @@ class WordService:
         pf = para.paragraph_format
 
         if para_cfg.line_spacing:
-            pf.line_spacing = para_cfg.line_spacing
-            pf.line_spacing_rule = WD_LINE_SPACING.MULTIPLE
+            if para_cfg.line_spacing_rule == "exactly":
+                pf.line_spacing = Pt(para_cfg.line_spacing)
+                pf.line_spacing_rule = WD_LINE_SPACING.EXACTLY
+            else:
+                pf.line_spacing = para_cfg.line_spacing
+                pf.line_spacing_rule = WD_LINE_SPACING.MULTIPLE
 
         if para_cfg.space_before is not None:
             pf.space_before = Pt(para_cfg.space_before)
         if para_cfg.space_after is not None:
             pf.space_after = Pt(para_cfg.space_after)
 
-        if para_cfg.first_line_indent:
+        if para_cfg.first_line_indent_chars:
+            pf.first_line_indent = Pt(para_cfg.first_line_indent_chars * font_cfg.size)
+        elif para_cfg.first_line_indent:
             pf.first_line_indent = Pt(para_cfg.first_line_indent)
         if para_cfg.hanging_indent:
             pf.hanging_indent = Pt(para_cfg.hanging_indent)
@@ -615,7 +569,8 @@ class WordService:
         """处理所有表格：三线表 + 自动编号（已有题注则不重复添加）"""
         for table in doc.tables:
             self._table_counter += 1
-            self._apply_three_line_table(table, table_config)
+            if table_config.three_line:
+                self._apply_three_line_table(table, table_config)
 
             if table_config.auto_number:
                 # 检查表格上方是否已有题注（"表N"开头的段落）
@@ -666,7 +621,6 @@ class WordService:
 
         # 顶线和底线（表格级）
         top_sz = str(int(config.top_border * 8))    # 1.5磅 = 12 (八分之一磅)
-        mid_sz = str(int(config.middle_border * 8)) # 0.75磅 = 6
         bot_sz = str(int(config.bottom_border * 8)) # 1.5磅 = 12
 
         borders_xml = f'''
@@ -680,7 +634,7 @@ class WordService:
         </w:tblBorders>
         '''
         tblBorders = parse_xml(borders_xml)
-        tblPr.append(tblBorders)
+        self._set_tbl_borders(tblPr, tblBorders)
 
         # 表头行底线（0.75磅）
         if len(table.rows) > 0:
@@ -691,6 +645,24 @@ class WordService:
                 for para in cell.paragraphs:
                     for run in para.runs:
                         run.font.bold = True
+
+    # tblPr 子元素按 OOXML schema 的顺序，tblBorders 之后允许出现的元素
+    _TBLPR_AFTER_BORDERS = (
+        "w:shd", "w:tblLayout", "w:tblCellMar", "w:tblLook",
+        "w:tblCaption", "w:tblDescription",
+    )
+
+    def _set_tbl_borders(self, tblPr, tblBorders):
+        """替换 tblBorders：先移除已有的（重复元素会让 Word/WPS 判定文档损坏），
+        再按 schema 顺序插入到 tblLayout/tblCellMar/tblLook 等后继元素之前。"""
+        for existing in tblPr.findall(qn("w:tblBorders")):
+            tblPr.remove(existing)
+        for tag in self._TBLPR_AFTER_BORDERS:
+            successor = tblPr.find(qn(tag))
+            if successor is not None:
+                successor.addprevious(tblBorders)
+                return
+        tblPr.append(tblBorders)
 
     def _clear_table_borders(self, table):
         """清除表格所有边框"""
@@ -771,7 +743,19 @@ class WordService:
     # ==========================================
 
     @staticmethod
-    def config_from_dict(d: dict) -> FormatConfig:
+    def _coerce_float(value, default: float) -> float:
+        """宽容的数值解析：LLM 可能返回 "12pt"、None、bool 等非法字号。"""
+        if isinstance(value, bool) or value is None:
+            return default
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str):
+            m = re.search(r"\d+(?:\.\d+)?", value)
+            if m:
+                return float(m.group())
+        return default
+
+    def config_from_dict(self, d: dict) -> FormatConfig:
         """
         从字典创建 FormatConfig
 
@@ -796,9 +780,11 @@ class WordService:
         # 解析字号
         size_raw = d.get("size", 12)
         if isinstance(size_raw, str):
-            size = CHINESE_SIZE_MAP.get(size_raw, 12)
+            size = CHINESE_SIZE_MAP.get(size_raw, None)
+            if size is None:
+                size = self._coerce_float(size_raw, 12.0)
         else:
-            size = float(size_raw)
+            size = self._coerce_float(size_raw, 12.0)
 
         # 解析对齐
         align_str = d.get("alignment", "justify")
@@ -814,77 +800,102 @@ class WordService:
 
         body_para = ParagraphConfig(
             alignment=alignment,
-            line_spacing=float(d.get("line_spacing", 1.25)),
-            space_before=float(d.get("space_before", 0)),
-            space_after=float(d.get("space_after", 0)),
-            first_line_indent=float(d.get("first_line_indent", 24)),
+            line_spacing=self._coerce_float(d.get("line_spacing"), 1.25),
+            line_spacing_rule=(
+                "exactly" if d.get("line_spacing_rule") == "exactly" else "multiple"
+            ),
+            space_before=self._coerce_float(d.get("space_before"), 0),
+            space_after=self._coerce_float(d.get("space_after"), 0),
+            first_line_indent=self._coerce_float(d.get("first_line_indent"), 24),
+            first_line_indent_chars=self._coerce_float(
+                d.get("first_line_indent_chars"), 0
+            ),
         )
 
         # 解析标题配置
         headings = {}
         headings_dict = d.get("headings", {})
+        if not isinstance(headings_dict, dict):
+            headings_dict = {}
+        defaults = FormatConfig._default_headings()
         for level in range(1, 5):
             level_key = str(level)
-            if level_key in headings_dict:
-                h_cfg = headings_dict[level_key]
-                h_size = h_cfg.get("size", 15 - (level - 1))
-                if isinstance(h_size, str):
-                    h_size = CHINESE_SIZE_MAP.get(h_size, 12)
+            h_cfg = headings_dict.get(level_key, {})
+            if not isinstance(h_cfg, dict):
+                h_cfg = {}
+            default_heading = defaults[level]
+            h_size_raw = h_cfg.get("size", default_heading.font.size)
+            if isinstance(h_size_raw, str):
+                h_size = CHINESE_SIZE_MAP.get(h_size_raw, None)
+                if h_size is None:
+                    h_size = self._coerce_float(h_size_raw, default_heading.font.size)
+            else:
+                h_size = self._coerce_float(h_size_raw, default_heading.font.size)
 
-                h_align = ALIGNMENT_STR_MAP.get(
-                    h_cfg.get("alignment", "left"), Alignment.LEFT
-                )
+            h_align = ALIGNMENT_STR_MAP.get(
+                h_cfg.get("alignment", "left"), Alignment.LEFT
+            )
 
-                headings[level] = HeadingConfig(
-                    level=level,
-                    font=FontConfig(
-                        cn_font=h_cfg.get("font", "黑体"),
-                        en_font=h_cfg.get("en_font", "Times New Roman"),
-                        size=float(h_size),
-                        bold=h_cfg.get("bold", True),
-                        italic=h_cfg.get("italic", False),
-                        color=h_cfg.get("color"),
+            headings[level] = HeadingConfig(
+                level=level,
+                font=FontConfig(
+                    cn_font=h_cfg.get("font", default_heading.font.cn_font),
+                    en_font=h_cfg.get("en_font", default_heading.font.en_font),
+                    size=float(h_size),
+                    bold=h_cfg.get("bold", default_heading.font.bold),
+                    italic=h_cfg.get("italic", default_heading.font.italic),
+                    color=h_cfg.get("color", default_heading.font.color),
+                ),
+                paragraph=ParagraphConfig(
+                    alignment=h_align,
+                    line_spacing=self._coerce_float(h_cfg.get("line_spacing"), 1.0),
+                    line_spacing_rule=(
+                        "exactly" if h_cfg.get("line_spacing_rule") == "exactly"
+                        else "multiple"
                     ),
-                    paragraph=ParagraphConfig(
-                        alignment=h_align,
-                        line_spacing=float(h_cfg.get("line_spacing", 1.0)),
-                        space_before=float(h_cfg.get("space_before", 6)),
-                        space_after=float(h_cfg.get("space_after", 6)),
-                        first_line_indent=float(h_cfg.get("first_line_indent", 0)),
+                    space_before=self._coerce_float(h_cfg.get("space_before"), 6),
+                    space_after=self._coerce_float(h_cfg.get("space_after"), 6),
+                    first_line_indent=self._coerce_float(h_cfg.get("first_line_indent"), 0),
+                    first_line_indent_chars=self._coerce_float(
+                        h_cfg.get("first_line_indent_chars"), 0
                     ),
-                    numbering=h_cfg.get("numbering", True),
-                )
+                ),
+                numbering=h_cfg.get("numbering", True),
+            )
 
         # 表格配置
         table_cfg = TableConfig(
-            top_border=float(d.get("table_top", 1.5)),
-            middle_border=float(d.get("table_middle", 0.75)),
-            bottom_border=float(d.get("table_bottom", 1.5)),
+            three_line=bool(d.get("table_three_line", True)),
+            top_border=self._coerce_float(d.get("table_top"), 1.5),
+            middle_border=self._coerce_float(d.get("table_middle"), 0.75),
+            bottom_border=self._coerce_float(d.get("table_bottom"), 1.5),
             auto_number=d.get("table_numbering", True),
         )
 
         # 支持 table 字典格式（来自模板分析器）
         table_dict = d.get("table", {})
         if isinstance(table_dict, dict):
+            if "three_line" in table_dict:
+                table_cfg.three_line = bool(table_dict["three_line"])
             if "top_border" in table_dict:
-                table_cfg.top_border = float(table_dict["top_border"])
+                table_cfg.top_border = self._coerce_float(table_dict["top_border"], 1.5)
             if "middle_border" in table_dict:
-                table_cfg.middle_border = float(table_dict["middle_border"])
+                table_cfg.middle_border = self._coerce_float(table_dict["middle_border"], 0.75)
             if "bottom_border" in table_dict:
-                table_cfg.bottom_border = float(table_dict["bottom_border"])
+                table_cfg.bottom_border = self._coerce_float(table_dict["bottom_border"], 1.5)
 
         # 页面设置
         page_setup = PageSetupConfig()
         page_dict = d.get("page", {})
         if isinstance(page_dict, dict):
-            page_setup.margin_top = float(page_dict.get("margin_top", 2.54))
-            page_setup.margin_bottom = float(page_dict.get("margin_bottom", 2.54))
-            page_setup.margin_left = float(page_dict.get("margin_left", 3.17))
-            page_setup.margin_right = float(page_dict.get("margin_right", 3.17))
+            page_setup.margin_top = self._coerce_float(page_dict.get("margin_top"), 2.54)
+            page_setup.margin_bottom = self._coerce_float(page_dict.get("margin_bottom"), 2.54)
+            page_setup.margin_left = self._coerce_float(page_dict.get("margin_left"), 3.17)
+            page_setup.margin_right = self._coerce_float(page_dict.get("margin_right"), 3.17)
             if "page_width" in page_dict:
-                page_setup.page_width = float(page_dict["page_width"])
+                page_setup.page_width = self._coerce_float(page_dict["page_width"], 21.0)
             if "page_height" in page_dict:
-                page_setup.page_height = float(page_dict["page_height"])
+                page_setup.page_height = self._coerce_float(page_dict["page_height"], 29.7)
 
         return FormatConfig(
             body_font=body_font,
@@ -911,6 +922,11 @@ class WordService:
             base.body_paragraph.alignment = override_config.body_paragraph.alignment
         if override.get("first_line_indent"):
             base.body_paragraph.first_line_indent = override_config.body_paragraph.first_line_indent
+            base.body_paragraph.first_line_indent_chars = 0
+        if override.get("first_line_indent_chars"):
+            base.body_paragraph.first_line_indent_chars = (
+                override_config.body_paragraph.first_line_indent_chars
+            )
 
         return base
 
@@ -947,12 +963,35 @@ class WordService:
 
             doc = Document()
 
-            # 按行解析（支持 Markdown 标题）
+            # 按行解析（支持 Markdown 标题与表格，与 txt 入口能力一致）
             lines = content.split("\n")
-            for line in lines:
+            i = 0
+            while i < len(lines):
+                line = lines[i]
                 line = line.rstrip("\r")
                 if not line.strip():
                     doc.add_paragraph("")
+                    i += 1
+                    continue
+
+                stripped = line.strip()
+                if stripped.startswith("|") and stripped.endswith("|"):
+                    table_lines = []
+                    while i < len(lines) and lines[i].strip().startswith("|"):
+                        table_lines.append(lines[i].strip())
+                        i += 1
+                    rows_data = [
+                        [cell.strip() for cell in table_line.strip("|").split("|")]
+                        for table_line in table_lines
+                        if not re.match(r"^\|[\s\-:|]+\|$", table_line)
+                    ]
+                    if rows_data:
+                        ncols = max(len(row) for row in rows_data)
+                        table = doc.add_table(rows=len(rows_data), cols=ncols)
+                        table.style = "Table Grid"
+                        for row_idx, row in enumerate(rows_data):
+                            for col_idx, cell_text in enumerate(row):
+                                table.rows[row_idx].cells[col_idx].text = cell_text
                     continue
 
                 if line.startswith("# "):
@@ -965,6 +1004,7 @@ class WordService:
                     doc.add_heading(line[5:].strip(), level=4)
                 else:
                     doc.add_paragraph(line)
+                i += 1
 
             # 分析并应用格式
             self.analyze_structure(doc)

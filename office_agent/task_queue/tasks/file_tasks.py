@@ -2,12 +2,10 @@
 文件处理后台任务
 """
 import os
-import time
-import shutil
 import logging
-import traceback
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from ...security.error_sanitizer import sanitize_error
 
 logger = logging.getLogger("office_agent.tasks.file")
 
@@ -36,8 +34,21 @@ def process_upload(file_path: str, file_id: str = None,
 
         # 根据文件类型处理
         ext = Path(file_path).suffix.lower()
+        type_by_extension = {
+            ".docx": "word", ".doc": "word",
+            ".pptx": "ppt", ".ppt": "ppt",
+            ".xlsx": "excel", ".xls": "excel", ".csv": "excel",
+            ".pdf": "pdf",
+            ".txt": "text", ".md": "text", ".rtf": "text",
+            ".png": "image", ".jpg": "image", ".jpeg": "image",
+            ".gif": "image", ".bmp": "image", ".webp": "image",
+            ".tif": "image", ".tiff": "image",
+        }
+        result["file_type"] = file_type or type_by_extension.get(
+            ext, ext.lstrip(".") or "unknown"
+        )
 
-        if ext in (".docx", ".doc"):
+        if ext == ".docx":
             result["file_type"] = "word"
             try:
                 from docx import Document
@@ -47,7 +58,7 @@ def process_upload(file_path: str, file_id: str = None,
             except Exception:
                 pass
 
-        elif ext in (".pptx", ".ppt"):
+        elif ext == ".pptx":
             result["file_type"] = "ppt"
             try:
                 from pptx import Presentation
@@ -56,14 +67,18 @@ def process_upload(file_path: str, file_id: str = None,
             except Exception:
                 pass
 
-        elif ext in (".xlsx", ".xls"):
+        elif ext == ".xlsx":
             result["file_type"] = "excel"
             try:
                 import openpyxl
                 wb = openpyxl.load_workbook(file_path, read_only=True)
-                result["metadata"]["sheets"] = wb.sheetnames
-            except Exception:
-                pass
+                try:
+                    result["metadata"]["sheets"] = wb.sheetnames
+                finally:
+                    # read_only 工作簿持有文件句柄，不 close 会泄漏到 GC
+                    wb.close()
+            except Exception as exc:
+                logger.warning("提取 Excel 元数据失败 %s: %s", file_path, exc)
 
         elif ext == ".pdf":
             result["file_type"] = "pdf"
@@ -84,7 +99,6 @@ def process_upload(file_path: str, file_id: str = None,
         logger.info(f"文件处理 {file_id} 完成: {result['file_type']}")
 
     except Exception as e:
-        from ...security.error_sanitizer import sanitize_error
         logger.error("文件处理 %s 失败: %s", file_id, sanitize_error(e))
         result["status"] = "failed"
         result["error"] = sanitize_error(e)
@@ -111,26 +125,61 @@ def convert_format(input_path: str, output_path: str,
         if progress:
             progress.update(30, f"转换为{target_format}")
 
-        # 实际转换逻辑由对应 Service 处理
-        # 这里做基础的文件操作
-        if os.path.exists(output_path):
-            result["output_files"].append(output_path)
+        # 转换引擎尚未实现：与其假装成功并返回空产物，不如明确失败
+        raise RuntimeError(
+            f"文件格式转换（→{target_format}）暂未实现，请使用 Word/PPT/Excel Agent 处理"
+        )
 
         if progress:
             progress.update(100, "转换完成")
 
     except Exception as e:
         result["status"] = "failed"
-        from ...security.error_sanitizer import sanitize_error
         result["error"] = sanitize_error(e)
         raise
 
     return result
 
 
+def cleanup_old_logs(days: int = None, progress=None, _task_id: str = None, **kwargs) -> dict:
+    """清理超过保留期的执行/模型调用/错误日志（防 SQLite 无限膨胀）"""
+    import os
+    if not days or days <= 0:
+        days = int(os.environ.get("LOG_RETENTION_DAYS", "30"))
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    deleted = {}
+    try:
+        from sqlalchemy import delete
+        from ...database.session import SessionLocal
+        from ...database.models.execution import ExecutionLog, ModelCallLog, ErrorLog
+        session = SessionLocal()
+        try:
+            for model in (ExecutionLog, ModelCallLog, ErrorLog):
+                try:
+                    res = session.execute(delete(model).where(model.created_at < cutoff))
+                    deleted[model.__tablename__] = res.rowcount or 0
+                except Exception as exc:
+                    deleted[getattr(model, "__tablename__", model.__name__)] = f"error: {sanitize_error(exc, '清理失败')}"
+            session.commit()
+        finally:
+            session.close()
+        logger.info("日志保留清理（>%d天）: %s", days, deleted)
+        return {"days": days, "deleted": deleted}
+    except Exception as exc:
+        logger.warning("日志清理失败: %s", sanitize_error(exc, "清理失败"))
+        return {"days": days, "error": sanitize_error(exc, "清理失败")}
+
+
 def cleanup_temp_files(progress=None, _task_id: str = None, **kwargs) -> dict:
     """
     清理临时文件（定时任务，每天执行）
+
+    扫描真实数据目录（OFFICE_AGENT_DATA_DIR 优先）：
+    - 中间产物目录 outputs/（成品已复制进 storage 桶，这里的是处理过程文件）
+    - 分片上传残留 multipart/
+    - 存储桶内原子写残留的 *.tmp-* 文件
+    - 兼容旧版本的 temp/uploads/cache 目录
+    存储桶内的正式文件（DB 有记录）一律不按 mtime 删除，避免破坏下载。
     """
     result = {"status": "success", "cleaned": 0, "freed_bytes": 0}
 
@@ -138,30 +187,51 @@ def cleanup_temp_files(progress=None, _task_id: str = None, **kwargs) -> dict:
         if progress:
             progress.update(10, "扫描临时文件")
 
+        data_root = Path(
+            os.environ.get("OFFICE_AGENT_DATA_DIR") or os.path.expanduser("~/.office_agent")
+        )
         dirs_to_clean = [
-            Path(os.path.expanduser("~/.office_agent/temp")),
-            Path(os.path.expanduser("~/.office_agent/uploads")),
-            Path(os.path.expanduser("~/.office_agent/cache")),
+            data_root / "outputs",
+            data_root / "temp",
+            data_root / "uploads",
+            data_root / "cache",
         ]
+        multipart_dir = data_root / "storage" / "multipart"
+        storage_root = data_root / "storage"
 
-        cutoff = datetime.now() - timedelta(days=7)
+        cutoff = datetime.now(timezone.utc) - timedelta(days=7)
         cleaned = 0
         freed = 0
+
+        def _unlink_expired(path: Path):
+            nonlocal cleaned, freed
+            try:
+                if not path.is_file():
+                    return
+                mtime = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
+                if mtime < cutoff:
+                    size = path.stat().st_size
+                    path.unlink()
+                    cleaned += 1
+                    freed += size
+            except Exception as exc:
+                logger.debug("跳过 %s: %s", path, exc)
 
         for d in dirs_to_clean:
             if not d.exists():
                 continue
             for f in d.iterdir():
-                if f.is_file():
-                    mtime = datetime.fromtimestamp(f.stat().st_mtime)
-                    if mtime < cutoff:
-                        size = f.stat().st_size
-                        try:
-                            f.unlink()
-                            cleaned += 1
-                            freed += size
-                        except Exception:
-                            pass
+                _unlink_expired(f)
+
+        # 分片上传残留：递归清理过期 part 文件
+        if multipart_dir.exists():
+            for f in multipart_dir.rglob("*"):
+                _unlink_expired(f)
+
+        # 原子写残留（LocalStorage 的临时文件名含 .tmp-），DB 从不引用
+        if storage_root.exists():
+            for f in storage_root.rglob("*.tmp-*"):
+                _unlink_expired(f)
 
         result["cleaned"] = cleaned
         result["freed_bytes"] = freed
@@ -189,7 +259,9 @@ def system_health_check(progress=None, _task_id: str = None, **kwargs) -> dict:
         if progress:
             progress.update(20, "检查存储")
 
-        data_dir = Path(os.path.expanduser("~/.office_agent"))
+        data_dir = Path(
+            os.environ.get("OFFICE_AGENT_DATA_DIR") or os.path.expanduser("~/.office_agent")
+        )
         if data_dir.exists():
             total_size = sum(f.stat().st_size for f in data_dir.rglob("*") if f.is_file())
             result["checks"]["storage_mb"] = round(total_size / 1024 / 1024, 2)
@@ -210,7 +282,7 @@ def system_health_check(progress=None, _task_id: str = None, **kwargs) -> dict:
         if progress:
             progress.update(80, "检查Worker")
 
-        result["checks"]["timestamp"] = datetime.now().isoformat()
+        result["checks"]["timestamp"] = datetime.now(timezone.utc).isoformat()
 
         if progress:
             progress.update(100, "健康检查完成")

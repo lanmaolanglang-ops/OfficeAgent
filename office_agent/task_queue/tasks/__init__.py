@@ -8,14 +8,14 @@
 
 任务不直接操作数据库，通过 Service 层调用 Agent。
 """
-import os
-import time
 import logging
+from ...api.routing import route_by_file_path, route_intent
 from .word_tasks import process_word, format_document
 from .ppt_tasks import generate_ppt, design_ppt
 from .excel_tasks import analyze_excel, generate_chart
 from .file_tasks import (
     process_upload, convert_format, cleanup_temp_files, system_health_check,
+    cleanup_old_logs,
 )
 from .rag_tasks import (
     index_document, chunk_and_embed, refresh_knowledge_base, search_knowledge,
@@ -38,22 +38,10 @@ def process_general(instruction: str = "", input_path: str = None,
         if progress:
             progress.update(5, "理解任务需求")
 
-        msg = instruction.lower()
-        # Follow-up instructions may omit "Word/Excel/PPT" entirely. Use the
-        # attached file extension before falling back to keyword matching.
-        ext = os.path.splitext(input_path or "")[1].lower()
-        if ext in (".docx", ".doc"):
-            return process_word(input_path=input_path, instruction=instruction,
-                                options=options, progress=progress, _task_id=_task_id)
-        if ext in (".pptx", ".ppt"):
-            return generate_ppt(outline=instruction, input_path=input_path,
-                                options=options, progress=progress, _task_id=_task_id)
-        if ext in (".xlsx", ".xls", ".csv"):
-            return analyze_excel(input_path=input_path, instruction=instruction,
-                                 options=options, progress=progress, _task_id=_task_id)
+        routed = route_by_file_path(input_path) if input_path else None
+        agent, _, _ = routed or route_intent(instruction)
 
-        # 路由到具体处理器
-        if any(k in msg for k in ["ppt", "pptx", "演示", "幻灯片", "汇报"]):
+        if agent == "ppt_agent":
             if progress:
                 progress.update(20, "正在生成PPT...")
             return generate_ppt(
@@ -63,7 +51,7 @@ def process_general(instruction: str = "", input_path: str = None,
                 progress=progress,
                 _task_id=_task_id,
             )
-        elif any(k in msg for k in ["word", "文档", "docx", "doc", "排版", "格式"]):
+        elif agent == "word_agent":
             if not input_path:
                 if progress:
                     progress.update(100, "请先上传文件")
@@ -79,7 +67,7 @@ def process_general(instruction: str = "", input_path: str = None,
                 progress=progress,
                 _task_id=_task_id,
             )
-        elif any(k in msg for k in ["excel", "xlsx", "xls", "表格", "数据分析"]):
+        elif agent == "excel_agent":
             if not input_path:
                 if progress:
                     progress.update(100, "请先上传文件")
@@ -96,15 +84,11 @@ def process_general(instruction: str = "", input_path: str = None,
                 _task_id=_task_id,
             )
         else:
-            # 未知任务类型
-            if progress:
-                progress.update(30, "分析任务类型")
-                time.sleep(0.5)
-                progress.update(60, "处理中")
-                time.sleep(0.5)
-                progress.update(100, "完成")
-            result["message"] = f"已收到指令：{instruction[:100]}"
-            logger.info(f"通用任务 {_task_id}: {instruction[:100]}")
+            # 无法路由时必须显式失败，不能把空结果冒充成功。
+            result["status"] = "failed"
+            result["error"] = "无法识别或不支持的任务类型"
+            result["message"] = "请明确指定 Word、PPT、Excel 或 RAG 任务"
+            logger.warning("通用任务 %s 无法路由: %s", _task_id, instruction[:100])
 
     except Exception as e:
         logger.error(f"通用任务 {_task_id} 失败: {e}")
@@ -135,6 +119,7 @@ TASK_REGISTRY = {
     "file.convert": convert_format,
     "file.cleanup": cleanup_temp_files,
     "file.health_check": system_health_check,
+    "file.cleanup_logs": cleanup_old_logs,
     # RAG
     "rag.index": index_document,
     "rag.embed": chunk_and_embed,

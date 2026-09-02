@@ -19,6 +19,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 
 class TestCategory(str, Enum):
+    __test__ = False
     UNIT = "unit"
     INTEGRATION = "integration"
     AGENT = "agent"
@@ -29,6 +30,7 @@ class TestCategory(str, Enum):
 
 
 class TestSeverity(str, Enum):
+    __test__ = False
     CRITICAL = "critical"  # 阻塞发布
     HIGH = "high"          # 必须修复
     MEDIUM = "medium"      # 建议修复
@@ -37,6 +39,7 @@ class TestSeverity(str, Enum):
 
 @dataclass
 class TestResult:
+    __test__ = False
     """测试结果"""
     test_name: str
     category: TestCategory

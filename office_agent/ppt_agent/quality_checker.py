@@ -13,18 +13,15 @@ PPT Quality Checker - PPT 质量检查与自动修正
 - 可自动修正的问题返回修正建议
 - 调用 fix() 方法自动修正并重新生成
 """
+import copy
 import math
 from pathlib import Path
-from typing import Optional, List, Dict, Tuple
+from typing import Optional, List, Tuple
 from dataclasses import dataclass, field
-from collections import Counter
 
 from pptx import Presentation
-from pptx.util import Pt, Emu, Inches
-from pptx.dml.color import RGBColor
-from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
 
-from .models import PPTOutline, SlideContent, ColorScheme, FontScheme
+from .models import PPTOutline, SlideContent
 
 
 # ==========================================
@@ -112,7 +109,7 @@ class PPTQualityReport:
                         if issue.detail:
                             lines.append(f"     {issue.detail}")
                         if issue.fixable and issue.fix_action:
-                            lines.append(f"     → 可自动修正")
+                            lines.append("     → 可自动修正")
                     lines.append("")
 
         return "\n".join(lines)
@@ -332,7 +329,7 @@ class PPTQualityChecker:
 
             # 文字量估算
             total_chars = len(slide.title or "")
-            total_chars += sum(len(b) for b in bullets)
+            total_chars += sum(len(b) if isinstance(b, str) else len(str(b)) for b in bullets)
             total_chars += len(slide.body_text or "")
             if total_chars > self.MAX_CHARS_PER_SLIDE:
                 report.issues.append(PPTQualityIssue(
@@ -405,7 +402,7 @@ class PPTQualityChecker:
         Returns:
             修正后的 PPTOutline
         """
-        fixed = outline
+        fixed = copy.deepcopy(outline)
         actions = report.get_fix_actions()
 
         for action in actions:
@@ -417,25 +414,57 @@ class PPTQualityChecker:
                 if slide_idx < len(fixed.slides):
                     slide = fixed.slides[slide_idx]
                     if len(slide.bullets) > max_bullets:
-                        # 保留前 N 条，其余移到下一页或截断
+                        overflow = slide.bullets[max_bullets:]
                         slide.bullets = slide.bullets[:max_bullets]
+                        continuation = copy.deepcopy(slide)
+                        continuation.title = f"{slide.title}（续）"
+                        continuation.bullets = overflow
+                        fixed.slides.insert(slide_idx + 1, continuation)
+                        self._renumber(fixed)
 
             elif atype == "reduce_text":
                 slide_idx = action["slide"]
                 if slide_idx < len(fixed.slides):
                     slide = fixed.slides[slide_idx]
-                    # 截断过长的要点
-                    slide.bullets = [
-                        b[:60] + "..." if len(b) > 60 else b
-                        for b in slide.bullets
-                    ]
+                    slide.body_font_size = max(12, (slide.body_font_size or 18) - 2)
+                    slide.notes = (slide.notes or "") + "\n已为高密度内容降低字号，正文未截断。"
+
+            elif atype == "remove_slides":
+                # 页数超预算：从"总结页之前"裁掉多余页并重新编号
+                try:
+                    count = int(action.get("count", 0))
+                except (TypeError, ValueError):
+                    count = 0
+                if count > 0 and len(fixed.slides) > 2:
+                    removable = fixed.slides[1:-1]
+                    del removable[:count]
+                    fixed.slides = [fixed.slides[0]] + removable + [fixed.slides[-1]]
+                    for i, s in enumerate(fixed.slides):
+                        s.page_number = i + 1
+                    fixed.changes = getattr(fixed, "changes", [])
+                    fixed.changes.append(f"已按页数要求裁剪 {count} 页")
+
+            elif atype == "add_slides":
+                # 不凭空生成内容；该问题在检查阶段标为不可自动修复。
+                continue
 
             elif atype == "unify_font":
-                # 字体统一在生成时由 FontScheme 控制，这里标记即可
-                pass
+                slide_idx = action.get("slide", -1)
+                if 0 <= slide_idx < len(fixed.slides):
+                    fixed.slides[slide_idx].notes = (
+                        (fixed.slides[slide_idx].notes or "")
+                        + "\n生成时统一使用大纲字体方案。"
+                    )
 
             elif atype == "unify_font_all":
-                pass
+                for slide in fixed.slides:
+                    slide.notes = (slide.notes or "") + "\n生成时统一使用大纲字体方案。"
+
+            elif atype == "reduce_font":
+                slide_idx = action.get("slide", -1)
+                if 0 <= slide_idx < len(fixed.slides):
+                    slide = fixed.slides[slide_idx]
+                    slide.body_font_size = max(12, (slide.body_font_size or 18) - 2)
 
             elif atype == "insert_cover":
                 # 在开头插入封面
@@ -610,8 +639,8 @@ class PPTQualityChecker:
             issue_type="count",
             severity=severity,
             message=message,
-            fixable=abs(diff) <= 3,
-            fix_action=action if abs(diff) <= 3 else {},
+            fixable=(diff > 0 and abs(diff) <= 3),
+            fix_action=action if diff > 0 and abs(diff) <= 3 else {},
         ))
 
     def _check_template_compliance(self, prs, report: PPTQualityReport):

@@ -28,7 +28,7 @@ from openpyxl.chart import (
 from openpyxl.chart.label import DataLabelList
 from openpyxl.chart.layout import Layout, ManualLayout
 from openpyxl.chart.series import DataPoint
-from openpyxl.utils import get_column_letter
+from openpyxl.utils import get_column_letter, quote_sheetname
 
 from .models import ChartSpec, DataProfile, SheetInfo, ColumnInfo
 
@@ -141,7 +141,7 @@ class ChartGenerator:
                          output_path: str = None,
                          sheet_name: str = None) -> Tuple[str, List[ChartSpec]]:
         """从自然语言生成图表并写入 Excel"""
-        from .excel_service import ExcelService
+        from .excel_service import ExcelService, _derive_output_path
 
         service = ExcelService()
         service.open(file_path)
@@ -168,7 +168,7 @@ class ChartGenerator:
             self._render_chart(service, spec, sheet_name)
 
         if output_path is None:
-            output_path = file_path.replace(".xlsx", "_charts.xlsx")
+            output_path = _derive_output_path(file_path, "_charts")
         service.save(output_path)
 
         return output_path, specs
@@ -199,7 +199,7 @@ class ChartGenerator:
         if not target_cols and sheet:
             target_cols = [c for c in sheet.columns if c.data_type == "number"]
 
-        if not target_cols or not sheet:
+        if not target_cols or not sheet or sheet.row_count <= 0:
             return charts
 
         # 查找类别列
@@ -210,24 +210,29 @@ class ChartGenerator:
 
         if chart_type == "combo":
             # 组合图：第一个系列柱状，第二个系列折线（次轴）
-            spec = self._build_combo_spec(target_cols, cat_col, sheet, text)
+            spec = self._build_combo_spec(
+                target_cols, cat_col, sheet, text, position_index=len(charts)
+            )
             if spec:
                 charts.append(spec)
 
         elif chart_type == "scatter":
             # 散点图：X=第一个数值列，Y=第二个数值列
-            spec = self._build_scatter_spec(target_cols, sheet, text)
+            spec = self._build_scatter_spec(
+                target_cols, sheet, text, position_index=len(charts)
+            )
             if spec:
                 charts.append(spec)
 
         elif chart_type in ("pie", "doughnut"):
-            # 饼图：单个数值列
+            # 饼图：data_range 只含数值列，类别由 categories_range 提供
+            # （原实现把类别列也当数据系列，饼图必然画错/为空）
             col = target_cols[0]
             col_letter = self._col_letter(col.index + 1)
             charts.append(ChartSpec(
                 chart_type=chart_type,
                 title=self._make_title(text, col.name),
-                data_range=f"{cat_letter}1:{col_letter}{end_row}",
+                data_range=f"{col_letter}1:{col_letter}{end_row}",
                 categories_range=f"{cat_letter}2:{cat_letter}{end_row}",
                 position=self._next_chart_position(len(charts)),
                 show_data_labels=True,
@@ -240,7 +245,7 @@ class ChartGenerator:
                 charts.append(ChartSpec(
                     chart_type="radar",
                     title=self._make_title(text, col.name),
-                    data_range=f"{cat_letter}1:{col_letter}{end_row}",
+                    data_range=f"{col_letter}1:{col_letter}{end_row}",
                     categories_range=f"{cat_letter}2:{cat_letter}{end_row}",
                     position=self._next_chart_position(len(charts)),
                 ))
@@ -252,7 +257,7 @@ class ChartGenerator:
                 charts.append(ChartSpec(
                     chart_type=chart_type,
                     title=self._make_title(text, col.name),
-                    data_range=f"{cat_letter}1:{col_letter}{end_row}",
+                    data_range=f"{col_letter}1:{col_letter}{end_row}",
                     categories_range=f"{cat_letter}2:{cat_letter}{end_row}",
                     x_title=cat_col.name if cat_col else "",
                     y_title=col.name,
@@ -270,7 +275,7 @@ class ChartGenerator:
         """根据数据特征自动推荐图表"""
         charts = []
         sheet = self.profile.get_sheet(sheet_name) if self.profile else None
-        if not sheet:
+        if not sheet or sheet.row_count <= 0:
             return charts
 
         num_cols = [c for c in sheet.columns if c.data_type == "number"]
@@ -295,7 +300,7 @@ class ChartGenerator:
                 charts.append(ChartSpec(
                     chart_type="line",
                     title=f"{col.name}趋势",
-                    data_range=f"{cat_letter}1:{col_letter}{end_row}",
+                    data_range=f"{col_letter}1:{col_letter}{end_row}",
                     categories_range=f"{cat_letter}2:{cat_letter}{end_row}",
                     x_title=cat_col.name,
                     y_title=col.name,
@@ -305,7 +310,9 @@ class ChartGenerator:
 
             # 如果有2个以上指标且量级差异大 → 组合图
             if len(num_cols) >= 2:
-                combo_spec = self._build_combo_spec(num_cols[:2], cat_col, sheet, "")
+                combo_spec = self._build_combo_spec(
+                    num_cols[:2], cat_col, sheet, "", position_index=len(charts)
+                )
                 if combo_spec:
                     combo_spec.title = f"{num_cols[0].name}与{num_cols[1].name}"
                     charts.append(combo_spec)
@@ -318,7 +325,7 @@ class ChartGenerator:
                 charts.append(ChartSpec(
                     chart_type="column",
                     title=f"{col.name}对比",
-                    data_range=f"{cat_letter}1:{col_letter}{end_row}",
+                    data_range=f"{col_letter}1:{col_letter}{end_row}",
                     categories_range=f"{cat_letter}2:{cat_letter}{end_row}",
                     x_title=cat_col.name,
                     y_title=col.name,
@@ -332,7 +339,7 @@ class ChartGenerator:
             charts.append(ChartSpec(
                 chart_type="bar",
                 title=f"{col.name}排名",
-                data_range=f"{cat_letter}1:{col_letter}{end_row}",
+                data_range=f"{col_letter}1:{col_letter}{end_row}",
                 categories_range=f"{cat_letter}2:{cat_letter}{end_row}",
                 x_title=col.name,
                 y_title=cat_col.name,
@@ -347,7 +354,7 @@ class ChartGenerator:
             charts.append(ChartSpec(
                 chart_type="pie",
                 title=f"{col.name}占比",
-                data_range=f"{cat_letter}1:{col_letter}{end_row}",
+                data_range=f"{col_letter}1:{col_letter}{end_row}",
                 categories_range=f"{cat_letter}2:{cat_letter}{end_row}",
                 position=self._next_chart_position(len(charts)),
                 show_data_labels=True,
@@ -360,7 +367,7 @@ class ChartGenerator:
             charts.append(ChartSpec(
                 chart_type="column",
                 title="各指标构成",
-                data_range=f"{cat_letter}1:{last_letter}{end_row}",
+                data_range=f"{first_letter}1:{last_letter}{end_row}",
                 categories_range=f"{cat_letter}2:{cat_letter}{end_row}",
                 position=self._next_chart_position(len(charts)),
                 stacked=True,
@@ -399,9 +406,10 @@ class ChartGenerator:
     def _render_chart(self, service, spec: ChartSpec, sheet_name: str = None):
         """将 ChartSpec 渲染到 Excel"""
         ws = service.get_sheet(sheet_name)
-        if ws is None or not spec.data_range:
+        if ws is None or not spec.data_range or not self._range_has_data_rows(spec.data_range):
             return
 
+        chart_count = len(ws._charts)
         if spec.chart_type == "combo":
             self._render_combo(ws, spec)
         elif spec.chart_type == "scatter":
@@ -409,7 +417,18 @@ class ChartGenerator:
         else:
             self._render_standard(ws, spec)
 
-        service.changes.append(f"添加图表: {spec.title or spec.chart_type}")
+        if len(ws._charts) > chart_count:
+            service.changes.append(f"添加图表: {spec.title or spec.chart_type}")
+
+    @staticmethod
+    def _range_has_data_rows(range_str: str) -> bool:
+        """图表数据范围约定首行为标题，至少还需一行真实数据。"""
+        from openpyxl.utils import range_boundaries
+        try:
+            _min_col, min_row, _max_col, max_row = range_boundaries(range_str)
+        except (TypeError, ValueError):
+            return False
+        return max_row > min_row
 
     def _render_standard(self, ws, spec: ChartSpec):
         """渲染标准图表（柱/条/线/饼/面积/雷达/环形）"""
@@ -445,12 +464,21 @@ class ChartGenerator:
         chart.style = spec.style or 10
 
         # 数据
-        data = Reference(ws, range_string=f"{ws.title}!{spec.data_range}")
-        chart.add_data(data, titles_from_data=True)
+        sheet_ref = quote_sheetname(ws.title)
+        if spec.series_ranges:
+            from openpyxl.chart.series import SeriesLabel
+            for index, range_str in enumerate(spec.series_ranges):
+                data = Reference(ws, range_string=f"{sheet_ref}!{range_str}")
+                chart.add_data(data, titles_from_data=True)
+                if index < len(spec.series_names) and chart.series:
+                    chart.series[-1].tx = SeriesLabel(v=str(spec.series_names[index]))
+        else:
+            data = Reference(ws, range_string=f"{sheet_ref}!{spec.data_range}")
+            chart.add_data(data, titles_from_data=True)
 
         # 类别
         if spec.categories_range:
-            cats = Reference(ws, range_string=f"{ws.title}!{spec.categories_range}")
+            cats = Reference(ws, range_string=f"{sheet_ref}!{spec.categories_range}")
             chart.set_categories(cats)
 
         # 轴标题
@@ -478,11 +506,17 @@ class ChartGenerator:
             chart.legend.position = pos_map.get(spec.legend_position, "b")
 
         # 颜色
-        self._apply_colors(chart, spec.color_palette or self.palette)
+        from openpyxl.utils import range_boundaries
+        _min_col, min_row, _max_col, max_row = range_boundaries(spec.data_range)
+        point_count = max(0, max_row - min_row)
+        self._apply_colors(
+            chart, spec.color_palette or self.palette,
+            chart_type=spec.chart_type, point_count=point_count,
+        )
 
-        # 大小
-        chart.width = spec.width * 0.3937 * 72
-        chart.height = spec.height * 0.3937 * 72
+        # 大小（openpyxl ChartBase.width/height 单位即为厘米）
+        chart.width = spec.width
+        chart.height = spec.height
 
         # 添加
         anchor = spec.position or "H2"
@@ -519,24 +553,24 @@ class ChartGenerator:
         if spec.y_title:
             bar_chart.y_axis.title = spec.y_title
 
-        # 创建折线图（第二个系列，次轴）
-        line_chart = LineChart()
+        # 创建折线图（第二个系列，次轴）；没有第二个数值列时不合并空图
         if max_col > min_col + 1:
+            line_chart = LineChart()
             data2 = Reference(ws, min_col=min_col + 2, min_row=min_row,
                              max_col=max_col, max_row=max_row)
             line_chart.add_data(data2, titles_from_data=True)
-        line_chart.y_axis.axId = 200
-        line_chart.y_axis.crosses = "max"
-
-        # 组合
-        bar_chart += line_chart
+            line_chart.y_axis.axId = 200
+            # openpyxl 次轴配方：crosses 设置在主图 y 轴上
+            bar_chart.y_axis.crosses = "max"
+            # 组合
+            bar_chart += line_chart
 
         # 颜色
         self._apply_colors(bar_chart, spec.color_palette or self.palette)
 
-        # 大小
-        bar_chart.width = spec.width * 0.3937 * 72
-        bar_chart.height = spec.height * 0.3937 * 72
+        # 大小（厘米）
+        bar_chart.width = spec.width
+        bar_chart.height = spec.height
 
         anchor = spec.position or "H2"
         ws.add_chart(bar_chart, anchor)
@@ -547,18 +581,31 @@ class ChartGenerator:
         chart.title = spec.title or ""
         chart.style = spec.style or 10
 
-        # X=第一个数值列，Y=第二个数值列
-        parts = spec.data_range.split(":")
-        if len(parts) != 2:
-            return
-
         from openpyxl.utils import range_boundaries
-        min_col, min_row, max_col, max_row = range_boundaries(spec.data_range)
-
-        xvalues = Reference(ws, min_col=min_col + 1, min_row=min_row + 1,
-                           max_row=max_row)
-        yvalues = Reference(ws, min_col=min_col + 2, min_row=min_row + 1,
-                           max_row=max_row)
+        if spec.x_values_range and spec.y_values_range:
+            try:
+                x_bounds = range_boundaries(spec.x_values_range)
+                y_bounds = range_boundaries(spec.y_values_range)
+            except (TypeError, ValueError):
+                return
+            if (x_bounds[3] - x_bounds[1]) != (y_bounds[3] - y_bounds[1]):
+                return
+            sheet_ref = quote_sheetname(ws.title)
+            xvalues = Reference(
+                ws, range_string=f"{sheet_ref}!{spec.x_values_range}"
+            )
+            yvalues = Reference(
+                ws, range_string=f"{sheet_ref}!{spec.y_values_range}"
+            )
+        else:
+            # 兼容旧 ChartSpec：连续两列仍按第一列 X、第二列 Y 解释。
+            min_col, min_row, max_col, max_row = range_boundaries(spec.data_range)
+            if max_col < min_col + 1:
+                return
+            xvalues = Reference(ws, min_col=min_col, min_row=min_row + 1,
+                               max_row=max_row)
+            yvalues = Reference(ws, min_col=min_col + 1, min_row=min_row + 1,
+                               max_row=max_row)
         series = Series(yvalues, xvalues, title=spec.y_title or "Y")
         chart.series.append(series)
 
@@ -567,13 +614,14 @@ class ChartGenerator:
         if spec.y_title:
             chart.y_axis.title = spec.y_title
 
-        chart.width = spec.width * 0.3937 * 72
-        chart.height = spec.height * 0.3937 * 72
+        chart.width = spec.width
+        chart.height = spec.height
 
         anchor = spec.position or "H2"
         ws.add_chart(chart, anchor)
 
-    def _apply_colors(self, chart, palette: List[str]):
+    def _apply_colors(self, chart, palette: List[str],
+                      chart_type: str = "", point_count: int = 0):
         """应用配色"""
         from openpyxl.chart.shapes import GraphicalProperties
         from openpyxl.drawing.fill import PatternFillProperties, ColorChoice
@@ -587,15 +635,25 @@ class ChartGenerator:
             # 线条色
             series.graphicalProperties.line = LineProperties(solidFill=color)
 
+        # 饼图只有一个 series，必须按数据点着色，否则整张饼图是同一种颜色。
+        if chart_type in ("pie", "doughnut") and chart.series:
+            chart.series[0].data_points = [
+                DataPoint(
+                    idx=index,
+                    spPr=GraphicalProperties(solidFill=palette[index % len(palette)]),
+                )
+                for index in range(point_count)
+            ]
+
     # ==========================================
     # 构建特定图表规格
     # ==========================================
 
     def _build_combo_spec(self, target_cols: List[ColumnInfo],
                            cat_col: ColumnInfo, sheet: SheetInfo,
-                           text: str) -> Optional[ChartSpec]:
+                           text: str, position_index: int = 0) -> Optional[ChartSpec]:
         """构建组合图规格"""
-        if len(target_cols) < 2:
+        if len(target_cols) < 2 or sheet.row_count <= 0:
             return None
 
         cat_letter = self._col_letter(cat_col.index + 1)
@@ -614,16 +672,17 @@ class ChartGenerator:
             categories_range=f"{cat_letter}2:{cat_letter}{end_row}",
             x_title=cat_col.name,
             y_title=target_cols[0].name,
-            position=self._next_chart_position(99),
+            position=self._next_chart_position(position_index),
             combo_types=["column", "line"],
             combo_secondary=[False, True],
             width=18, height=10,
         )
 
     def _build_scatter_spec(self, target_cols: List[ColumnInfo],
-                             sheet: SheetInfo, text: str) -> Optional[ChartSpec]:
+                             sheet: SheetInfo, text: str,
+                             position_index: int = 0) -> Optional[ChartSpec]:
         """构建散点图规格"""
-        if len(target_cols) < 2:
+        if len(target_cols) < 2 or sheet.row_count <= 0:
             return None
 
         first_letter = self._col_letter(target_cols[0].index + 1)
@@ -634,9 +693,11 @@ class ChartGenerator:
             chart_type="scatter",
             title=self._make_title(text, f"{target_cols[0].name} vs {target_cols[1].name}"),
             data_range=f"{first_letter}1:{last_letter}{end_row}",
+            x_values_range=f"{first_letter}2:{first_letter}{end_row}",
+            y_values_range=f"{last_letter}2:{last_letter}{end_row}",
             x_title=target_cols[0].name,
             y_title=target_cols[1].name,
-            position=self._next_chart_position(99),
+            position=self._next_chart_position(position_index),
             width=15, height=12,
         )
 

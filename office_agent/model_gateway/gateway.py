@@ -182,6 +182,11 @@ class ModelGateway:
             except ValueError:
                 task_type = AITaskType.SIMPLE_TEXT
         
+        # 先归一化消息，再基于最后一条消息推断任务类型。调用方既可以传
+        # dict，也可以传 ChatMessage 对象。
+        if isinstance(messages, list) and messages and isinstance(messages[0], ChatMessage):
+            messages = [m.to_dict() for m in messages]
+
         if not task_type:
             # 自动推断
             input_text = user_message or (messages[-1].get("content", "") if messages else "")
@@ -190,8 +195,6 @@ class ModelGateway:
         # 构建消息
         if messages is None:
             messages = [{"role": "user", "content": user_message}]
-        elif isinstance(messages, list) and messages and isinstance(messages[0], ChatMessage):
-            messages = [m.to_dict() for m in messages]
         
         # 选择模型：显式 prefer_model 优先，否则用用户设置的默认模型
         if not prefer_model:
@@ -212,15 +215,18 @@ class ModelGateway:
             action=action,
             model_ids=model_ids,
         )
+        raw = response.raw_response if response and isinstance(
+            getattr(response, "raw_response", None), dict
+        ) else {}
+        call_meta = raw.get("_office_agent", {}) if isinstance(raw, dict) else {}
         self.last_call = {
             "called": True,
             "success": bool(response and response.success),
             "model": getattr(response, "model_used", None),
             "provider": getattr(response, "provider", None),
-            "fallback_used": bool(response and not response.success),
+            "fallback_used": bool(call_meta.get("fallback_used", False)),
             "error": getattr(response, "error", "") if response else "no response",
-            "attempts": (response.raw_response or {}).get("attempts", 1)
-            if response and isinstance(getattr(response, "raw_response", None), dict) else 1,
+            "attempts": int(call_meta.get("attempts", 1)),
         }
         return response
     

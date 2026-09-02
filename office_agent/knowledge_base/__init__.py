@@ -17,6 +17,7 @@ from .document_parser import DocumentParser, ParsedDocument, ParsedSection
 from .text_chunker import TextChunker, ChunkConfig
 from .embeddings import (
     BaseEmbedder,
+    HashingEmbedder,
     TfidfEmbedder,
     KeywordEmbedder,
     APIEmbedder,
@@ -35,7 +36,7 @@ __all__ = [
     # Chunker
     "TextChunker", "ChunkConfig",
     # Embeddings
-    "BaseEmbedder", "TfidfEmbedder", "KeywordEmbedder", "APIEmbedder",
+    "BaseEmbedder", "HashingEmbedder", "TfidfEmbedder", "KeywordEmbedder", "APIEmbedder",
     "cosine_similarity", "batch_cosine_similarity",
     # Store
     "VectorStore",

@@ -12,6 +12,7 @@ PPT 相关后台任务
 import os
 import re
 import time
+import uuid
 import logging
 import traceback
 import json
@@ -34,87 +35,45 @@ def _parse_slide_count(instruction: str, effective: str) -> int:
     return DEFAULT_SLIDES
 
 
-def _maybe_generate_slide_images(ppt_path: str, prompt: str, options: dict) -> int:
-    """Generate images for text-heavy slides that do not already contain one."""
-    if options.get("generate_images", True) is False:
-        return 0
-    try:
-        from ...image_generation import ImageGenerationGateway
-        from ...image_generation.config import get_image_model_config
-        config = options.get("image_model_config") or {}
-        if not config:
-            # 前端未下发时，读取用户已保存的生图模型配置
-            config = get_image_model_config()
-        gateway = ImageGenerationGateway(
-            api_key=config.get("api_key", ""),
-            base_url=config.get("base_url", ""),
-            model=config.get("model", ""),
-            provider=config.get("provider", ""),
-            mcp_url=config.get("mcp_url", ""),
-        )
-        if not gateway.available():
-            logger.info("未配置图像模型，跳过 PPT 图片生成")
-            return 0
-        from pptx import Presentation
-        from pptx.util import Inches
-        prs = Presentation(ppt_path)
-        slide_w = prs.slide_width / 914400
-        slide_h = prs.slide_height / 914400
+def _image_failure_summary(error: str) -> tuple[str, str]:
+    """Map provider errors to stable user-facing codes and recovery copy."""
+    text = str(error or "")
+    lowered = text.lower()
+    if "http 401" in lowered or "http 403" in lowered:
+        return "auth", "生图服务鉴权失败，请在设置中更新 API Key 并测试生图"
+    if "http 429" in lowered or "rate limit" in lowered or "quota" in lowered:
+        return "quota", "生图服务额度不足或请求受限，请稍后重试"
+    if "http 400" in lowered:
+        return "request", "生图请求被拒绝，请检查模型名称和参数"
+    if "http 404" in lowered:
+        return "not_found", "未找到生图端点或模型，请检查 Base URL 和模型名称"
+    if "getaddrinfo" in lowered or "name resolution" in lowered or "连接失败" in text:
+        return "connection", "无法连接生图服务，请检查 Base URL 和网络"
+    if "timeout" in lowered or "timed out" in lowered or "超时" in text:
+        return "timeout", "生图请求超时，请检查网络后重试"
+    return "unknown", "生图失败，请在设置中测试生图配置"
 
-        def overlaps_text(slide, left, top, width, height):
-            for shape in slide.shapes:
-                if not getattr(shape, "has_text_frame", False) or not shape.text.strip():
-                    continue
-                sx, sy = shape.left / 914400, shape.top / 914400
-                sw, sh = shape.width / 914400, shape.height / 914400
-                if left < sx + sw and left + width > sx and top < sy + sh and top + height > sy:
-                    return True
-            return False
-
-        def safe_position(slide):
-            width, height, margin = min(5.2, slide_w * 0.38), min(3.6, slide_h * 0.55), 0.25
-            candidates = [
-                (slide_w - width - margin, margin),
-                (margin, slide_h - height - margin),
-                (slide_w - width - margin, slide_h - height - margin),
-            ]
-            for left, top in candidates:
-                if left >= margin and top >= margin and not overlaps_text(slide, left, top, width, height):
-                    return left, top, width
-            return None
-
-        generated = 0
-        limit = max(0, min(int(options.get("max_generated_images", 3)), 8))
-        for index, slide in enumerate(prs.slides):
-            if generated >= limit:
-                break
-            has_picture = any(getattr(shape, "shape_type", None) == 13 for shape in slide.shapes)
-            if has_picture:
-                continue
-            text = " ".join(shape.text.strip() for shape in slide.shapes
-                            if getattr(shape, "has_text_frame", False) and shape.text.strip())
-            if len(text) < 12:
-                continue
-            position = safe_position(slide)
-            if not position:
-                logger.info("第 %s 页没有安全图片区域，跳过配图", index + 1)
-                continue
-            image_path = gateway.generate(
-                f"PPT第{index + 1}页配图：{prompt}。本页内容：{text[:500]}。"
-                "横向构图，商务演示风格，避免文字，高清。",
-                size="1024x768", output_dir=os.path.dirname(ppt_path),
-            )
-            left, top, width = position
-            slide.shapes.add_picture(image_path, Inches(left), Inches(top), width=Inches(width))
-            generated += 1
-        prs.save(ppt_path)
-        return generated
-    except Exception as exc:
-        logger.warning("PPT 图片生成失败，继续生成无图片版本: %s", exc)
-        return 0
 
 # 输出目录
-OUTPUT_DIR = os.path.expanduser("~/.office_agent/outputs")
+OUTPUT_DIR = os.path.join(
+    os.environ.get("OFFICE_AGENT_DATA_DIR") or os.path.expanduser("~/.office_agent"),
+    "outputs")
+
+
+def _display_stem(input_path: str, options: dict) -> str:
+    """输出文件名应基于用户上传时的原始文件名，而非内部 file_id 路径。"""
+    stem = os.path.splitext(os.path.basename(input_path or ""))[0]
+    input_ids = (options or {}).get("input_file_ids") or []
+    if input_ids:
+        try:
+            from ...storage.storage_service import get_storage_service
+            original = get_storage_service().get_info(input_ids[0]).original_name or ""
+            original_stem = os.path.splitext(original)[0]
+            if original_stem and not original_stem.startswith("file_"):
+                stem = original_stem
+        except Exception:
+            pass
+    return stem or "output"
 
 
 def _make_registered_name(input_path: str, output_path: str, options: dict) -> str:
@@ -122,7 +81,7 @@ def _make_registered_name(input_path: str, output_path: str, options: dict) -> s
     if options and options.get("output_filename"):
         return str(options["output_filename"])
     if input_path:
-        stem = Path(input_path).stem
+        stem = _display_stem(input_path, options)
         if stem:
             return f"{stem}_presentation.pptx"
     if output_path:
@@ -133,9 +92,9 @@ def _make_registered_name(input_path: str, output_path: str, options: dict) -> s
 def _safe_filename(text: str, ext: str = ".pptx") -> str:
     """生成安全的文件名，避免中文/特殊字符问题"""
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-    # 用时间戳命名，避免编码问题
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
-    return os.path.join(OUTPUT_DIR, f"ppt_{timestamp}{ext}")
+    # 时间戳只精确到秒，并发任务同秒完成会写同一路径互相覆盖
+    unique = f"{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+    return os.path.join(OUTPUT_DIR, f"ppt_{unique}{ext}")
 
 
 def _understand_ppt_request(instruction: str, options: dict) -> str:
@@ -170,7 +129,7 @@ def _understand_ppt_request(instruction: str, options: dict) -> str:
     except Exception as exc:
         if isinstance(options, dict):
             options["model_call"] = {"called": True, "success": False,
-                                      "fallback_used": True, "error": str(exc), "attempts": 0}
+                                      "fallback_used": True, "error": sanitize_error(exc, "模型解析不可用"), "attempts": 0}
         logger.warning("PPT LLM理解不可用，使用原始指令: %s", exc)
     return instruction
 
@@ -223,7 +182,17 @@ def generate_ppt(outline: str = None, input_path: str = None,
             )
         except Exception as e:
             logger.warning(f"生图网关初始化失败: {e}")
-        orchestrator = PPTOrchestrator(model_gateway=model_gateway, image_gateway=image_gateway)
+        try:
+            max_generated_images = max(0, min(int(options.get("max_generated_images", 3)), 8))
+        except (TypeError, ValueError):
+            max_generated_images = 3
+        if options.get("generate_images", True) is False:
+            max_generated_images = 0
+        orchestrator = PPTOrchestrator(
+            model_gateway=model_gateway,
+            image_gateway=image_gateway,
+            max_generated_images=max_generated_images,
+        )
 
         # 确定主题和输出路径
         effective_instruction = _understand_ppt_request(instruction or outline or "", options)
@@ -259,7 +228,13 @@ def generate_ppt(outline: str = None, input_path: str = None,
             if progress:
                 progress.update(60, "从文件生成PPT...")
             ext = Path(input_path).suffix.lower()
-            if ext in ('.docx', '.doc'):
+            if ext == '.doc':
+                result["status"] = "failed"
+                result["error"] = "不支持 .doc（Word 97-2003）格式，请先用 Word/WPS 另存为 .docx 后重试"
+                if progress:
+                    progress.update(100, "处理失败")
+                return result
+            if ext in ('.docx',):
                 ppt_result = orchestrator.generate_from_word(
                     docx_path=input_path,
                     style=style,
@@ -298,7 +273,32 @@ def generate_ppt(outline: str = None, input_path: str = None,
             message = getattr(ppt_result, 'message', '')
 
             if output and os.path.exists(str(output)):
-                generated_images = _maybe_generate_slide_images(str(output), effective_instruction, options)
+                image_status = dict(orchestrator.image_generation)
+                errors = image_status.pop("errors", [])
+                generated_images = int(image_status.get("generated", 0) or 0)
+                if max_generated_images <= 0:
+                    image_status.update(status="disabled", message="已关闭自动配图")
+                elif not image_status.get("configured"):
+                    image_status.update(status="unconfigured", message="未配置可用的生图服务")
+                elif generated_images:
+                    state = "partial" if errors else "success"
+                    image_status.update(
+                        status=state,
+                        message=(f"已生成 {generated_images} 张配图"
+                                 if not errors else f"已生成 {generated_images} 张配图，部分页面配图失败"),
+                    )
+                    if errors:
+                        code, warning = _image_failure_summary(str(errors[0]))
+                        image_status["error_code"] = code
+                        result["warnings"] = [warning]
+                elif errors:
+                    code, message_text = _image_failure_summary(str(errors[0]))
+                    image_status.update(status="failed", error_code=code, message=message_text)
+                    result["warnings"] = [message_text]
+                else:
+                    image_status.update(status="skipped", message="当前内容没有适合自动配图的页面")
+                image_status["requested"] = max_generated_images
+                result["image_generation"] = image_status
                 if generated_images:
                     result["generated_images"] = generated_images
                 result["output_path"] = str(output)
@@ -334,10 +334,9 @@ def generate_ppt(outline: str = None, input_path: str = None,
     except Exception as e:
         logger.error("PPT任务 %s 失败: %s", _task_id, sanitize_error(e))
         result["status"] = "failed"
-        from ...security.error_sanitizer import sanitize_error
         result["error"] = sanitize_error(e)
         if progress:
-            progress.update(100, f"处理失败: {e}")
+            progress.update(100, f"处理失败: {result['error']}")
 
     # 内容生成层的调用（last_call）优先；仅当未生成时回退到改写层的记录
     if "model_call" not in result and options.get("model_call"):

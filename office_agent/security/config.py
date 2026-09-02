@@ -5,7 +5,10 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from typing import Optional
+from ..runtime_config import ALLOWED_UPLOAD_EXTENSIONS
+
+
+DEFAULT_JWT_SECRET = "office-agent-default-secret-change-in-production"
 
 
 @dataclass
@@ -13,25 +16,21 @@ class SecurityConfig:
     """安全配置"""
     # JWT配置
     jwt_secret_key: str = field(default_factory=lambda: os.environ.get(
-        "OFFICE_AGENT_JWT_SECRET", "office-agent-default-secret-change-in-production"))
+        "OFFICE_AGENT_JWT_SECRET", DEFAULT_JWT_SECRET))
     access_token_expire: int = 3600  # 1小时
     refresh_token_expire: int = 86400 * 7  # 7天
 
     # 文件安全
     max_file_size: int = 100 * 1024 * 1024  # 100MB
     enable_file_scan: bool = True
-    allowed_extensions: tuple[str, ...] = (
-        ".docx", ".doc", ".pptx", ".ppt", ".xlsx", ".xls",
-        ".pdf", ".txt", ".csv", ".png", ".jpg", ".jpeg",
-        ".json", ".xml", ".md", ".zip",
-    )
+    allowed_extensions: tuple[str, ...] = tuple(sorted(ALLOWED_UPLOAD_EXTENSIONS))
     storage_root: str = "./storage/users"
 
     # 沙箱配置
     sandbox_timeout: int = 30  # 秒
-    sandbox_max_memory: int = 512  # MB
     sandbox_max_output: int = 1024 * 1024  # 1MB
-    enable_sandbox: bool = True
+    # 本地子进程不构成 OS 沙箱；在外部隔离执行器落地前保持关闭。
+    enable_sandbox: bool = False
 
     # 登录安全
     max_login_attempts: int = 5
@@ -54,21 +53,26 @@ class SecurityConfig:
     # API Key
     api_key_expire_days: int = 365
 
-    # CORS
-    cors_origins: tuple[str, ...] = ("*",)
+    # CORS：默认只放行本机与 Tauri WebView 来源（"*" 会在启用认证的
+    # 部署里把带 Bearer Token 的 API 暴露给任意网站）
+    cors_origins: tuple[str, ...] = (
+        "http://localhost:1420", "http://127.0.0.1:1420",
+        "http://localhost:5173", "http://127.0.0.1:5173",
+        "http://localhost:8765", "http://127.0.0.1:8765",
+        "tauri://localhost", "http://tauri.localhost", "https://tauri.localhost",
+    )
 
     @classmethod
     def from_env(cls) -> "SecurityConfig":
         """从环境变量加载配置"""
         return cls(
-            jwt_secret_key=os.environ.get("OFFICE_AGENT_JWT_SECRET", cls.jwt_secret_key),
+            jwt_secret_key=os.environ.get("OFFICE_AGENT_JWT_SECRET") or DEFAULT_JWT_SECRET,
             access_token_expire=int(os.environ.get("ACCESS_TOKEN_EXPIRE", "3600")),
             refresh_token_expire=int(os.environ.get("REFRESH_TOKEN_EXPIRE", "604800")),
             max_file_size=int(os.environ.get("MAX_FILE_SIZE", str(100 * 1024 * 1024))),
             enable_file_scan=os.environ.get("ENABLE_FILE_SCAN", "true").lower() == "true",
             sandbox_timeout=int(os.environ.get("SANDBOX_TIMEOUT", "30")),
-            sandbox_max_memory=int(os.environ.get("SANDBOX_MAX_MEMORY", "512")),
-            enable_sandbox=os.environ.get("ENABLE_SANDBOX", "true").lower() == "true",
+            enable_sandbox=os.environ.get("ENABLE_SANDBOX", "false").lower() == "true",
             max_login_attempts=int(os.environ.get("MAX_LOGIN_ATTEMPTS", "5")),
             enable_prompt_scan=os.environ.get("ENABLE_PROMPT_SCAN", "true").lower() == "true",
             enable_audit_log=os.environ.get("ENABLE_AUDIT_LOG", "true").lower() == "true",

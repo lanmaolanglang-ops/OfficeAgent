@@ -7,23 +7,25 @@ FastAPI 中间件
 - 全链路追踪
 """
 import time
-import uuid
+import re
 from typing import Callable
 
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.types import ASGIApp
 
 from .context import (
-    set_request_id, set_trace_id, set_user_id,
-    get_request_id, get_trace_id, get_context_dict,
-    generate_request_id, generate_trace_id,
+    set_request_id, set_trace_id, get_request_id, generate_request_id, generate_trace_id,
 )
 from .logger import get_logger
 from .metrics import registry
-from .tracer import get_trace_context
 
 logger = get_logger("api")
+
+_CONTEXT_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+
+
+def _safe_context_id(value: str | None, generator: Callable[[], str]) -> str:
+    return value if value and _CONTEXT_ID_RE.fullmatch(value) else generator()
 
 # 不记录日志的路径
 SKIP_LOG_PATHS = {"/metrics", "/health", "/favicon.ico"}
@@ -45,16 +47,23 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         if path in SKIP_LOG_PATHS:
             return await call_next(request)
 
-        # 生成 request_id（优先使用客户端传入的）
-        request_id = request.headers.get("X-Request-ID") or generate_request_id()
-        trace_id = request.headers.get("X-Trace-ID") or generate_trace_id()
+        # 内部关联 ID 始终由服务端生成。客户端 ID 只作为已校验的附加上下文，
+        # 不能控制日志主键或跨请求串联关系。
+        request_id = generate_request_id()
+        trace_id = generate_trace_id()
+        request.state.client_request_id = _safe_context_id(
+            request.headers.get("X-Request-ID"), lambda: ""
+        )
+        request.state.client_trace_id = _safe_context_id(
+            request.headers.get("X-Trace-ID"), lambda: ""
+        )
 
         # 设置上下文
         req_token = set_request_id(request_id)
         trace_token = set_trace_id(trace_id)
 
-        # 尝试从 header 获取 user_id
-        user_id = request.headers.get("X-User-ID", "")
+        # 用户身份只能来自认证中间件，不能信任客户端自报的 X-User-ID。
+        user_id = getattr(request.state, "user_id", "")
         user_token = None
         if user_id:
             from .context import set_user_id
@@ -77,12 +86,10 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         )
 
         response = None
-        error = None
         try:
             response = await call_next(request)
             return response
-        except Exception as e:
-            error = e
+        except Exception:
             raise
         finally:
             duration = time.time() - start
@@ -122,6 +129,8 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
                     "path": path,
                     "status_code": status_code,
                     "duration_ms": duration_ms,
+                    # ErrorHandlingMiddleware 已记录带堆栈的异常；状态行不要重复落库。
+                    "skip_db_log": status_code >= 500,
                 },
             )
 
@@ -141,8 +150,6 @@ class ErrorHandlingMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
         except Exception as e:
             from fastapi.responses import JSONResponse
-            import traceback
-
             logger.error(
                 f"未捕获异常: {type(e).__name__}: {e}",
                 exc_info=True,
@@ -161,8 +168,8 @@ class ErrorHandlingMiddleware(BaseHTTPMiddleware):
                 content={
                     "success": False,
                     "error": {
-                        "type": type(e).__name__,
-                        "message": str(e),
+                        "type": "INTERNAL_SERVER_ERROR",
+                        "message": "服务器内部错误",
                         "request_id": get_request_id(),
                     },
                 },

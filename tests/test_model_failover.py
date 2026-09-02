@@ -47,3 +47,53 @@ def test_failover_retries_before_switching_model():
     assert result.success is True
     assert manager.clients["primary"].calls == 3
     assert manager.clients["backup"].calls == 1
+    assert result.raw_response["_office_agent"]["fallback_used"] is True
+    assert result.raw_response["_office_agent"]["attempts"] == 4
+
+
+def test_failover_does_not_retry_authentication_errors():
+    manager = _Manager()
+    manager.clients["primary"] = _Client([
+        ModelResponse(False, error="HTTP 401: Authentication failed")
+    ])
+    gateway = FailoverManager(manager, max_retries=3, retry_delay=0)
+
+    result = gateway.execute_with_failover(
+        AITaskType.SIMPLE_TEXT,
+        lambda client: client.next(),
+    )
+
+    assert result.success is True
+    assert manager.clients["primary"].calls == 1
+    assert manager.clients["backup"].calls == 1
+
+
+def test_each_failed_attempt_counts_toward_cooldown():
+    manager = _Manager()
+    manager.clients = {
+        "primary": _Client([ModelResponse(False, error="timeout")] * 3),
+    }
+    gateway = FailoverManager(manager, max_retries=3, retry_delay=0)
+    result = gateway.execute_with_failover(
+        AITaskType.SIMPLE_TEXT, lambda client: client.next(),
+    )
+    assert not result.success
+    assert gateway._is_in_cooldown("primary")
+    history = list(gateway._failure_history["primary"])
+    second = gateway.execute_with_failover(
+        AITaskType.SIMPLE_TEXT, lambda client: client.next(),
+    )
+    assert "冷却" in second.error
+    assert gateway._failure_history["primary"] == history
+
+
+def test_permanent_exception_is_not_retried():
+    manager = _Manager()
+    calls = 0
+    def action(_client):
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("HTTP 400 invalid_request")
+    gateway = FailoverManager(manager, max_retries=3, retry_delay=0)
+    gateway.execute_with_failover(AITaskType.SIMPLE_TEXT, action, model_ids=["primary"])
+    assert calls == 1

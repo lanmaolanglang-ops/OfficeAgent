@@ -22,7 +22,7 @@ Slide Planner - 智能 PPT 结构规划器
 import json
 import re
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import List, Dict, Any
 from dataclasses import dataclass, field, asdict
 
 
@@ -265,7 +265,7 @@ PRODUCT_LAUNCH = SceneTemplate(
                       ["我们的优势", "传统方案不足"],
                       "直观对比", "normal"),
         SlideTemplate("content", "应用场景",
-                      ["场景一", "场景二", "场景三"],
+                      ["待补充：真实的应用场景与使用方式"],
                       "场景化描述，让用户代入", "must"),
         SlideTemplate("section", "怎么获得", [], "", "must"),
         SlideTemplate("content", "价格/上线计划",
@@ -291,11 +291,11 @@ GENERAL = SceneTemplate(
         SlideTemplate("content", "背景介绍",
                       ["背景概述", "现状分析", "核心问题"], "", "must"),
         SlideTemplate("content", "核心内容",
-                      ["要点一", "要点二", "要点三"], "", "must"),
+                      ["待补充：与主题相关的事实、分析与结论"], "", "must"),
         SlideTemplate("content", "详细说明",
                       ["具体内容", "关键细节", "实施路径"], "", "normal"),
         SlideTemplate("data_cards", "数据展示",
-                      ["指标一", "指标二", "指标三", "指标四"], "", "normal"),
+                      ["待补充：有来源的关键指标"], "", "normal"),
         SlideTemplate("content", "案例/实践",
                       ["案例介绍", "经验总结"], "", "optional"),
         SlideTemplate("content", "总结与展望",
@@ -462,9 +462,13 @@ class SlidePlan:
             item = {"layout": s.layout, "title": s.title}
             if s.suggested_bullets:
                 if s.layout == "data_cards":
-                    item["data"] = [(b, "—", "") for b in s.suggested_bullets[:4]]
+                    # 只有指标名、没有真实值时退化为内容页，不伪造“—”数据卡。
+                    item["layout"] = "content"
+                    item["bullets"] = s.suggested_bullets[:4]
                 elif s.layout == "timeline":
-                    item["timeline_items"] = [(f"阶段{i+1}", b, "") for i, b in enumerate(s.suggested_bullets[:4])]
+                    # 没有真实日期时退化为内容页，不伪造“阶段 N”时间线。
+                    item["layout"] = "content"
+                    item["bullets"] = s.suggested_bullets[:4]
                 elif s.layout == "two_column":
                     mid = len(s.suggested_bullets) // 2
                     item["left_content"] = s.suggested_bullets[:mid]
@@ -779,10 +783,7 @@ class SlidePlanner:
         for i, s in enumerate(slides, 1):
             s.index = i
 
-        # 4. 调整页数到目标（不包含用户额外要求的页）
-        slides = self._adjust_to_target(slides, target_count)
-
-        # 5. 添加用户额外要求的页面（最后添加，确保保留）
+        # 4. 添加用户额外要求的页面
         seen_titles = set()
         for ep in extra_pages:
             title = re.sub(r"^(加|增加|添加|需要|要有|一个|一页|一张)", "", ep).strip()
@@ -804,6 +805,9 @@ class SlidePlanner:
                 estimated_time="1-2分钟",
             ))
 
+        # 用户额外页也计入目标页数；must 页优先保留。
+        slides = self._adjust_to_target(slides, target_count)
+
         # 6. 最终编号
         for i, s in enumerate(slides, 1):
             s.index = i
@@ -816,7 +820,6 @@ class SlidePlanner:
             return []
 
         style = audience_config.get("bullet_style", "accessible")
-        depth = audience_config.get("depth", "medium")
 
         adapted = []
         for b in bullets:
@@ -901,27 +904,10 @@ class SlidePlanner:
             return slides
 
         if current < target:
-            # 需要增加页面：在 summary 页前插入
-            summary_idx = next(
-                (i for i, s in enumerate(slides) if s.layout == "summary"),
-                len(slides)
-            )
-            extra_count = 0
-            while len(slides) < target:
-                extra_count += 1
-                new_slide = SlidePlanItem(
-                    index=0,
-                    layout="content",
-                    title=f"补充内容 {extra_count}",
-                    suggested_bullets=["要点一", "要点二", "要点三"],
-                    importance="optional",
-                    estimated_time="1-2分钟",
-                )
-                slides.insert(summary_idx, new_slide)
-                summary_idx += 1  # 下次还插在 summary 前面
+            # 内容不足时不以占位页凑数。
+            return slides
         else:
             # 需要减少页面：保持顺序，优先删除 optional 页
-            must_indices = [i for i, s in enumerate(slides) if s.importance == "must"]
             optional_indices = [i for i, s in enumerate(slides) if s.importance != "must"]
 
             # 需要删除多少 optional 页
@@ -959,7 +945,7 @@ class SlidePlanner:
         """读取文档内容"""
         path = Path(path)
         if not path.exists():
-            return ""
+            raise FileNotFoundError(f"文档不存在: {path}")
 
         suffix = path.suffix.lower()
 
@@ -972,24 +958,27 @@ class SlidePlanner:
                     if para.text.strip():
                         texts.append(para.text.strip())
                 return "\n".join(texts)
-            except Exception:
-                return ""
+            except Exception as exc:
+                raise RuntimeError(f"Word 文档读取失败: {exc}") from exc
         elif suffix in (".txt", ".md"):
-            try:
-                for enc in ["utf-8", "gbk", "gb2312", "utf-16"]:
-                    try:
-                        return path.read_text(encoding=enc)
-                    except UnicodeDecodeError:
-                        continue
-            except Exception:
-                return ""
-        return ""
+            errors = []
+            encodings = ["utf-8-sig"]
+            if path.read_bytes().startswith((b"\xff\xfe", b"\xfe\xff")):
+                encodings.append("utf-16")
+            encodings.extend(["gb18030"])
+            for enc in encodings:
+                try:
+                    return path.read_text(encoding=enc)
+                except UnicodeDecodeError as exc:
+                    errors.append(str(exc))
+            raise RuntimeError(f"文本编码无法识别: {path.name}")
+        raise ValueError(f"不支持的文档格式: {suffix}")
 
     def _summarize_content(self, content: str) -> str:
         """简单内容摘要"""
         if not content:
             return ""
-        lines = [l.strip() for l in content.split("\n") if l.strip()]
+        lines = [line.strip() for line in content.split("\n") if line.strip()]
         if not lines:
             return ""
         # 取前几行作为摘要
@@ -1099,7 +1088,10 @@ class SlidePlanner:
                 elif section["title"] == "前言" and section_idx == 0:
                     # 前言匹配背景
                     if "背景" in slide.title:
-                        bullets = [l.strip()[:50] for l in section["content"][:4] if len(l.strip()) > 5]
+                        bullets = [
+                            line.strip()[:50] for line in section["content"][:4]
+                            if len(line.strip()) > 5
+                        ]
                         if bullets:
                             slide.suggested_bullets = bullets
                             slide.content_source = "文档前言"

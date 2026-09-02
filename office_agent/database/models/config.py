@@ -1,6 +1,6 @@
 """配置管理数据库模型"""
 import uuid
-from sqlalchemy import String, Text, Integer, Float, Boolean, JSON
+from sqlalchemy import String, Text, Integer, Float, Boolean, JSON, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ..base import Base, TimestampMixin
@@ -117,6 +117,10 @@ class PromptConfig(Base, TimestampMixin):
     author: Mapped[str] = mapped_column(String(64), nullable=True)
     tags: Mapped[str] = mapped_column(Text, default="[]")
     config_json: Mapped[str] = mapped_column(Text, default="{}")
+
+    __table_args__ = (
+        UniqueConstraint("name", "version", name="uq_prompt_config_name_version"),
+    )
 
     def __repr__(self):
         return f"<PromptConfig {self.name} v{self.version}>"

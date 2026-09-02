@@ -20,6 +20,24 @@ class TestConfigSystem:
         assert config.access_token_expire > 0
         assert config.max_file_size > 0
 
+    def test_api_auth_configuration_loads_from_environment(self, monkeypatch):
+        from office_agent.api.core.config import APIConfig
+
+        monkeypatch.setenv("OFFICE_AGENT_AUTH_ENABLED", "true")
+        monkeypatch.setenv("OFFICE_AGENT_API_KEYS", " first , second ")
+        config = APIConfig.from_env()
+        assert config.auth_enabled is True
+        assert config.api_keys == ["first", "second"]
+
+    def test_api_auth_configuration_rejects_lockout(self, monkeypatch):
+        from office_agent.api.core.config import APIConfig
+
+        monkeypatch.setenv("OFFICE_AGENT_AUTH_ENABLED", "true")
+        monkeypatch.delenv("OFFICE_AGENT_API_KEYS", raising=False)
+        monkeypatch.delenv("OFFICE_AGENT_JWT_SECRET", raising=False)
+        with pytest.raises(ValueError, match="启用认证"):
+            APIConfig.from_env()
+
 
 class TestLoggingSystem:
     """日志系统测试"""

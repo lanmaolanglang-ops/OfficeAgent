@@ -12,6 +12,7 @@ from typing import Any
 
 
 class TestStatus(str, Enum):
+    __test__ = False
     PASS = "pass"
     FAIL = "fail"
     ERROR = "error"
@@ -20,6 +21,7 @@ class TestStatus(str, Enum):
 
 @dataclass
 class TestCaseResult:
+    __test__ = False
     """单个测试用例结果"""
     name: str
     module: str
@@ -45,6 +47,7 @@ class TestCaseResult:
 
 @dataclass
 class TestReport:
+    __test__ = False
     """测试报告"""
     project: str = "Office Agent"
     version: str = "0.45.0"
@@ -187,6 +190,7 @@ class TestReport:
 
 
 class TestRunner:
+    __test__ = False
     """测试运行器"""
 
     def __init__(self, project: str = "Office Agent", version: str = "0.45.0"):

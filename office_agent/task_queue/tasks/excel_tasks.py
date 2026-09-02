@@ -11,6 +11,7 @@ Excel 相关后台任务
 """
 import os
 import time
+import uuid
 import logging
 import traceback
 import json
@@ -18,7 +19,9 @@ from ...security.error_sanitizer import sanitize_error
 
 logger = logging.getLogger("office_agent.tasks.excel")
 
-OUTPUT_DIR = os.path.expanduser("~/.office_agent/outputs")
+OUTPUT_DIR = os.path.join(
+    os.environ.get("OFFICE_AGENT_DATA_DIR") or os.path.expanduser("~/.office_agent"),
+    "outputs")
 
 
 def _understand_excel_request(instruction: str, options: dict) -> str:
@@ -55,24 +58,73 @@ def _understand_excel_request(instruction: str, options: dict) -> str:
     except Exception as exc:
         if isinstance(options, dict):
             options["model_call"] = {"called": True, "success": False,
-                                      "fallback_used": True, "error": str(exc), "attempts": 0}
+                                      "fallback_used": True, "error": sanitize_error(exc, "模型解析不可用"), "attempts": 0}
         logger.warning("Excel LLM理解不可用，使用原始指令: %s", exc)
     return instruction
 
 
 def _safe_output(ext: str = ".xlsx") -> str:
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-    return os.path.join(OUTPUT_DIR, f"excel_{time.strftime('%Y%m%d_%H%M%S')}{ext}")
+    # 时间戳只精确到秒，normal 队列并发下同秒完成的任务会写同一路径互相覆盖
+    unique = f"{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+    return os.path.join(OUTPUT_DIR, f"excel_{unique}{ext}")
+
+
+def _display_stem(input_path: str, options: dict) -> str:
+    """输出文件名应基于用户上传时的原始文件名，而非内部 file_id 路径。"""
+    stem = os.path.splitext(os.path.basename(input_path or ""))[0]
+    input_ids = (options or {}).get("input_file_ids") or []
+    if input_ids:
+        try:
+            from ...storage.storage_service import get_storage_service
+            original = get_storage_service().get_info(input_ids[0]).original_name or ""
+            original_stem = os.path.splitext(original)[0]
+            if original_stem and not original_stem.startswith("file_"):
+                stem = original_stem
+        except Exception:
+            pass
+    return stem or "output"
+
+
+CSV_ENCODINGS = ("utf-8-sig", "utf-8", "gbk", "gb18030", "big5", "latin-1")
+
+
+def _read_csv_any_encoding(csv_path: str):
+    """按常见编码链读取 CSV（中文 Excel 导出的 GBK CSV 最常见），BOM 自动剥离"""
+    import pandas as pd
+    last_err = None
+    for enc in CSV_ENCODINGS:
+        try:
+            return pd.read_csv(csv_path, encoding=enc)
+        except (UnicodeDecodeError, UnicodeError) as exc:
+            last_err = exc
+            continue
+    raise RuntimeError(f"无法识别 CSV 文件编码: {last_err}")
+
+
+def _sanitize_csv_cell(value):
+    """CSV 公式注入防护：以 = + - @ 开头的文本单元格前缀单引号，
+    防止被 openpyxl 当作公式（含 DDE）写入输出文件。"""
+    if isinstance(value, str) and value[:1] in ("=", "+", "-", "@"):
+        # 纯数字的负号（如 -12.5）不是注入，保留数值语义
+        rest = value[1:]
+        try:
+            float(rest)
+            return value
+        except ValueError:
+            return "'" + value
+    return value
 
 
 def _csv_to_xlsx(csv_path: str) -> str:
     """CSV → 临时 xlsx，供统一 openpyxl 处理链使用"""
     import pandas as pd
     import tempfile
-    df = pd.read_csv(csv_path)
+    df = _read_csv_any_encoding(csv_path)
     df = df.where(pd.notnull(df), None)
-    tmp = os.path.join(tempfile.gettempdir(),
-                       f"csv_{int(time.time() * 1000)}_{os.getpid()}.xlsx")
+    df = df.map(_sanitize_csv_cell) if hasattr(df, "map") else df.applymap(_sanitize_csv_cell)
+    tmp = os.path.join(OUTPUT_DIR, f"csv_{int(time.time() * 1000)}_{os.getpid()}.xlsx")
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
     df.to_excel(tmp, index=False, sheet_name="Sheet1", engine="openpyxl")
     return tmp
 
@@ -98,8 +150,10 @@ def analyze_excel(input_path: str, output_path: str = None,
         ext = os.path.splitext(input_path)[1].lower()
         if ext == ".xls":
             raise RuntimeError("不支持 .xls（Excel 97-2003）格式，请另存为 .xlsx 后重试")
+        csv_temp_path = None
         if ext == ".csv":
             input_path = _csv_to_xlsx(input_path)
+            csv_temp_path = input_path
 
         if not output_path:
             output_path = _safe_output()
@@ -117,22 +171,30 @@ def analyze_excel(input_path: str, output_path: str = None,
         if progress:
             progress.update(60, "执行 Excel 处理")
 
-        # 调用真实存在的 Excel 处理入口：输入 xlsx -> 分析/公式/图表/格式化 -> 输出 xlsx
-        effective_instruction = _understand_excel_request(instruction, options)
-        process_result = orchestrator.process_file(
-            file_path=input_path,
-            task=effective_instruction,
-            output_path=output_path,
-            chart_type=(options.get("chart_type") or ""),
-        )
+        try:
+            # 调用真实存在的 Excel 处理入口：输入 xlsx -> 分析/公式/图表/格式化 -> 输出 xlsx
+            effective_instruction = _understand_excel_request(instruction, options)
+            process_result = orchestrator.process_file(
+                file_path=input_path,
+                task=effective_instruction,
+                output_path=output_path,
+                chart_type=(options.get("chart_type") or ""),
+            )
 
-        if not process_result or not process_result.success:
-            message = (getattr(process_result, "message", None) or "Excel处理失败")
-            raise RuntimeError(f"Excel处理失败: {message}")
+            if not process_result or not process_result.success:
+                message = (getattr(process_result, "message", None) or "Excel处理失败")
+                raise RuntimeError(f"Excel处理失败: {message}")
 
-        output = process_result.output_path
-        if not output or not os.path.exists(str(output)):
-            raise RuntimeError(f"Excel引擎未生成输出文件: {output}")
+            output = process_result.output_path
+            if not output or not os.path.exists(str(output)):
+                raise RuntimeError(f"Excel引擎未生成输出文件: {output}")
+        finally:
+            # 无论成功失败都清理 CSV 转换产生的临时 xlsx，防止失败路径泄漏
+            if csv_temp_path and os.path.exists(csv_temp_path):
+                try:
+                    os.remove(csv_temp_path)
+                except OSError:
+                    pass
 
         if progress:
             progress.update(80, "登记输出文件到 Storage")
@@ -142,7 +204,7 @@ def analyze_excel(input_path: str, output_path: str = None,
 
         storage = get_storage_service()
         original_name = options.get("output_filename") or (
-            f"{os.path.splitext(os.path.basename(original_input_path))[0]}_processed.xlsx"
+            f"{_display_stem(original_input_path, options)}_processed.xlsx"
         )
         file_info = storage.save_new_output(
             source_path=str(output),
@@ -170,7 +232,6 @@ def analyze_excel(input_path: str, output_path: str = None,
     except Exception as e:
         logger.error("Excel任务 %s 失败: %s", _task_id, sanitize_error(e))
         result["status"] = "failed"
-        from ...security.error_sanitizer import sanitize_error
         result["error"] = sanitize_error(e)
 
     if options.get("model_call"):

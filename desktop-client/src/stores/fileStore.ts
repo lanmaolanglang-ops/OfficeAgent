@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import type { UploadedFile } from '../types';
-import { uploadFiles as apiUploadFiles, listFiles as apiListFiles } from '../services/api';
+import { uploadFile as apiUploadFile, listFilesPage as apiListFilesPage } from '../services/api';
 
 interface FileState {
   files: UploadedFile[];
@@ -8,7 +8,7 @@ interface FileState {
   templateFileId: string | null;
   uploading: boolean;
   uploadProgress: number;
-  uploadFiles: (files: File[]) => Promise<UploadedFile[]>;
+  uploadFiles: (files: File[], onProgress?: (p: number) => void, signal?: AbortSignal) => Promise<UploadedFile[]>;
   loadFiles: () => Promise<void>;
   attachFile: (fileId: string) => void;
   detachFile: (fileId: string) => void;
@@ -25,10 +25,10 @@ export const useFileStore = create<FileState>((set) => ({
   uploading: false,
   uploadProgress: 0,
 
-  uploadFiles: async (fileList: File[]) => {
+  uploadFiles: async (fileList: File[], onProgress?: (p: number) => void, signal?: AbortSignal) => {
     set({ uploading: true, uploadProgress: 0 });
     try {
-      const uploaded = await apiUploadFiles(fileList);
+      const uploaded = await Promise.all(fileList.map((f) => apiUploadFile(f, onProgress, signal)));
       set((state) => ({
         files: [...state.files, ...uploaded],
         uploading: false,
@@ -43,7 +43,17 @@ export const useFileStore = create<FileState>((set) => ({
 
   loadFiles: async () => {
     try {
-      const files = await apiListFiles({ page: 1, page_size: 20 });
+      const pageSize = 200;
+      const files: UploadedFile[] = [];
+      let page = 1;
+      let total = 0;
+      do {
+        const result = await apiListFilesPage({ page, page_size: pageSize });
+        files.push(...result.files);
+        total = result.total;
+        if (result.files.length === 0) break;
+        page += 1;
+      } while (files.length < total);
       set({ files });
     } catch {
       // ignore
@@ -52,9 +62,7 @@ export const useFileStore = create<FileState>((set) => ({
 
   attachFile: (fileId: string) => {
     set((state) => state.files.some((file) => file.id === fileId || file.file_id === fileId)
-      ? { attachedFileIds: state.attachedFileIds.includes(fileId)
-          ? state.attachedFileIds
-          : [...state.attachedFileIds, fileId] }
+      ? { attachedFileIds: [fileId] }
       : state);
   },
 
@@ -69,7 +77,7 @@ export const useFileStore = create<FileState>((set) => ({
   },
 
   clearAttachments: () => {
-    set({ attachedFileIds: [] });
+    set({ attachedFileIds: [], templateFileId: null });
   },
 
   removeFile: (id: string) => {

@@ -2,7 +2,7 @@
 Excel Agent 数据模型
 """
 from dataclasses import dataclass, field
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Any
 from enum import Enum
 
 
@@ -66,6 +66,7 @@ class ColumnInfo:
     semantic_type: str = "unknown"  # date/amount/quantity/category/metric/id/name/text/percentage
     description: str = ""       # 字段说明
     sample_values: list = field(default_factory=list)
+    unique_values: list = field(default_factory=list)  # 下游分组计算使用，最多保留20个
     null_count: int = 0
     unique_count: int = 0
     null_ratio: float = 0.0
@@ -86,6 +87,7 @@ class ColumnInfo:
             "description": self.description,
             "null_count": self.null_count,
             "unique_count": self.unique_count,
+            "unique_values": self.unique_values,
             "min_value": self.min_value,
             "max_value": self.max_value,
             "avg_value": self.avg_value,
@@ -165,6 +167,8 @@ class ChartSpec:
     title: str = ""
     data_range: str = ""        # 如 "A1:D10"
     categories_range: str = ""  # X轴
+    x_values_range: str = ""    # 散点图 X 值范围，如 "B2:B10"
+    y_values_range: str = ""    # 散点图 Y 值范围，如 "E2:E10"
     x_title: str = ""
     y_title: str = ""
     position: str = ""          # 如 "E2" 锚点位置
@@ -248,6 +252,7 @@ class ExcelQualityIssue:
     message: str = ""
     cell_ref: str = ""
     fixable: bool = True
+    fixed: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -256,6 +261,8 @@ class ExcelQualityIssue:
             "severity": self.severity,
             "message": self.message,
             "cell": self.cell_ref,
+            "fixable": self.fixable,
+            "fixed": self.fixed,
         }
 
 
@@ -543,6 +550,7 @@ class AnalysisReport:
     key_findings: str = ""      # 关键发现
     detailed_analysis: str = "" # 详细分析
     recommendations: str = ""   # 建议
+    sheet_reports: List["AnalysisReport"] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -557,6 +565,7 @@ class AnalysisReport:
             "group_analyses": [g.to_dict() for g in self.group_analyses],
             "trend_analyses": [t.to_dict() for t in self.trend_analyses],
             "recommendations": self.recommendations,
+            "sheet_reports": [report.to_dict() for report in self.sheet_reports],
         }
 
     def to_json(self, indent: int = 2) -> str:

@@ -3,7 +3,7 @@
 """
 from typing import Optional, List, Dict, Any, Generic, TypeVar
 from pydantic import BaseModel, Field
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 T = TypeVar("T")
@@ -15,7 +15,7 @@ class BaseResponse(BaseModel, Generic[T]):
     data: Optional[T] = None
     error_code: Optional[str] = None
     message: Optional[str] = None
-    timestamp: str = Field(default_factory=lambda: datetime.now().isoformat())
+    timestamp: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
 class ErrorResponse(BaseModel):
@@ -24,7 +24,7 @@ class ErrorResponse(BaseModel):
     error_code: str
     message: str
     details: Optional[Any] = None
-    timestamp: str = Field(default_factory=lambda: datetime.now().isoformat())
+    timestamp: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
 class ChatResponse(BaseModel):
@@ -51,6 +51,7 @@ class FileInfo(BaseModel):
     extension: str = ""
     size: int
     upload_time: str = ""
+    deleted_at: Optional[str] = None
     version: int = 1
     status: str = "ready"
     metadata: Optional[Dict[str, Any]] = None

@@ -23,7 +23,7 @@ from .config import config
 from .worker import get_worker, LocalWorker
 from .tasks import TASK_REGISTRY, TASK_TYPE_TO_QUEUE, queue_name_for_task_type
 
-__version__ = "0.50.0"
+__version__ = "0.51.1"
 
 
 def submit_task(task_name: str, args: tuple = (), kwargs: dict = None,

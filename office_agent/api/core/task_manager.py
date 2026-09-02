@@ -4,8 +4,8 @@
 import uuid
 import time
 import threading
-from typing import Dict, List, Optional, Any, Callable
-from datetime import datetime
+from typing import Dict, List, Optional
+from datetime import datetime, timezone
 from enum import Enum
 
 
@@ -37,11 +37,13 @@ class Task:
         self.output_files: List[str] = []
         self.result: Optional[Dict] = None
         self.error: Optional[str] = None
-        self.created_at = datetime.now().isoformat()
+        self.created_at = datetime.now(timezone.utc).isoformat()
         self.started_at: Optional[str] = None
         self.completed_at: Optional[str] = None
         self.duration_ms: Optional[int] = None
         self.quality_score: Optional[float] = None
+        self.feedback_rating: Optional[int] = None
+        self.feedback_comment: Optional[str] = None
         self._start_time: Optional[float] = None
 
     def to_dict(self) -> Dict:
@@ -63,11 +65,13 @@ class Task:
             "completed_at": self.completed_at,
             "duration_ms": self.duration_ms,
             "quality_score": self.quality_score,
+            "feedback_rating": self.feedback_rating,
+            "feedback_comment": self.feedback_comment,
         }
 
     def start(self):
         self.status = TaskStatus.RUNNING.value
-        self.started_at = datetime.now().isoformat()
+        self.started_at = datetime.now(timezone.utc).isoformat()
         self._start_time = time.time()
 
     def update(self, progress: int = None, step: str = None,
@@ -80,7 +84,7 @@ class Task:
                 "step_id": f"step_{len(self.steps)}",
                 "name": step,
                 "status": "running",
-                "started_at": datetime.now().isoformat(),
+                "started_at": datetime.now(timezone.utc).isoformat(),
             })
         if status is not None:
             self.status = status
@@ -95,7 +99,7 @@ class Task:
             self.output_files = output_files
         if quality_score is not None:
             self.quality_score = quality_score
-        self.completed_at = datetime.now().isoformat()
+        self.completed_at = datetime.now(timezone.utc).isoformat()
         if self._start_time:
             self.duration_ms = int((time.time() - self._start_time) * 1000)
         # 标记最后一步完成
@@ -107,7 +111,7 @@ class Task:
         self.status = TaskStatus.FAILED.value
         self.error = error
         self.current_step = "失败"
-        self.completed_at = datetime.now().isoformat()
+        self.completed_at = datetime.now(timezone.utc).isoformat()
         if self._start_time:
             self.duration_ms = int((time.time() - self._start_time) * 1000)
         if self.steps:

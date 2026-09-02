@@ -1,8 +1,8 @@
 """文件模型"""
 import uuid
-from sqlalchemy import String, Integer, BigInteger, ForeignKey, Text, DateTime
+from datetime import datetime
+from sqlalchemy import String, Integer, BigInteger, ForeignKey, Text, DateTime, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from sqlalchemy.sql import func
 
 from ..base import Base, TimestampMixin
 
@@ -49,12 +49,14 @@ class File(Base, TimestampMixin):
 
     # 所属用户
     owner_id: Mapped[str] = mapped_column(
-        String(32), ForeignKey("user.id"), nullable=True, index=True
+        String(32), ForeignKey("user.id", ondelete="SET NULL"), nullable=True, index=True
     )
 
     # 版本管理
     version: Mapped[int] = mapped_column(Integer, default=1)
-    parent_file_id: Mapped[str] = mapped_column(String(32), nullable=True, index=True)
+    parent_file_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("file.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     change_description: Mapped[str] = mapped_column(Text, nullable=True)
 
     # 元数据 JSON
@@ -62,14 +64,17 @@ class File(Base, TimestampMixin):
 
     # 状态：uploading/ready/processing/archived/deleted
     status: Mapped[str] = mapped_column(String(32), default="ready", index=True)
+    deleted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
 
     # 访问控制
     is_public: Mapped[bool] = mapped_column(default=False)
     access_count: Mapped[int] = mapped_column(Integer, default=0)
-    last_accessed_at: Mapped[DateTime] = mapped_column(DateTime, nullable=True)
+    last_accessed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # 过期时间（临时文件用）
-    expires_at: Mapped[DateTime] = mapped_column(DateTime, nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # 关系
     owner = relationship("User", back_populates="files")
@@ -91,7 +96,7 @@ class FileVersion(Base, TimestampMixin):
 
     # 关联主文件
     parent_file_id: Mapped[str] = mapped_column(
-        String(32), ForeignKey("file.id"), nullable=False, index=True
+        String(32), ForeignKey("file.id", ondelete="CASCADE"), nullable=False, index=True
     )
 
     # 版本号
@@ -112,7 +117,11 @@ class FileVersion(Base, TimestampMixin):
 
     # 关系
     parent_file = relationship("File", back_populates="versions",
-                               foreign_keys=[parent_file_id])
+                               foreign_keys=[parent_file_id], passive_deletes=True)
+
+    __table_args__ = (
+        UniqueConstraint("parent_file_id", "version_number", name="uq_file_version_parent_number"),
+    )
 
     def __repr__(self):
         return f"<FileVersion {self.parent_file_id} v{self.version_number}>"

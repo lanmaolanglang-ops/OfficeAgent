@@ -15,24 +15,27 @@ File Storage Service - 文件存储核心服务
 import os
 import json
 import logging
-import shutil
-from datetime import datetime, timedelta
-from typing import Optional, BinaryIO, Tuple, List, Dict
+import threading
+from contextlib import contextmanager
+from datetime import datetime, timezone
+from typing import Optional, BinaryIO, Tuple, List, Dict, Iterator
 
 from .storage_backend import StorageBackend
 from .local_storage import LocalStorage
 from .validators import (
-    validate_file, validate_extension, validate_size, get_file_category,
-    get_mime_type, compute_hash, compute_file_hash, FileValidationError,
-    DEFAULT_MAX_SIZE,
+    validate_file, validate_fileobj, validate_extension, validate_size, get_file_category,
+    get_mime_type, compute_hash, FileValidationError,
+    DEFAULT_MAX_SIZE, CHUNK_SIZE,
 )
 from .path_generator import (
-    generate_file_id, generate_version_id, generate_storage_path,
-    generate_temp_path, BUCKET_UPLOADS, BUCKET_OUTPUTS, BUCKET_TEMP,
-    BUCKET_CACHE, BUCKET_VERSIONS,
+    generate_file_id, generate_storage_path,
+    BUCKET_UPLOADS, BUCKET_OUTPUTS,
 )
 
 logger = logging.getLogger("office_agent.storage")
+
+# 桌面启动器通过 OFFICE_AGENT_DATA_DIR 统一重定向本地数据目录
+_DEFAULT_DATA_ROOT = os.environ.get("OFFICE_AGENT_DATA_DIR") or os.path.expanduser("~/.office_agent")
 
 
 class StorageConfig:
@@ -49,7 +52,7 @@ class StorageConfig:
                  temp_expire_hours: int = 24,
                  max_versions: int = 10):
         self.storage_type = storage_type
-        self.local_path = local_path or os.path.expanduser("~/.office_agent/storage")
+        self.local_path = local_path or os.path.join(_DEFAULT_DATA_ROOT, "storage")
         self.minio_endpoint = minio_endpoint
         self.minio_access_key = minio_access_key
         self.minio_secret_key = minio_secret_key
@@ -102,7 +105,8 @@ class FileInfo:
                  version: int = 1, status: str = "ready",
                  owner_id: str = None, parent_file_id: str = None,
                  change_description: str = None,
-                 created_at: datetime = None, metadata: dict = None):
+                 created_at: datetime = None, deleted_at: datetime = None,
+                 metadata: dict = None):
         self.file_id = file_id
         self.original_name = original_name
         self.storage_path = storage_path
@@ -117,7 +121,8 @@ class FileInfo:
         self.owner_id = owner_id
         self.parent_file_id = parent_file_id
         self.change_description = change_description
-        self.created_at = created_at or datetime.now()
+        self.created_at = created_at or datetime.now(timezone.utc)
+        self.deleted_at = deleted_at
         self.metadata = metadata or {}
 
     def to_dict(self) -> dict:
@@ -136,6 +141,7 @@ class FileInfo:
             "parent_file_id": self.parent_file_id,
             "change_description": self.change_description,
             "created_at": self.created_at.isoformat() if self.created_at else None,
+            "deleted_at": self.deleted_at.isoformat() if self.deleted_at else None,
             "metadata": self.metadata,
         }
 
@@ -150,7 +156,16 @@ class StorageService:
     def __init__(self, config: StorageConfig = None, backend: StorageBackend = None):
         self.config = config or StorageConfig.from_env()
         self.backend = backend or create_storage_backend(self.config)
+        self._version_locks: Dict[str, threading.RLock] = {}
+        self._version_locks_guard = threading.Lock()
         logger.info(f"StorageService 初始化: type={self.config.storage_type}")
+
+    @contextmanager
+    def _version_lock(self, file_id: str):
+        with self._version_locks_guard:
+            lock = self._version_locks.setdefault(file_id, threading.RLock())
+        with lock:
+            yield
 
     def _get_session(self):
         """获取数据库 session"""
@@ -187,6 +202,7 @@ class StorageService:
 
         # 4. 写数据库
         session = self._get_session()
+        committed = False
         try:
             from ..database.repository import FileRepository
             repo = FileRepository(session)
@@ -205,6 +221,7 @@ class StorageService:
                 metadata=metadata,
             )
             session.commit()
+            committed = True
 
             return FileInfo(
                 file_id=db_file.id,
@@ -222,15 +239,74 @@ class StorageService:
                 created_at=db_file.created_at,
                 metadata=json.loads(db_file.metadata_json) if db_file.metadata_json else {},
             )
+        except Exception:
+            session.rollback()
+            if not committed:
+                try:
+                    self.backend.delete(storage_path)
+                except Exception:
+                    logger.exception("上传数据库提交失败后清理物理文件失败: %s", storage_path)
+            raise
         finally:
             session.close()
 
     def upload_fileobj(self, filename: str, fileobj: BinaryIO,
                        owner_id: str = None, bucket: str = BUCKET_UPLOADS,
                        metadata: dict = None) -> FileInfo:
-        """从文件对象上传"""
-        content = fileobj.read()
-        return self.upload(filename, content, owner_id, bucket, metadata)
+        """从可 seek 文件对象流式校验并上传，避免复制整份内容到内存。"""
+        info = validate_fileobj(filename, fileobj, self.config.max_file_size)
+        file_id = generate_file_id()
+        storage_path = generate_storage_path(bucket, file_id, info["extension"])
+        fileobj.seek(0)
+        self.backend.upload_fileobj(storage_path, fileobj, info["mime_type"])
+
+        session = self._get_session()
+        committed = False
+        try:
+            from ..database.repository import FileRepository
+            repo = FileRepository(session)
+            db_file = repo.create_file(
+                file_id=file_id,
+                original_name=info["original_name"],
+                file_type=info["file_type"],
+                extension=info["extension"],
+                storage_path=storage_path,
+                file_size=info["size"],
+                bucket=bucket,
+                storage_backend=self.config.storage_type,
+                owner_id=owner_id,
+                file_hash=info["hash"],
+                mime_type=info["mime_type"],
+                metadata=metadata,
+            )
+            session.commit()
+            committed = True
+            return FileInfo(
+                file_id=db_file.id,
+                original_name=db_file.original_name,
+                storage_path=db_file.storage_path,
+                file_type=db_file.file_type,
+                extension=db_file.extension,
+                mime_type=db_file.mime_type,
+                size=db_file.file_size,
+                file_hash=db_file.file_hash,
+                bucket=db_file.bucket,
+                version=db_file.version,
+                status=db_file.status,
+                owner_id=db_file.owner_id,
+                created_at=db_file.created_at,
+                metadata=json.loads(db_file.metadata_json) if db_file.metadata_json else {},
+            )
+        except Exception:
+            session.rollback()
+            if not committed:
+                try:
+                    self.backend.delete(storage_path)
+                except Exception:
+                    logger.exception("流式上传数据库提交失败后清理物理文件失败: %s", storage_path)
+            raise
+        finally:
+            session.close()
 
     def save_output(self, source_path: str, original_name: str = None,
                     owner_id: str = None, change_description: str = None,
@@ -281,13 +357,22 @@ class StorageService:
         - 不使用 parent_file_id，不触发版本化逻辑
         - 输入文件记录保持不变
         """
-        return self.save_output(
+        info = self.save_output(
             source_path=source_path,
             original_name=original_name,
             owner_id=owner_id,
             change_description=change_description,
             parent_file_id=None,
         )
+        # Agent 的 outputs/ 文件是登记前的临时副本；Storage 成功持久化后删除，
+        # 防止永久删除只清理受管路径却遗留同内容副本。
+        try:
+            os.remove(source_path)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            logger.warning("输出登记成功但临时副本清理失败: %s", source_path)
+        return info
 
 # ===== 下载 =====
 
@@ -303,7 +388,7 @@ class StorageService:
             from ..database.repository import FileRepository
             repo = FileRepository(session)
             db_file = repo.get_by_id(file_id)
-            if not db_file or db_file.status == "deleted":
+            if not db_file or db_file.status in {"deleted", "deleting"}:
                 raise FileNotFoundError(f"文件不存在: {file_id}")
 
             content = self.backend.download(db_file.storage_path)
@@ -331,6 +416,45 @@ class StorageService:
         finally:
             session.close()
 
+    def stream_download(self, file_id: str) -> Tuple[Iterator[bytes], FileInfo]:
+        """
+        流式下载（大文件不整读进内存）
+
+        Returns:
+            (chunk 迭代器, FileInfo)
+        """
+        session = self._get_session()
+        try:
+            from ..database.repository import FileRepository
+            repo = FileRepository(session)
+            db_file = repo.get_by_id(file_id)
+            if not db_file or db_file.status in {"deleted", "deleting"}:
+                raise FileNotFoundError(f"文件不存在: {file_id}")
+
+            # 访问记录先落库（流在请求返回后才被消费）
+            repo.record_access(file_id)
+            session.commit()
+
+            info = FileInfo(
+                file_id=db_file.id,
+                original_name=db_file.original_name,
+                storage_path=db_file.storage_path,
+                file_type=db_file.file_type,
+                extension=db_file.extension,
+                mime_type=db_file.mime_type or "application/octet-stream",
+                size=db_file.file_size,
+                file_hash=db_file.file_hash,
+                bucket=db_file.bucket,
+                version=db_file.version,
+                status=db_file.status,
+                owner_id=db_file.owner_id,
+                created_at=db_file.created_at,
+            )
+            chunks = self.backend.iter_file(db_file.storage_path)
+            return chunks, info
+        finally:
+            session.close()
+
     def download_to_file(self, file_id: str, local_path: str) -> FileInfo:
         """下载到本地文件（供 Agent 使用）"""
         content, info = self.download(file_id)
@@ -350,7 +474,7 @@ class StorageService:
             from ..database.repository import FileRepository
             repo = FileRepository(session)
             db_file = repo.get_by_id(file_id)
-            if not db_file or db_file.status == "deleted":
+            if not db_file or db_file.status in {"deleted", "deleting"}:
                 raise FileNotFoundError(f"文件不存在: {file_id}")
 
             if self.config.storage_type == "local":
@@ -363,7 +487,11 @@ class StorageService:
                 # 远程存储下载到临时目录
                 import tempfile
                 tmp_dir = tempfile.gettempdir()
-                local_path = os.path.join(tmp_dir, f"{file_id}{db_file.extension}")
+                hash_prefix = (db_file.file_hash or "nohash")[:12]
+                local_path = os.path.join(
+                    tmp_dir,
+                    f"{file_id}-v{db_file.version}-{hash_prefix}{db_file.extension}",
+                )
                 if not os.path.exists(local_path):
                     self.download_to_file(file_id, local_path)
                 return local_path
@@ -377,7 +505,7 @@ class StorageService:
             from ..database.repository import FileRepository
             repo = FileRepository(session)
             db_file = repo.get_by_id(file_id)
-            if not db_file or db_file.status == "deleted":
+            if not db_file or db_file.status in {"deleted", "deleting"}:
                 raise FileNotFoundError(f"文件不存在: {file_id}")
             return self.backend.get_url(db_file.storage_path, expires)
         finally:
@@ -392,7 +520,7 @@ class StorageService:
             from ..database.repository import FileRepository
             repo = FileRepository(session)
             db_file = repo.get_by_id(file_id)
-            if not db_file or db_file.status == "deleted":
+            if not db_file or db_file.status in {"deleted", "deleting"}:
                 raise FileNotFoundError(f"文件不存在: {file_id}")
             return FileInfo(
                 file_id=db_file.id,
@@ -421,14 +549,15 @@ class StorageService:
         session = self._get_session()
         try:
             from ..database.models import File
-            conditions = [File.status != "deleted"]
+            conditions = [File.status.notin_(("deleted", "deleting"))]
             if owner_id:
                 conditions.append(File.owner_id == owner_id)
             if file_type:
                 conditions.append(File.file_type == file_type)
             if bucket:
                 conditions.append(File.bucket == bucket)
-            stmt = select(File).where(and_(*conditions)).offset(offset).limit(limit)
+            stmt = select(File).where(and_(*conditions)).order_by(
+                File.created_at.desc()).offset(offset).limit(limit)
             db_files = list(session.execute(stmt).scalars().all())
             return [FileInfo(
                 file_id=f.id, original_name=f.original_name,
@@ -440,6 +569,72 @@ class StorageService:
                 created_at=f.created_at,
                 metadata=json.loads(f.metadata_json) if f.metadata_json else {},
             ) for f in db_files]
+        finally:
+            session.close()
+
+    def count_files(self, owner_id: str = None, file_type: str = None,
+                    bucket: str = None) -> int:
+        """统计与 ``list_files`` 相同筛选条件下的未删除文件数。"""
+        from sqlalchemy import select, and_, func
+        session = self._get_session()
+        try:
+            from ..database.models import File
+            conditions = [File.status.notin_(("deleted", "deleting"))]
+            if owner_id:
+                conditions.append(File.owner_id == owner_id)
+            if file_type:
+                conditions.append(File.file_type == file_type)
+            if bucket:
+                conditions.append(File.bucket == bucket)
+            stmt = select(func.count(File.id)).where(and_(*conditions))
+            return int(session.execute(stmt).scalar() or 0)
+        finally:
+            session.close()
+
+    def list_deleted_files(self, owner_id: str = None, file_type: str = None,
+                           offset: int = 0, limit: int = 100) -> List[FileInfo]:
+        """列出仍可恢复的软删除文件。永久删除中的 tombstone 不对用户展示。"""
+        from sqlalchemy import select, and_
+        session = self._get_session()
+        try:
+            from ..database.models import File
+            conditions = [File.status == "deleted"]
+            if owner_id:
+                conditions.append(File.owner_id == owner_id)
+            if file_type:
+                conditions.append(File.file_type == file_type)
+            stmt = select(File).where(and_(*conditions)).order_by(
+                File.deleted_at.desc(), File.created_at.desc()
+            ).offset(offset).limit(limit)
+            db_files = list(session.execute(stmt).scalars().all())
+            return [FileInfo(
+                file_id=f.id, original_name=f.original_name,
+                storage_path=f.storage_path, file_type=f.file_type,
+                extension=f.extension, mime_type=f.mime_type,
+                size=f.file_size, file_hash=f.file_hash,
+                bucket=f.bucket, version=f.version, status=f.status,
+                owner_id=f.owner_id, parent_file_id=f.parent_file_id,
+                created_at=f.created_at, deleted_at=f.deleted_at,
+                metadata=json.loads(f.metadata_json) if f.metadata_json else {},
+            ) for f in db_files]
+        finally:
+            session.close()
+
+    def count_deleted_files(self, owner_id: str = None,
+                            file_type: str = None) -> int:
+        """统计仍可恢复的软删除文件。"""
+        from sqlalchemy import select, and_, func
+        session = self._get_session()
+        try:
+            from ..database.models import File
+            conditions = [File.status == "deleted"]
+            if owner_id:
+                conditions.append(File.owner_id == owner_id)
+            if file_type:
+                conditions.append(File.file_type == file_type)
+            return int(session.execute(
+                select(func.count(File.id)).where(and_(*conditions))
+            ).scalar() or 0)
         finally:
             session.close()
 
@@ -470,13 +665,25 @@ class StorageService:
                 return False
 
             if permanent:
-                self.backend.delete(db_file.storage_path)
-                # 同时删除版本文件
+                # 先提交可重试的 tombstone，再删除物理内容。若物理删除或最终
+                # DB 提交失败，记录会停在 deleting，后续可安全重试而不会
+                # 重新把残缺文件暴露为 ready。
+                repo.update_status(file_id, "deleting")
+                session.commit()
                 from ..database.repository import FileVersionRepository
                 vrepo = FileVersionRepository(session)
                 versions = vrepo.get_by_file(file_id)
-                for v in versions:
-                    self.backend.delete(v.storage_path)
+                paths = {db_file.storage_path, *(v.storage_path for v in versions)}
+                failed_paths = []
+                for path in paths:
+                    try:
+                        self.backend.delete(path)
+                    except Exception:
+                        failed_paths.append(path)
+                if failed_paths:
+                    raise RuntimeError("永久删除未能清理全部物理内容，请重试")
+                for version in versions:
+                    session.delete(version)
                 session.delete(db_file)
             else:
                 repo.mark_deleted(file_id)
@@ -486,19 +693,58 @@ class StorageService:
         finally:
             session.close()
 
+    def restore_deleted(self, file_id: str) -> FileInfo:
+        """恢复软删除文件；物理内容缺失或删除已进入提交阶段时拒绝恢复。"""
+        session = self._get_session()
+        try:
+            from ..database.repository import FileRepository
+            repo = FileRepository(session)
+            db_file = repo.get_by_id(file_id)
+            if not db_file or db_file.status != "deleted":
+                raise FileNotFoundError(f"回收站中不存在文件: {file_id}")
+            if not self.backend.exists(db_file.storage_path):
+                raise RuntimeError("文件内容已缺失，无法恢复；可尝试永久删除该记录")
+
+            repo.restore_deleted(file_id)
+            session.commit()
+            return FileInfo(
+                file_id=db_file.id, original_name=db_file.original_name,
+                storage_path=db_file.storage_path, file_type=db_file.file_type,
+                extension=db_file.extension, mime_type=db_file.mime_type,
+                size=db_file.file_size, file_hash=db_file.file_hash,
+                bucket=db_file.bucket, version=db_file.version,
+                status=db_file.status, owner_id=db_file.owner_id,
+                parent_file_id=db_file.parent_file_id,
+                created_at=db_file.created_at,
+                metadata=json.loads(db_file.metadata_json) if db_file.metadata_json else {},
+            )
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
     # ===== 版本管理 =====
 
     def create_version(self, parent_file_id: str, content: bytes,
                        change_description: str = None,
                        changed_by: str = "agent") -> FileInfo:
+        with self._version_lock(parent_file_id):
+            return self._create_version_unlocked(
+                parent_file_id, content, change_description, changed_by
+            )
+
+    def _create_version_unlocked(self, parent_file_id: str, content: bytes,
+                                 change_description: str = None,
+                                 changed_by: str = "agent") -> FileInfo:
         """
         创建文件新版本
 
-        流程：
-        1. 获取父文件信息
-        2. 将当前版本内容保存到 versions/
-        3. 上传新版本内容到主路径
-        4. 更新主文件记录
+        文件字节不可变原则：
+        1. 当前内容归档到 versions/（版本记录指向归档路径）
+        2. 新内容写入一个全新的存储路径
+        3. 同一事务内把主文件记录切到新路径（storage_path/size/hash/version）
+        任何一步失败都不会破坏旧文件：旧文件字节从未被覆盖。
         """
         session = self._get_session()
         try:
@@ -507,51 +753,59 @@ class StorageService:
             vrepo = FileVersionRepository(session)
 
             parent = repo.get_by_id(parent_file_id)
-            if not parent or parent.status == "deleted":
+            if not parent or parent.status in {"deleted", "deleting"}:
                 raise FileNotFoundError(f"父文件不存在: {parent_file_id}")
 
             # 校验新内容
             validate_size(content, self.config.max_file_size)
             new_hash = compute_hash(content)
 
-            # 1. 将当前版本归档到 versions/
-            old_content = self.backend.download(parent.storage_path)
-            version_id = generate_version_id()
-            version_path = generate_storage_path(
-                BUCKET_VERSIONS, version_id, parent.extension,
-                parent_file_id=parent_file_id,
-            )
-            self.backend.upload(version_path, old_content, parent.mime_type)
-
-            # 2. 记录版本
-            new_version_num = parent.version + 1
+            # 当前主路径本身已是不可变版本字节，直接把路径转为版本记录；
+            # 不再复制一次后留下无人引用的旧主文件。
+            old_storage_path = parent.storage_path
             vrepo.create_version(
                 parent_file_id=parent_file_id,
-                version_number=parent.version,  # 归档的是旧版本号
-                storage_path=version_path,
+                version_number=parent.version,
+                storage_path=old_storage_path,
                 file_size=parent.file_size,
                 file_hash=parent.file_hash,
                 change_description=parent.change_description,
                 changed_by=changed_by,
             )
 
-            # 3. 上传新版本到主路径
-            self.backend.upload(parent.storage_path, content, parent.mime_type)
-
-            # 4. 更新主文件
-            repo.update(parent_file_id, {
-                "file_size": len(content),
-                "file_hash": new_hash,
-                "version": new_version_num,
-                "change_description": change_description,
-                "status": "ready",
-            })
-            session.commit()
+            # 新内容写入全新路径（绝不覆写旧版本路径）
+            new_version_num = parent.version + 1
+            new_file_id = generate_file_id()
+            new_storage_path = generate_storage_path(
+                parent.bucket, new_file_id, parent.extension,
+            )
+            uploaded_new = False
+            try:
+                self.backend.upload(new_storage_path, content, parent.mime_type)
+                uploaded_new = True
+                repo.update(parent_file_id, {
+                    "storage_path": new_storage_path,
+                    "file_path": new_storage_path,
+                    "file_size": len(content),
+                    "file_hash": new_hash,
+                    "version": new_version_num,
+                    "change_description": change_description,
+                    "status": "ready",
+                })
+                session.commit()
+            except Exception:
+                session.rollback()
+                if uploaded_new:
+                    try:
+                        self.backend.delete(new_storage_path)
+                    except Exception:
+                        logger.exception("版本创建失败后清理新文件失败: %s", new_storage_path)
+                raise
 
             return FileInfo(
                 file_id=parent.id,
                 original_name=parent.original_name,
-                storage_path=parent.storage_path,
+                storage_path=new_storage_path,
                 file_type=parent.file_type,
                 extension=parent.extension,
                 mime_type=parent.mime_type,
@@ -589,7 +843,11 @@ class StorageService:
             session.close()
 
     def restore_version(self, file_id: str, version_number: int) -> FileInfo:
-        """恢复到指定版本"""
+        with self._version_lock(file_id):
+            return self._restore_version_unlocked(file_id, version_number)
+
+    def _restore_version_unlocked(self, file_id: str, version_number: int) -> FileInfo:
+        """恢复到指定版本（把目标版本内容作为新版本写回，不覆写任何原字节）"""
         session = self._get_session()
         try:
             from ..database.repository import FileRepository, FileVersionRepository
@@ -608,32 +866,46 @@ class StorageService:
             # 读取目标版本内容
             content = self.backend.download(target.storage_path)
 
-            # 当前版本也归档
-            current_content = self.backend.download(parent.storage_path)
-            vid = generate_version_id()
-            vpath = generate_storage_path(BUCKET_VERSIONS, vid, parent.extension,
-                                          parent_file_id=file_id)
-            self.backend.upload(vpath, current_content, parent.mime_type)
+            # 当前主路径直接成为历史版本；不复制、不遗留孤儿。
+            current_storage_path = parent.storage_path
             vrepo.create_version(
                 parent_file_id=file_id,
                 version_number=parent.version,
-                storage_path=vpath,
+                storage_path=current_storage_path,
                 file_size=parent.file_size,
                 file_hash=parent.file_hash,
                 change_description=f"恢复前的版本 v{parent.version}",
                 changed_by="restore",
             )
 
-            # 恢复目标版本
-            self.backend.upload(parent.storage_path, content, parent.mime_type)
-            new_version = parent.version + 1
-            repo.update(file_id, {
-                "file_size": target.file_size,
-                "file_hash": target.file_hash,
-                "version": new_version,
-                "change_description": f"从 v{version_number} 恢复",
-            })
-            session.commit()
+            # 恢复内容写入全新路径，再切换主记录
+            new_file_id = generate_file_id()
+            new_storage_path = generate_storage_path(
+                parent.bucket, new_file_id, parent.extension,
+            )
+            uploaded_new = False
+            try:
+                self.backend.upload(new_storage_path, content, parent.mime_type)
+                uploaded_new = True
+                new_version = parent.version + 1
+                repo.update(file_id, {
+                    "storage_path": new_storage_path,
+                    "file_path": new_storage_path,
+                    "file_size": target.file_size,
+                    "file_hash": target.file_hash,
+                    "version": new_version,
+                    "change_description": f"从 v{version_number} 恢复",
+                    "status": "ready",
+                })
+                session.commit()
+            except Exception:
+                session.rollback()
+                if uploaded_new:
+                    try:
+                        self.backend.delete(new_storage_path)
+                    except Exception:
+                        logger.exception("版本恢复失败后清理新文件失败: %s", new_storage_path)
+                raise
 
             return self.get_info(file_id)
         finally:
@@ -642,9 +914,24 @@ class StorageService:
     # ===== 分片上传 =====
 
     def init_multipart_upload(self, filename: str, owner_id: str = None,
-                               content_type: str = None) -> dict:
+                               content_type: str = None,
+                               expected_size: int = None,
+                               expected_parts: int = None,
+                               expected_sha256: str = None) -> dict:
         """初始化分片上传"""
         ext = validate_extension(filename)
+        if not isinstance(expected_size, int) or expected_size < 1:
+            raise ValueError("expected_size 必须是正整数")
+        if expected_size > self.config.max_file_size:
+            raise ValueError("文件总大小超过限制")
+        if not isinstance(expected_parts, int) or expected_parts < 1:
+            raise ValueError("expected_parts 必须是正整数")
+        if expected_parts > expected_size:
+            raise ValueError("expected_parts 不能大于文件字节数")
+        if (not isinstance(expected_sha256, str)
+                or len(expected_sha256) != 64
+                or any(c not in "0123456789abcdefABCDEF" for c in expected_sha256)):
+            raise ValueError("expected_sha256 必须是 64 位十六进制 SHA-256")
         file_id = generate_file_id()
         storage_path = generate_storage_path(BUCKET_UPLOADS, file_id, ext)
 
@@ -665,7 +952,13 @@ class StorageService:
                 storage_backend=self.config.storage_type,
                 owner_id=owner_id,
                 mime_type=content_type or get_mime_type(filename),
-                metadata={"upload_id": upload_id, "multipart": True},
+                metadata={
+                    "upload_id": upload_id,
+                    "multipart": True,
+                    "expected_size": expected_size,
+                    "expected_parts": expected_parts,
+                    "expected_sha256": expected_sha256.lower(),
+                },
             )
             repo.update_status(db_file.id, "uploading")
             session.commit()
@@ -674,12 +967,37 @@ class StorageService:
                 "upload_id": upload_id,
                 "storage_path": storage_path,
             }
+        except Exception:
+            session.rollback()
+            self.backend.abort_multipart_upload(storage_path, upload_id)
+            raise
         finally:
             session.close()
+
+    @staticmethod
+    def _verify_upload_binding(db_file, upload_id: str):
+        """分片会话必须归属该 file_id：init 时写入 metadata 的 upload_id
+        必须一致，防止用一个 upload_id 往别人 file_id 的存储路径写分片。
+        metadata 里没有 upload_id 的记录（普通上传）一律拒绝。"""
+        try:
+            meta = json.loads(db_file.metadata_json or "{}")
+        except (TypeError, ValueError):
+            meta = {}
+        bound = meta.get("upload_id")
+        if bound != upload_id:
+            raise ValueError("upload_id 与该文件不匹配")
+
 
     def upload_part(self, file_id: str, upload_id: str,
                     part_number: int, content: bytes) -> dict:
         """上传分片"""
+        if part_number < 1:
+            raise ValueError("part_number 必须从 1 开始")
+        # 单片上限：防止无限制分片把任意大的请求体整读进内存
+        if len(content) == 0:
+            raise ValueError("分片内容为空")
+        if len(content) > CHUNK_SIZE:
+            raise ValueError(f"分片大小超过限制 {CHUNK_SIZE // 1024 // 1024}MB")
         session = self._get_session()
         try:
             from ..database.repository import FileRepository
@@ -687,6 +1005,9 @@ class StorageService:
             db_file = repo.get_by_id(file_id)
             if not db_file:
                 raise FileNotFoundError(f"文件不存在: {file_id}")
+            if db_file.status != "uploading":
+                raise ValueError(f"文件当前状态为 {db_file.status}，不允许上传分片")
+            self._verify_upload_binding(db_file, upload_id)
 
             result = self.backend.upload_part(
                 db_file.storage_path, upload_id, part_number, content,
@@ -694,6 +1015,14 @@ class StorageService:
             return result
         finally:
             session.close()
+
+    def _streaming_hash(self, storage_path: str) -> str:
+        """流式计算文件哈希（避免大文件整读进内存）"""
+        import hashlib
+        h = hashlib.sha256()
+        for chunk in self.backend.iter_file(storage_path):
+            h.update(chunk)
+        return h.hexdigest()
 
     def complete_multipart_upload(self, file_id: str, upload_id: str,
                                    parts: list) -> FileInfo:
@@ -705,17 +1034,66 @@ class StorageService:
             db_file = repo.get_by_id(file_id)
             if not db_file:
                 raise FileNotFoundError(f"文件不存在: {file_id}")
+            if db_file.status != "uploading":
+                raise ValueError(f"文件当前状态为 {db_file.status}，不允许完成分片上传")
+            self._verify_upload_binding(db_file, upload_id)
+
+            try:
+                upload_meta = json.loads(db_file.metadata_json or "{}")
+            except (TypeError, ValueError):
+                upload_meta = {}
+            expected_parts = upload_meta.get("expected_parts")
+            expected_size = upload_meta.get("expected_size")
+            expected_sha256 = upload_meta.get("expected_sha256")
+            if not all((expected_parts, expected_size, expected_sha256)):
+                raise ValueError("分片上传缺少完整性元数据，请重新初始化")
+
+            if not parts:
+                raise ValueError("分片列表不能为空")
+            part_numbers = [p.get("part_number") for p in parts if isinstance(p, dict)]
+            if (len(part_numbers) != len(parts)
+                    or any(not isinstance(n, int) or n < 1 for n in part_numbers)
+                    or len(set(part_numbers)) != len(part_numbers)):
+                raise ValueError("分片序号必须是从 1 开始且不重复的整数")
+            if sorted(part_numbers) != list(range(1, expected_parts + 1)):
+                raise ValueError(f"分片必须从 1 连续到 {expected_parts}，不能缺片或多片")
 
             result = self.backend.complete_multipart_upload(
                 db_file.storage_path, upload_id, parts,
             )
 
-            # 计算哈希
-            content = self.backend.download(db_file.storage_path)
-            file_hash = compute_hash(content)
+            def reject_completed_upload(message: str):
+                try:
+                    self.backend.delete(db_file.storage_path)
+                finally:
+                    repo.mark_deleted(file_id)
+                    session.commit()
+                raise ValueError(message)
+
+            # 合并后总量必须仍受单文件大小上限约束（分片路径会绕过 upload 的校验）
+            total_size = result.get("size", 0)
+            if total_size != expected_size or total_size > self.config.max_file_size:
+                reject_completed_upload(
+                    f"文件总大小校验失败：期望 {expected_size} 字节，实际 {total_size} 字节"
+                )
+
+            file_hash = self._streaming_hash(db_file.storage_path)
+            if file_hash.lower() != expected_sha256:
+                reject_completed_upload("整文件 SHA-256 校验失败")
+
+            # 分片链也必须执行与普通上传一致的内容类型校验。LocalStorage
+            # 是当前唯一受支持后端，使用其受根目录约束的绝对路径读取。
+            if isinstance(self.backend, LocalStorage):
+                try:
+                    with open(self.backend._full_path(db_file.storage_path), "rb") as merged:
+                        validate_fileobj(
+                            db_file.original_name, merged, self.config.max_file_size
+                        )
+                except FileValidationError as exc:
+                    reject_completed_upload(str(exc))
 
             repo.update(file_id, {
-                "file_size": result.get("size", len(content)),
+                "file_size": total_size,
                 "file_hash": file_hash,
                 "status": "ready",
             })
@@ -733,6 +1111,7 @@ class StorageService:
             repo = FileRepository(session)
             db_file = repo.get_by_id(file_id)
             if db_file:
+                self._verify_upload_binding(db_file, upload_id)
                 self.backend.abort_multipart_upload(db_file.storage_path, upload_id)
                 repo.mark_deleted(file_id)
                 session.commit()
@@ -744,7 +1123,8 @@ class StorageService:
 
     def cleanup_temp_files(self, hours: int = None) -> dict:
         """清理过期临时文件"""
-        hours = hours or self.config.temp_expire_hours
+        if not hours or hours <= 0:
+            hours = self.config.temp_expire_hours
         session = self._get_session()
         result = {"cleaned": 0, "freed_bytes": 0}
         try:
@@ -770,6 +1150,8 @@ class StorageService:
     def archive_old_versions(self, keep: int = None) -> dict:
         """归档旧版本（保留最近 N 个）"""
         keep = keep or self.config.max_versions
+        if keep < 1:
+            raise ValueError("keep 必须至少为 1")
         session = self._get_session()
         result = {"archived": 0}
         try:
@@ -778,17 +1160,27 @@ class StorageService:
             vrepo = FileVersionRepository(session)
 
             # 按文件分组
-            from sqlalchemy import select, func
+            from sqlalchemy import select
             stmt = select(FileVersion.parent_file_id).distinct()
             parent_ids = [r[0] for r in session.execute(stmt).all()]
 
             for pid in parent_ids:
                 versions = vrepo.get_by_file(pid)
                 if len(versions) > keep:
-                    for v in versions[keep:]:
-                        # 旧版本标记归档（不删除文件，节省空间可后续清理）
-                        pass
-                    result["archived"] += max(0, len(versions) - keep)
+                    # get_by_file 为升序：保留最新 keep 个，给更老版本写入真实
+                    # archived_at 元数据。重复运行不会虚增计数。
+                    for v in versions[:-keep]:
+                        try:
+                            meta = json.loads(v.metadata_json or "{}")
+                        except (TypeError, ValueError):
+                            meta = {}
+                        if meta.get("archived_at"):
+                            continue
+                        meta["archived_at"] = datetime.now(timezone.utc).isoformat()
+                        v.metadata_json = json.dumps(meta, ensure_ascii=False)
+                        result["archived"] += 1
+
+            session.commit()
 
             return result
         finally:

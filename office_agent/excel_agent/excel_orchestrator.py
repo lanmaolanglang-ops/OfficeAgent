@@ -5,12 +5,9 @@ Excel Orchestrator - Excel Agent 总控
 用户需求/文件 → 任务分析 → 数据理解 → 公式/图表生成 → Excel Service → 质量检查 → 输出
 """
 from pathlib import Path
-from typing import Optional, List, Dict, Any
-import re
 
 from .models import (
-    ExcelTask, TaskType, ExcelResult, DataProfile,
-    FormulaSpec, ChartSpec, FormatSpec,
+    ExcelResult, DataProfile,
 )
 from .excel_service import ExcelService
 from .data_analyzer import DataAnalyzer
@@ -87,58 +84,70 @@ class ExcelOrchestrator:
             # 2. 打开文件
             self.service.open(file_path)
 
-            sheet_name = profile.sheets[0].name if profile.sheets else None
+            # 2.1 往返保留警示：openpyxl 对部分对象（透视图表、迷你图、
+            # Power Query 连接等）不能完整读写。检测到时明确告知用户，
+            # 避免输出"看似正常但少了东西"。
+            fragile = self._detect_fragile_elements(file_path)
 
             # 3. 根据任务执行操作
             changes = []
+            if fragile:
+                changes.append(f"注意：源文件包含{fragile}，已尽量保留，建议打开输出确认")
 
             # 解析任务意图
             task_lower = task.lower() if task else ""
 
-            # 公式计算
-            if task and any(kw in task_lower for kw in
-                           ["计算", "求和", "合计", "平均", "公式", "calculate", "sum", "formula"]):
-                formulas = self.formula_gen.generate_from_text(task, sheet_name)
-                self.service.add_formulas(formulas, sheet_name)
-                changes.append(f"添加 {len(formulas)} 个公式")
+            wants_formulas = bool(task and any(
+                kw in task_lower for kw in
+                ["计算", "求和", "合计", "平均", "公式", "calculate", "sum", "formula"]
+            ))
+            wants_explicit_summary = bool(task and any(
+                kw in task_lower for kw in ["汇总", "summary", "总计行"]
+            ))
+            wants_chart = bool(task and any(
+                kw in task_lower for kw in ["图", "chart", "趋势", "对比", "占比", "可视化"]
+            ))
 
-            # 汇总行
-            elif add_summary:
-                sheet = profile.get_sheet(sheet_name)
-                if sheet:
+            # 每个工作表独立执行，避免多 Sheet 文件只有第一页被处理。
+            for sheet in profile.sheets:
+                sheet_name = sheet.name
+                if wants_formulas:
+                    formulas = self.formula_gen.generate_from_text(task, sheet_name)
+                    self.service.add_formulas(formulas, sheet_name)
+                    if formulas:
+                        changes.append(f"{sheet_name}: 添加 {len(formulas)} 个公式")
+
+                # 公式与汇总不是互斥能力。“求和并汇总”等复合指令应同时执行；
+                # 未给任务时仍保留原来的默认汇总行为。
+                if add_summary and (not wants_formulas or wants_explicit_summary):
                     num_cols = [c.index for c in sheet.columns if c.data_type == "number"]
                     if num_cols:
                         self.service.add_summary_row(sheet_name, "合计", num_cols)
-                        changes.append("添加汇总行")
+                        changes.append(f"{sheet_name}: 添加汇总行")
 
-            # 图表
-            if add_charts:
-                if task and any(kw in task_lower for kw in
-                               ["图", "chart", "趋势", "对比", "占比", "可视化"]):
-                    charts = self.chart_gen.generate_from_text(task, sheet_name, chart_type=chart_type)
-                else:
-                    charts = self.chart_gen.auto_charts(sheet_name)
+                if add_charts:
+                    charts = (
+                        self.chart_gen.generate_from_text(
+                            task, sheet_name, chart_type=chart_type
+                        ) if wants_chart else self.chart_gen.auto_charts(sheet_name)
+                    )
+                    if charts:
+                        self.service.add_charts(charts, sheet_name)
+                        changes.append(f"{sheet_name}: 添加 {len(charts)} 个图表")
 
-                if charts:
-                    self.service.add_charts(charts, sheet_name)
-                    changes.append(f"添加 {len(charts)} 个图表")
+                if add_format:
+                    self.service.apply_header_style(sheet_name)
+                    self.service.auto_width(sheet_name)
+                    self.service.freeze_header(sheet_name)
+                    if sheet.row_count > 5:
+                        self.service.add_filter(sheet_name)
+                    changes.append(f"{sheet_name}: 应用格式化")
 
-            # 格式化
-            if add_format:
-                self.service.apply_header_style(sheet_name)
-                self.service.auto_width(sheet_name)
-                self.service.freeze_header(sheet_name)
-                if profile.sheets and profile.sheets[0].row_count > 5:
-                    self.service.add_filter(sheet_name)
-                changes.append("应用格式化")
-
-            # 条件格式（数值列）
-            sheet = profile.get_sheet(sheet_name)
-            if sheet:
+                # 对所有数值列应用条件格式，不以“前 3 列”静默截断。
                 num_cols = [c for c in sheet.columns if c.data_type == "number"]
-                if num_cols:
+                if num_cols and sheet.row_count > 0:
                     from openpyxl.utils import get_column_letter
-                    for col in num_cols[:3]:
+                    for col in num_cols:
                         col_letter = get_column_letter(col.index + 1)
                         range_str = f"{col_letter}2:{col_letter}{sheet.row_count + 1}"
                         self.service.add_conditional_format(sheet_name, range_str, "data_bar")
@@ -158,9 +167,12 @@ class ExcelOrchestrator:
             result.message = f"处理完成: {Path(output_path).name}, 质量分{quality['score']:.0f}"
             if quality["error_count"] > 0:
                 result.message += f", {quality['error_count']}个错误"
+            if fragile:
+                result.message += f"（源文件含{fragile}，建议打开确认完整性）"
 
             # 数据预览
-            result.data_preview = self.service.get_preview(sheet_name, rows=5)
+            preview_sheet = profile.sheets[0].name if profile.sheets else None
+            result.data_preview = self.service.get_preview(preview_sheet, rows=5)
 
             return result
 
@@ -170,11 +182,42 @@ class ExcelOrchestrator:
                 message=f"处理失败: {str(e)}",
             )
 
+    @staticmethod
+    def _detect_fragile_elements(file_path: str) -> str:
+        """检测 openpyxl 往返可能不完整的元素类型（best-effort）。"""
+        kinds = []
+        try:
+            from openpyxl import load_workbook
+            wb = load_workbook(file_path, read_only=False, data_only=False)
+            try:
+                for ws in wb.worksheets:
+                    if getattr(ws, "_charts", None):
+                        kinds.append("图表")
+                        break
+                for ws in wb.worksheets:
+                    if getattr(ws, "_images", None):
+                        kinds.append("图片")
+                        break
+                for ws in wb.worksheets:
+                    if getattr(ws, "_pivots", None):
+                        kinds.append("数据透视表")
+                        break
+            finally:
+                wb.close()
+        except Exception:
+            return ""
+        seen = []
+        for k in ("数据透视表", "图表", "图片"):
+            if k in kinds:
+                seen.append(k)
+        return "/".join(seen)
+
     def create_from_data(self, data: list,
                          task: str = "",
                          sheet_name: str = "Sheet1",
                          output_path: str = "output.xlsx",
-                         headers: list = None) -> ExcelResult:
+                         headers: list = None,
+                         has_header: bool = True) -> ExcelResult:
         """
         从数据创建 Excel
 
@@ -183,25 +226,34 @@ class ExcelOrchestrator:
             task: 任务描述
             sheet_name: 工作表名
             output_path: 输出路径
-            headers: 表头列表
+            headers: 表头列表；提供时 data 始终按纯数据行解释
+            has_header: 未提供 headers 时，data 首行是否为表头（兼容旧调用）
         """
         try:
             self.service.create(output_path, sheet_name)
 
-            # 构建完整数据
-            if headers:
-                full_data = [headers] + list(data)
+            rows = list(data or [])
+            if headers is not None:
+                normalized_headers = list(headers)
+                body_rows = rows
+            elif has_header and rows:
+                normalized_headers = list(rows[0])
+                body_rows = rows[1:]
+            elif rows:
+                width = max((len(row) for row in rows if isinstance(row, (list, tuple))), default=0)
+                normalized_headers = [f"列{i + 1}" for i in range(width)]
+                body_rows = rows
             else:
-                full_data = list(data)
+                normalized_headers = []
+                body_rows = []
+
+            full_data = ([normalized_headers] if normalized_headers else []) + body_rows
 
             self.service.write_data(sheet_name, full_data, has_header=True)
 
             # 分析数据
             import pandas as pd
-            if headers:
-                df = pd.DataFrame(data, columns=headers)
-            else:
-                df = pd.DataFrame(data[1:], columns=data[0])
+            df = pd.DataFrame(body_rows, columns=normalized_headers or None)
             profile = self.analyzer.analyze_dataframe(df, sheet_name)
             self.formula_gen.set_profile(profile)
             self.chart_gen.set_profile(profile)
@@ -209,11 +261,11 @@ class ExcelOrchestrator:
             changes = ["创建新文件"]
 
             # 公式
-            if task and any(kw in task for kw in ["计算", "求和", "合计", "公式"]):
+            if normalized_headers and task and any(kw in task for kw in ["计算", "求和", "合计", "公式"]):
                 formulas = self.formula_gen.generate_from_text(task, sheet_name)
                 self.service.add_formulas(formulas, sheet_name)
                 changes.append(f"添加 {len(formulas)} 个公式")
-            else:
+            elif normalized_headers:
                 # 默认汇总
                 num_cols = [c.index for c in profile.sheets[0].columns if c.data_type == "number"]
                 if num_cols:
@@ -221,10 +273,12 @@ class ExcelOrchestrator:
                     changes.append("添加汇总行")
 
             # 图表
-            if task and any(kw in task for kw in ["图", "趋势", "对比", "可视化"]):
+            if normalized_headers and task and any(kw in task for kw in ["图", "趋势", "对比", "可视化"]):
                 charts = self.chart_gen.generate_from_text(task, sheet_name)
-            else:
+            elif normalized_headers:
                 charts = self.chart_gen.auto_charts(sheet_name)
+            else:
+                charts = []
             if charts:
                 self.service.add_charts(charts, sheet_name)
                 changes.append(f"添加 {len(charts)} 个图表")

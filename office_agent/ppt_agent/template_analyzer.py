@@ -302,7 +302,6 @@ class TemplateAnalyzer:
         # (has_title, has_content, has_picture, has_two_content, has_chart)
         (True, False, False, False, False): "cover",
         (True, True, False, False, False): "content",
-        (True, False, False, False, False): "section",
         (True, True, True, False, False): "content_image",
         (True, True, False, True, False): "two_column",
         (True, False, True, False, False): "section_image",

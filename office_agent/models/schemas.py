@@ -13,6 +13,9 @@ class TaskType(Enum):
     WORD = "word"
     PPT = "ppt"
     EXCEL = "excel"
+    PDF = "pdf"
+    TEXT = "text"
+    IMAGE = "image"
     UNKNOWN = "unknown"
 
 
@@ -69,11 +72,15 @@ class FileInfo:
         ext = Path(self.path).suffix.lower()
         type_map = {
             ".docx": TaskType.WORD,
-            ".doc": TaskType.WORD,
             ".pptx": TaskType.PPT,
-            ".ppt": TaskType.PPT,
             ".xlsx": TaskType.EXCEL,
-            ".xls": TaskType.EXCEL,
+            ".csv": TaskType.EXCEL,
+            ".pdf": TaskType.PDF,
+            ".txt": TaskType.TEXT,
+            ".md": TaskType.TEXT,
+            ".png": TaskType.IMAGE,
+            ".jpg": TaskType.IMAGE,
+            ".jpeg": TaskType.IMAGE,
         }
         self.file_type = type_map.get(ext, TaskType.UNKNOWN)
 
@@ -95,9 +102,11 @@ class ParagraphConfig:
     """段落配置"""
     alignment: Alignment = Alignment.JUSTIFY  # 对齐方式
     line_spacing: float = 1.25      # 行距倍数
+    line_spacing_rule: str = "multiple"  # multiple/exactly（固定磅值）
     space_before: float = 0.0       # 段前距（磅）
     space_after: float = 0.0        # 段后距（磅）
     first_line_indent: float = 0.0  # 首行缩进（磅）
+    first_line_indent_chars: float = 0.0  # 首行缩进（字符，按当前字号换算）
     hanging_indent: float = 0.0     # 悬挂缩进（磅）
 
 
@@ -113,6 +122,7 @@ class HeadingConfig:
 @dataclass
 class TableConfig:
     """表格配置"""
+    three_line: bool = True          # 是否应用三线表
     top_border: float = 1.5         # 顶部边框（磅）
     middle_border: float = 0.75     # 中间边框（磅）
     bottom_border: float = 1.5      # 底部边框（磅）
@@ -147,7 +157,7 @@ class FormatConfig:
     body_paragraph: ParagraphConfig = field(default_factory=lambda: ParagraphConfig(
         alignment=Alignment.JUSTIFY,
         line_spacing=1.25,
-        first_line_indent=24.0,  # 首行缩进2字符
+        first_line_indent_chars=2.0,
     ))
     headings: dict[int, HeadingConfig] = field(default_factory=dict)
     table_config: TableConfig = field(default_factory=TableConfig)

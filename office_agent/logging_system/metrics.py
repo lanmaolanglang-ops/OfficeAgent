@@ -161,9 +161,13 @@ class MetricsRegistry:
     def render_prometheus(self) -> str:
         """导出 Prometheus 文本格式"""
         lines = []
+        with self._lock:
+            counters = list(self._counters.values())
+            gauges = list(self._gauges.values())
+            histograms = list(self._histograms.values())
 
         # Counters
-        for counter in self._counters.values():
+        for counter in counters:
             if counter.description:
                 lines.append(f"# HELP {counter.name} {counter.description}")
             lines.append(f"# TYPE {counter.name} counter")
@@ -175,7 +179,7 @@ class MetricsRegistry:
                     lines.append(f"{counter.name} {value}")
 
         # Gauges
-        for gauge in self._gauges.values():
+        for gauge in gauges:
             if gauge.description:
                 lines.append(f"# HELP {gauge.name} {gauge.description}")
             lines.append(f"# TYPE {gauge.name} gauge")
@@ -187,7 +191,7 @@ class MetricsRegistry:
                     lines.append(f"{gauge.name} {value}")
 
         # Histograms
-        for hist in self._histograms.values():
+        for hist in histograms:
             if hist.description:
                 lines.append(f"# HELP {hist.name} {hist.description}")
             lines.append(f"# TYPE {hist.name} histogram")
@@ -207,20 +211,24 @@ class MetricsRegistry:
     def get_summary(self) -> dict:
         """获取指标摘要（JSON格式）"""
         result = {"counters": {}, "gauges": {}, "histograms": {}}
+        with self._lock:
+            counters = list(self._counters.items())
+            gauges = list(self._gauges.items())
+            histograms = list(self._histograms.items())
 
-        for name, counter in self._counters.items():
+        for name, counter in counters:
             result["counters"][name] = {
                 "description": counter.description,
                 "values": [{"labels": l, "value": v} for l, v in counter.collect()],
             }
 
-        for name, gauge in self._gauges.items():
+        for name, gauge in gauges:
             result["gauges"][name] = {
                 "description": gauge.description,
                 "values": [{"labels": l, "value": v} for l, v in gauge.collect()],
             }
 
-        for name, hist in self._histograms.items():
+        for name, hist in histograms:
             result["histograms"][name] = {
                 "description": hist.description,
                 "values": [{"labels": l, **d} for l, d in hist.collect()],

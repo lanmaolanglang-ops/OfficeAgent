@@ -29,6 +29,9 @@ class SkillRepository(BaseRepository[Skill]):
         return self.create(skill)
 
     def increment_usage(self, skill_id: str):
-        skill = self.get_by_id(skill_id)
-        if skill:
-            self.update(skill_id, {"usage_count": skill.usage_count + 1})
+        from sqlalchemy import update
+        return self.session.execute(
+            update(Skill).where(Skill.id == skill_id)
+            .values(usage_count=Skill.usage_count + 1)
+            .execution_options(synchronize_session="fetch")
+        ).rowcount

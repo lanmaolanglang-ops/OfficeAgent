@@ -14,9 +14,11 @@ API文档：
 """
 import os
 import sys
-import logging
+import asyncio
+from contextlib import asynccontextmanager
+from contextlib import suppress
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse, JSONResponse
 
@@ -37,7 +39,8 @@ from office_agent.database import init_db as db_init, DATABASE_URL
 from office_agent.logging_system import setup_logging, get_logger
 setup_logging(
     log_level=os.environ.get("LOG_LEVEL", "INFO"),
-    log_dir=os.environ.get("LOG_DIR", os.path.expanduser("~/.office_agent/logs")),
+    log_dir=(os.environ.get("LOG_DIR") or os.environ.get("OFFICE_AGENT_LOG_DIR")
+             or os.path.expanduser("~/.office_agent/logs")),
     enable_db_logging=os.environ.get("ENABLE_DATABASE_LOG", "true").lower() == "true",
     enable_file_logging=True,
 )
@@ -49,6 +52,14 @@ settings.ensure_dirs()
 
 def create_app() -> FastAPI:
     """创建 FastAPI 应用"""
+    @asynccontextmanager
+    async def lifespan(app_instance: FastAPI):
+        await app_instance.state.startup_handler()
+        try:
+            yield
+        finally:
+            await app_instance.state.shutdown_handler()
+
     app = FastAPI(
         title=settings.title,
         description=settings.description,
@@ -62,6 +73,7 @@ def create_app() -> FastAPI:
         license_info={
             "name": "Internal",
         },
+        lifespan=lifespan,
     )
 
     # CORS
@@ -79,9 +91,11 @@ def create_app() -> FastAPI:
         RequestLoggingMiddleware, ErrorHandlingMiddleware,
     )
     from office_agent.api.middleware.rate_limit import RateLimitMiddleware
-    app.add_middleware(RateLimitMiddleware)
+    from office_agent.api.middleware.local_guard import LocalGuardMiddleware
     app.add_middleware(ErrorHandlingMiddleware)
     app.add_middleware(RequestLoggingMiddleware)
+    app.add_middleware(RateLimitMiddleware)
+    app.add_middleware(LocalGuardMiddleware)
     app.add_middleware(AuthMiddleware)
 
     # 注册异常处理器
@@ -112,8 +126,9 @@ def create_app() -> FastAPI:
 
     # 日志查询端点
     @app.get("/api/logs/executions", summary="查询执行日志", tags=["监控"])
-    async def get_execution_logs(task_id: str = None, request_id: str = None,
-                                 agent: str = None, limit: int = 100):
+    def get_execution_logs(task_id: str = None, request_id: str = None,
+                           agent: str = None,
+                           limit: int = Query(default=100, ge=1, le=1000)):
         from office_agent.database.session import SessionLocal
         from office_agent.database.repository import ExecutionLogRepository
         session = SessionLocal()
@@ -126,17 +141,17 @@ def create_app() -> FastAPI:
             elif agent:
                 logs = repo.get_by_agent(agent, limit=limit)
             else:
-                logs = repo.find(limit=limit, _order="-created_at")
+                logs = repo.find(limit=limit, order_by="created_at", descending=True)
             return JSONResponse(content={
                 "success": True,
-                "data": [_exec_log_to_dict(l) for l in logs[:limit]],
+                "data": [_exec_log_to_dict(log) for log in logs[:limit]],
             })
         finally:
             session.close()
 
     @app.get("/api/logs/models", summary="查询模型调用日志", tags=["监控"])
-    async def get_model_logs(task_id: str = None, model: str = None,
-                             limit: int = 100):
+    def get_model_logs(task_id: str = None, model: str = None,
+                       limit: int = Query(default=100, ge=1, le=1000)):
         from office_agent.database.session import SessionLocal
         from office_agent.database.repository import ModelCallLogRepository
         session = SessionLocal()
@@ -147,16 +162,17 @@ def create_app() -> FastAPI:
             elif model:
                 logs = repo.get_by_model(model, limit=limit)
             else:
-                logs = repo.find(limit=limit, _order="-created_at")
+                logs = repo.find(limit=limit, order_by="created_at", descending=True)
             return JSONResponse(content={
                 "success": True,
-                "data": [_model_log_to_dict(l) for l in logs[:limit]],
+                "data": [_model_log_to_dict(log) for log in logs[:limit]],
             })
         finally:
             session.close()
 
     @app.get("/api/logs/errors", summary="查询错误日志", tags=["监控"])
-    async def get_error_logs(limit: int = 100, resolved: bool = None):
+    def get_error_logs(limit: int = Query(default=100, ge=1, le=1000),
+                       resolved: bool = None):
         from office_agent.database.session import SessionLocal
         from office_agent.database.repository import ErrorLogRepository
         session = SessionLocal()
@@ -165,13 +181,13 @@ def create_app() -> FastAPI:
             logs = repo.get_recent(limit=limit, resolved=resolved)
             return JSONResponse(content={
                 "success": True,
-                "data": [_error_log_to_dict(l) for l in logs],
+                "data": [_error_log_to_dict(log) for log in logs],
             })
         finally:
             session.close()
 
     @app.get("/api/logs/stats", summary="日志统计", tags=["监控"])
-    async def get_log_stats(hours: int = 24):
+    def get_log_stats(hours: int = Query(default=24, ge=1, le=24 * 365)):
         from office_agent.database.session import SessionLocal
         from office_agent.database.repository import (
             ExecutionLogRepository, ModelCallLogRepository, ErrorLogRepository,
@@ -190,7 +206,7 @@ def create_app() -> FastAPI:
             session.close()
 
     @app.get("/api/trace/{trace_id}", summary="查询调用链", tags=["监控"])
-    async def get_trace(trace_id: str):
+    def get_trace(trace_id: str):
         from office_agent.database.session import SessionLocal
         from office_agent.database.repository import ExecutionLogRepository
         session = SessionLocal()
@@ -207,15 +223,57 @@ def create_app() -> FastAPI:
         finally:
             session.close()
 
-    @app.on_event("startup")
     async def on_startup():
+        # 桌面模式下写 PID 文件：Tauri 端遇到"端口被占但健康检查失败"的
+        # 僵死后端时，可凭该文件识别并接管（仅限本应用进程）
+        import sys as _sys
+        if os.environ.get("OFFICE_AGENT_LOCAL") == "1" or getattr(_sys, "frozen", False):
+            try:
+                from pathlib import Path as _Path
+                pid_path = _Path(os.environ.get("OFFICE_AGENT_DATA_DIR")
+                                 or os.path.expanduser("~/.office_agent")) / "backend.pid"
+                pid_path.parent.mkdir(parents=True, exist_ok=True)
+                pid_path.write_text(str(os.getpid()), encoding="utf-8")
+                app.state._pid_file = str(pid_path)
+                logger.info(f"Backend PID 文件: {pid_path} (pid={os.getpid()})")
+            except Exception as e:
+                logger.warning(f"PID 文件写入失败: {e}")
+
         # 初始化数据库
         try:
             db_init(drop_all=False)
+            app.state.database_ready = True
             logger.info(f"数据库: {DATABASE_URL}")
         except Exception as e:
-            # 无内存模式：数据库不可用会导致后续所有查询失败，必须清晰告警
+            app.state.database_ready = False
             logger.error(f"数据库初始化失败，数据访问将不可用: {e}", exc_info=True)
+
+        # 数据库是任务队列与配置系统的前置条件。失败时保持健康端点可用，
+        # 但不启动会持续写库失败的 Worker/调度器。
+        if not app.state.database_ready:
+            logger.error("以 degraded 模式启动：Worker 与定时调度器未启动")
+            return
+
+        async def security_maintenance():
+            from office_agent.security.auth import TokenManager
+            from office_agent.security import get_audit_logger
+            while True:
+                await asyncio.sleep(3600)
+                await asyncio.to_thread(TokenManager().cleanup_expired)
+                await asyncio.to_thread(get_audit_logger().cleanup_expired, 90)
+
+        try:
+            from office_agent.security.auth import TokenManager
+            from office_agent.security import get_audit_logger
+            token_manager = TokenManager()
+            token_manager.import_legacy_api_keys(settings.api_keys)
+            token_manager.cleanup_expired()
+            get_audit_logger().cleanup_expired(90)
+            app.state.security_maintenance_task = asyncio.create_task(
+                security_maintenance(), name="security-maintenance"
+            )
+        except Exception as e:
+            logger.error("安全状态初始化失败: %s", e, exc_info=True)
 
         # 回收异常中断的任务（进程上次退出时未完成的任务）
         try:
@@ -246,8 +304,10 @@ def create_app() -> FastAPI:
             config = get_config(session_factory=SessionLocal)
             config.initialize(strict=False)
             gc = config.global_config
-            logger.info(f"配置系统: {len(config._models)} 模型, {len(config._agents)} Agent, "
-                        f"{len(config._prompts)} Prompt组, 默认模型={gc.default_model}")
+            summary = config.get_summary()
+            logger.info("配置系统: %s 模型, %s Agent, %s Prompt组, 默认模型=%s",
+                        summary["models"], summary["agents"], summary["prompt_groups"],
+                        gc.default_model)
         except Exception as e:
             logger.warning(f"配置系统初始化失败: {e}", exc_info=True)
 
@@ -255,6 +315,7 @@ def create_app() -> FastAPI:
         try:
             from office_agent.task_queue import init_worker
             init_worker()
+            app.state.worker_started = True
             logger.info("任务队列: local 线程池模式")
         except Exception as e:
             logger.warning(f"任务队列初始化失败: {e}", exc_info=True)
@@ -263,6 +324,7 @@ def create_app() -> FastAPI:
         try:
             from office_agent.task_queue.scheduler import start_scheduler
             start_scheduler()
+            app.state.scheduler_started = True
             logger.info("定时调度器: 已启动")
         except Exception as e:
             logger.warning(f"定时调度器启动失败: {e}", exc_info=True)
@@ -275,9 +337,37 @@ def create_app() -> FastAPI:
         logger.info(f"认证: {'开启' if settings.auth_enabled else '关闭'}")
         logger.info("=" * 60)
 
-    @app.on_event("shutdown")
     async def on_shutdown():
+        maintenance_task = getattr(app.state, "security_maintenance_task", None)
+        if maintenance_task is not None:
+            maintenance_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await maintenance_task
+        if getattr(app.state, "scheduler_started", False):
+            try:
+                from office_agent.task_queue.scheduler import scheduler
+                scheduler.stop()
+            except Exception:
+                logger.warning("定时调度器关闭失败", exc_info=True)
+        if getattr(app.state, "worker_started", False):
+            try:
+                from office_agent.task_queue import get_worker
+                get_worker().shutdown(wait=False)
+            except Exception:
+                logger.warning("任务 Worker 关闭失败", exc_info=True)
+        pid_file = getattr(app.state, "_pid_file", None)
+        if pid_file:
+            try:
+                os.remove(pid_file)
+            except OSError:
+                pass
         logger.info("Office Agent API 已关闭")
+
+    app.state.startup_handler = on_startup
+    app.state.shutdown_handler = on_shutdown
+    app.state.database_ready = False
+    app.state.worker_started = False
+    app.state.scheduler_started = False
 
     return app
 

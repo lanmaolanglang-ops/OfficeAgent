@@ -7,6 +7,7 @@ Excel Quality Scorer - Excel表格质量评分引擎
 3. 图表合理性 (chart_appropriateness): 图表类型选择、数据范围、标签
 """
 import os
+import re
 from typing import Dict, List, Any, Optional
 from dataclasses import dataclass, field
 
@@ -175,11 +176,13 @@ class ExcelQualityScorer:
                         if func_name:
                             formula_types_found.add(func_name)
 
-                        # 检查计算结果是否有错误
+                        # 检查计算结果和公式文本。openpyxl 不会计算公式，
+                        # 自产文件通常没有缓存值，因此必须做静态错误检查。
                         data_val = cell_data.value
-                        has_error = False
+                        has_error = self._has_static_formula_error(formula)
                         if isinstance(data_val, str) and data_val.startswith("#"):
                             has_error = True
+                        if has_error:
                             formula_errors += 1
 
                         sheet_info["formulas"].append({
@@ -242,6 +245,18 @@ class ExcelQualityScorer:
                 "chart_types": chart_types,
             },
         }
+
+    @staticmethod
+    def _has_static_formula_error(formula: str) -> bool:
+        upper = formula.upper()
+        if any(token in upper for token in (
+            "#REF!", "#DIV/0!", "#VALUE!", "#N/A", "#NAME?", "#NUM!", "#NULL!"
+        )):
+            return True
+        # 明确的常量除零可在没有 Excel 计算引擎时可靠判定。
+        if re.search(r"/\s*(?:0+(?:\.0*)?)\s*(?:[+\-*/^),]|$)", formula):
+            return True
+        return False
 
     def _extract_function_name(self, formula: str) -> Optional[str]:
         """从公式中提取函数名"""
@@ -370,11 +385,11 @@ class ExcelQualityScorer:
                 if any(exp_lower in ct or ct in exp_lower for ct in chart_types_lower):
                     matched += 1
                 # 中文匹配
-                elif "bar" in chart_types_lower and "柱" in exp:
+                elif any("bar" in chart_type for chart_type in chart_types_lower) and "柱" in exp:
                     matched += 1
-                elif "line" in chart_types_lower and "线" in exp:
+                elif any("line" in chart_type for chart_type in chart_types_lower) and "线" in exp:
                     matched += 1
-                elif "pie" in chart_types_lower and "饼" in exp:
+                elif any("pie" in chart_type for chart_type in chart_types_lower) and "饼" in exp:
                     matched += 1
             match_rate = matched / len(expected_charts) if expected_charts else 0
             score += match_rate * 20

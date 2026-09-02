@@ -121,11 +121,8 @@ class QualityScoringEngine:
     # 文件扩展名映射
     EXT_MAP = {
         ".docx": "word",
-        ".doc": "word",
         ".pptx": "ppt",
-        ".ppt": "ppt",
         ".xlsx": "excel",
-        ".xls": "excel",
     }
 
     # 维度名称

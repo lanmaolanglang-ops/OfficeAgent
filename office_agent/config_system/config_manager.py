@@ -7,18 +7,17 @@
 - 热更新
 - 运行时查询
 """
-import os
 import json
+import re
 import threading
 import time
 from typing import Dict, List, Optional, Any, Callable
 
 from .schemas import (
-    GlobalConfig, ModelConfigSchema, AgentConfigSchema,
-    PromptConfigSchema, SkillConfigSchema, WorkflowConfigSchema,
+    GlobalConfig,
 )
 from .loaders import EnvLoader, YamlLoader, DatabaseLoader, deep_merge
-from .validators import validate_all, Severity
+from .validators import validate_all
 from ..logging_system import get_logger
 
 logger = get_logger("config.manager")
@@ -230,6 +229,16 @@ class ConfigManager:
     def global_config(self) -> GlobalConfig:
         return self._global_config or GlobalConfig()
 
+    def get_summary(self) -> Dict[str, int]:
+        """返回配置数量摘要，避免启动与监控代码访问私有缓存。"""
+        return {
+            "models": len(self._models),
+            "agents": len(self._agents),
+            "prompt_groups": len(self._prompts),
+            "skills": len(self._skills),
+            "workflows": len(self._workflows),
+        }
+
     def get_model(self, model_id: str) -> Optional[Dict]:
         """获取模型配置"""
         return self._models.get(model_id)
@@ -322,14 +331,16 @@ class ConfigManager:
 
     def update_model(self, model_id: str, data: Dict) -> Dict:
         """更新模型配置并持久化"""
-        self._models[model_id] = {**self._models.get(model_id, {}), **data, "model_id": model_id}
-        self._persist_model(model_id, self._models[model_id])
+        candidate = {**self._models.get(model_id, {}), **data, "model_id": model_id}
+        self._persist_model(model_id, candidate)
+        self._models[model_id] = candidate
         self._notify_listeners("model", model_id)
         return self._models[model_id]
 
     def update_agent(self, agent_name: str, data: Dict) -> Dict:
-        self._agents[agent_name] = {**self._agents.get(agent_name, {}), **data, "agent_name": agent_name}
-        self._persist_agent(agent_name, self._agents[agent_name])
+        candidate = {**self._agents.get(agent_name, {}), **data, "agent_name": agent_name}
+        self._persist_agent(agent_name, candidate)
+        self._agents[agent_name] = candidate
         self._notify_listeners("agent", agent_name)
         return self._agents[agent_name]
 
@@ -337,32 +348,57 @@ class ConfigManager:
                       set_default: bool = False) -> Dict:
         """更新/新增 Prompt 版本"""
         import uuid
-        new_version = version or f"1.{int(time.time()) % 10000}"
+        if version:
+            new_version = version
+        else:
+            numeric_versions = []
+            for item in self._prompts.get(name, []):
+                match = re.fullmatch(r"(\d+)\.(\d+)(?:\.(\d+))?", str(item.get("version", "")))
+                if match:
+                    numeric_versions.append(tuple(int(v or 0) for v in match.groups()))
+            if numeric_versions:
+                major, minor, patch = max(numeric_versions)
+                new_version = f"{major}.{minor}.{patch + 1}"
+            else:
+                new_version = "1.0.0"
+
+        existing = next(
+            (item for item in self._prompts.get(name, [])
+             if item.get("version") == new_version),
+            None,
+        )
         prompt = {
-            "id": f"prm_{uuid.uuid4().hex[:12]}",
+            "id": existing.get("id") if existing else f"prm_{uuid.uuid4().hex[:12]}",
             "name": name,
             "version": new_version,
             "content": content,
             "status": "active",
-            "is_default": set_default,
+            "is_default": bool(set_default or (existing and existing.get("is_default"))),
         }
-        self._prompts.setdefault(name, []).append(prompt)
+        # 先持久化；失败时不污染内存缓存，也不会向监听器宣告成功。
+        prompt = self._persist_prompt(prompt)
+        versions = self._prompts.setdefault(name, [])
+        if existing:
+            versions[versions.index(existing)] = prompt
+        else:
+            versions.append(prompt)
         if set_default:
-            for v in self._prompts[name]:
+            for v in versions:
                 v["is_default"] = (v is prompt)
-        self._persist_prompt(prompt)
         self._notify_listeners("prompt", name)
         return prompt
 
     def update_skill(self, skill_name: str, data: Dict) -> Dict:
-        self._skills[skill_name] = {**self._skills.get(skill_name, {}), **data, "skill_name": skill_name}
-        self._persist_skill(skill_name, self._skills[skill_name])
+        candidate = {**self._skills.get(skill_name, {}), **data, "skill_name": skill_name}
+        self._persist_skill(skill_name, candidate)
+        self._skills[skill_name] = candidate
         self._notify_listeners("skill", skill_name)
         return self._skills[skill_name]
 
     def update_workflow(self, name: str, data: Dict) -> Dict:
-        self._workflows[name] = {**self._workflows.get(name, {}), **data, "workflow_name": name}
-        self._persist_workflow(name, self._workflows[name])
+        candidate = {**self._workflows.get(name, {}), **data, "workflow_name": name}
+        self._persist_workflow(name, candidate)
+        self._workflows[name] = candidate
         self._notify_listeners("workflow", name)
         return self._workflows[name]
 
@@ -389,6 +425,7 @@ class ConfigManager:
     def _persist_model(self, model_id: str, data: Dict):
         if not self._session_factory:
             return
+        session = None
         try:
             from ..database.repository import ModelConfigRepository
             session = self._session_factory()
@@ -399,11 +436,15 @@ class ConfigManager:
             finally:
                 session.close()
         except Exception as e:
-            logger.warning(f"持久化模型配置失败: {e}")
+            if session is not None:
+                session.rollback()
+            logger.error(f"持久化模型配置失败: {e}")
+            raise RuntimeError("模型配置持久化失败，配置未更新") from e
 
     def _persist_agent(self, name: str, data: Dict):
         if not self._session_factory:
             return
+        session = None
         try:
             from ..database.repository import AgentConfigRepository
             session = self._session_factory()
@@ -414,37 +455,56 @@ class ConfigManager:
             finally:
                 session.close()
         except Exception as e:
-            logger.warning(f"持久化 Agent 配置失败: {e}")
+            if session is not None:
+                session.rollback()
+            logger.error(f"持久化 Agent 配置失败: {e}")
+            raise RuntimeError("Agent 配置持久化失败，配置未更新") from e
 
-    def _persist_prompt(self, data: Dict):
+    def _persist_prompt(self, data: Dict) -> Dict:
         if not self._session_factory:
-            return
+            return data
+        session = None
         try:
             from ..database.repository import PromptConfigRepository
             session = self._session_factory()
             try:
                 repo = PromptConfigRepository(session)
                 from ..database.models.config import PromptConfig
-                db_obj = PromptConfig(
-                    id=data.get("id"),
-                    name=data["name"],
-                    version=data["version"],
-                    content=data["content"],
-                    status=data.get("status", "active"),
-                    is_default=data.get("is_default", False),
-                    variables=json.dumps(data.get("variables", [])),
-                    agent=data.get("agent"),
+                matches = [
+                    item for item in repo.list_versions(data["name"])
+                    if item.version == data["version"]
+                ]
+                db_obj = matches[0] if matches else PromptConfig(
+                    id=data.get("id"), name=data["name"], version=data["version"]
                 )
-                session.add(db_obj)
+                if not matches:
+                    session.add(db_obj)
+                db_obj.content = data["content"]
+                db_obj.status = data.get("status", "active")
+                db_obj.is_default = data.get("is_default", False)
+                db_obj.variables = json.dumps(data.get("variables", []))
+                db_obj.agent = data.get("agent")
+                if data.get("is_default", False):
+                    for item in repo.list_versions(data["name"]):
+                        if item is not db_obj:
+                            item.is_default = False
                 session.commit()
+                persisted = dict(data)
+                persisted["id"] = db_obj.id
+                return persisted
+            except Exception:
+                session.rollback()
+                raise
             finally:
                 session.close()
         except Exception as e:
-            logger.warning(f"持久化 Prompt 失败: {e}")
+            logger.error(f"持久化 Prompt 失败: {e}")
+            raise RuntimeError("Prompt 持久化失败，配置未更新") from e
 
     def _persist_skill(self, name: str, data: Dict):
         if not self._session_factory:
             return
+        session = None
         try:
             from ..database.repository import SkillConfigRepository
             session = self._session_factory()
@@ -457,15 +517,34 @@ class ConfigManager:
                     existing.tools = json.dumps(data.get("tools", []))
                     existing.enabled = data.get("enabled", True)
                     existing.parameters = json.dumps(data.get("parameters", {}), ensure_ascii=False)
-                    session.commit()
+                else:
+                    repo.create_from_dict({
+                        "skill_name": name,
+                        "description": data.get("description", ""),
+                        "version": data.get("version", "1.0.0"),
+                        "workflow": json.dumps(data.get("workflow", []), ensure_ascii=False),
+                        "tools": json.dumps(data.get("tools", []), ensure_ascii=False),
+                        "prompt": data.get("prompt"),
+                        "trigger_keywords": json.dumps(data.get("trigger_keywords", []), ensure_ascii=False),
+                        "trigger_patterns": json.dumps(data.get("trigger_patterns", []), ensure_ascii=False),
+                        "parameters": json.dumps(data.get("parameters", {}), ensure_ascii=False),
+                        "enabled": data.get("enabled", True),
+                        "tags": json.dumps(data.get("tags", []), ensure_ascii=False),
+                        "config_json": json.dumps(data.get("extra", {}), ensure_ascii=False),
+                    })
+                session.commit()
             finally:
                 session.close()
         except Exception as e:
-            logger.warning(f"持久化 Skill 配置失败: {e}")
+            if session is not None:
+                session.rollback()
+            logger.error(f"持久化 Skill 配置失败: {e}")
+            raise RuntimeError("Skill 配置持久化失败，配置未更新") from e
 
     def _persist_workflow(self, name: str, data: Dict):
         if not self._session_factory:
             return
+        session = None
         try:
             from ..database.repository import WorkflowConfigRepository
             session = self._session_factory()
@@ -476,11 +555,28 @@ class ConfigManager:
                     existing.steps = json.dumps(data.get("steps", []), ensure_ascii=False)
                     existing.description = data.get("description", "")
                     existing.enabled = data.get("enabled", True)
-                    session.commit()
+                else:
+                    repo.create_from_dict({
+                        "workflow_name": name,
+                        "description": data.get("description", ""),
+                        "version": data.get("version", "1.0.0"),
+                        "steps": json.dumps(data.get("steps", []), ensure_ascii=False),
+                        "input_schema": json.dumps(data.get("input_schema", {}), ensure_ascii=False),
+                        "output_schema": json.dumps(data.get("output_schema", {}), ensure_ascii=False),
+                        "timeout": data.get("timeout", 600),
+                        "max_concurrency": data.get("max_concurrency", 1),
+                        "enabled": data.get("enabled", True),
+                        "tags": json.dumps(data.get("tags", []), ensure_ascii=False),
+                        "config_json": json.dumps(data.get("extra", {}), ensure_ascii=False),
+                    })
+                session.commit()
             finally:
                 session.close()
         except Exception as e:
-            logger.warning(f"持久化工作流配置失败: {e}")
+            if session is not None:
+                session.rollback()
+            logger.error(f"持久化工作流配置失败: {e}")
+            raise RuntimeError("工作流配置持久化失败，配置未更新") from e
 
     def export_all(self) -> Dict:
         """导出所有配置"""

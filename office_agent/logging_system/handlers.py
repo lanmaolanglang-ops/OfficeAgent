@@ -12,6 +12,7 @@ import threading
 from typing import Optional
 
 from .formatter import JsonFormatter, HumanReadableFormatter
+from .background import submit as submit_background
 
 
 def create_console_handler(level: int = logging.DEBUG,
@@ -83,10 +84,13 @@ class DatabaseLogHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord):
         try:
+            if getattr(record, "skip_db_log", False):
+                return
+            from .context import get_context_dict
+            record.office_agent_context = get_context_dict()
             if self.async_write:
-                t = threading.Thread(target=self._write_to_db,
-                                     args=(record,), daemon=True)
-                t.start()
+                if not submit_background(self._write_to_db, record):
+                    self.handleError(record)
             else:
                 self._write_to_db(record)
         except Exception:
@@ -102,8 +106,7 @@ class DatabaseLogHandler(logging.Handler):
 
             session = SessionLocal()
             try:
-                from .context import get_context_dict
-                ctx = get_context_dict()
+                ctx = getattr(record, "office_agent_context", {})
 
                 stack_trace = None
                 if record.exc_info:
@@ -141,7 +144,7 @@ class ModelCallLogHandler(logging.Handler):
     """
     模型调用日志处理器
 
-    捕获 logger 以 "model." 开头的日志，写入 ModelCallLog 表。
+    捕获 logger 以 "office_agent.model." 开头的日志，写入 ModelCallLog 表。
     """
 
     def __init__(self):
@@ -149,12 +152,12 @@ class ModelCallLogHandler(logging.Handler):
         self._lock = threading.Lock()
 
     def emit(self, record: logging.LogRecord):
-        if not record.name.startswith("model."):
+        if not record.name.startswith("office_agent.model."):
             return
         try:
-            t = threading.Thread(target=self._write_to_db,
-                                 args=(record,), daemon=True)
-            t.start()
+            from .context import get_context_dict
+            record.office_agent_context = get_context_dict()
+            submit_background(self._write_to_db, record)
         except Exception:
             pass
 
@@ -166,8 +169,7 @@ class ModelCallLogHandler(logging.Handler):
 
             session = SessionLocal()
             try:
-                from .context import get_context_dict
-                ctx = get_context_dict()
+                ctx = getattr(record, "office_agent_context", {})
 
                 data = getattr(record, "model_data", None)
                 if not data:

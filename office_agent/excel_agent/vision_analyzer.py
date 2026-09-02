@@ -518,20 +518,36 @@ class ExcelVisionAnalyzer:
                     return text[start:i+1]
         return ""
 
+    @staticmethod
+    def _to_int(data: dict, key: str, default: int) -> int:
+        """LLM 数值字段宽容解析（"约100行" → 100，解析失败用默认值）"""
+        import re as _re
+        raw = data.get(key, default)
+        if isinstance(raw, bool) or raw is None:
+            return default
+        if isinstance(raw, (int, float)):
+            return int(raw)
+        m = _re.search(r"-?\d+", str(raw))
+        return int(m.group()) if m else default
+
     def _build_table(self, data: dict) -> RecognizedTable:
         """从解析的数据构建 RecognizedTable"""
+        try:
+            confidence = float(data.get("table_type_confidence", 0.5))
+        except (TypeError, ValueError):
+            confidence = 0.5
         table = RecognizedTable(
-            title=data.get("title", ""),
-            table_type=data.get("table_type", "unknown"),
-            table_type_confidence=float(data.get("table_type_confidence", 0.5)),
-            description=data.get("description", ""),
-            data_row_count=int(data.get("data_row_count", 0)),
-            header_row=int(data.get("header_row", 1)),
-            data_start_row=int(data.get("data_start_row", 2)),
-            data_end_row=int(data.get("data_end_row", 0)),
+            title=data.get("title", "") or "",
+            table_type=data.get("table_type", "unknown") or "unknown",
+            table_type_confidence=confidence,
+            description=data.get("description", "") or "",
+            data_row_count=self._to_int(data, "data_row_count", 0),
+            header_row=self._to_int(data, "header_row", 1),
+            data_start_row=self._to_int(data, "data_start_row", 2),
+            data_end_row=self._to_int(data, "data_end_row", 0),
             has_total_row=bool(data.get("has_total_row", False)),
             has_merged_cells=bool(data.get("has_merged_cells", False)),
-            notes=data.get("notes", ""),
+            notes=data.get("notes", "") or "",
             sample_data=data.get("sample_data", []),
         )
 

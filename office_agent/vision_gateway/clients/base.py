@@ -5,12 +5,12 @@ import time
 import json
 import re
 from abc import ABC, abstractmethod
-from typing import Optional, List, Any
-from urllib import request, error
+from typing import List, Any
+from urllib import request
 
 from ..vision_models import (
     VisionRequest, VisionResponse, StructuredVisionResult,
-    TableData, ChartData, DetectedElement, ImageInput,
+    TableData, ChartData, DetectedElement,
 )
 
 
@@ -32,6 +32,8 @@ class BaseVisionClient(ABC):
 
     def _make_response(self, content: str, start_time: float,
                        tokens: int = 0, raw: Any = None) -> VisionResponse:
+        if not isinstance(content, str) or not content.strip():
+            return self._make_error("模型返回空内容", start_time)
         return VisionResponse(
             success=True,
             content=content,
@@ -77,7 +79,7 @@ class BaseVisionClient(ABC):
                 if isinstance(data, dict):
                     self._fill_structured(result, data)
                     return result
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, TypeError, ValueError, AttributeError):
                 pass
 
         # 提取表格（markdown 表格）
@@ -91,7 +93,7 @@ class BaseVisionClient(ABC):
     def _extract_json(self, text: str) -> str:
         """从文本中提取 JSON（处理嵌套花括号）"""
         # 去掉 markdown 代码块标记
-        text = re.sub(r'```(?:json)?\s*', '', text)
+        text = re.sub(r'```(?:json)?\s*', '', text, flags=re.IGNORECASE)
         text = re.sub(r'\s*```', '', text)
 
         # 找到第一个 { 或 [
@@ -104,16 +106,30 @@ class BaseVisionClient(ABC):
         if start < 0:
             return ""
 
-        # 括号匹配找到结束位置
-        open_ch = text[start]
-        close_ch = '}' if open_ch == '{' else ']'
-        depth = 0
+        # 使用栈并感知字符串与转义，避免 JSON 字符串里的 {}[] 干扰边界。
+        pairs = {'}': '{', ']': '['}
+        stack = []
+        in_string = False
+        escaped = False
         for i in range(start, len(text)):
-            if text[i] == open_ch:
-                depth += 1
-            elif text[i] == close_ch:
-                depth -= 1
-                if depth == 0:
+            ch = text[i]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif ch == '\\':
+                    escaped = True
+                elif ch == '"':
+                    in_string = False
+                continue
+            if ch == '"':
+                in_string = True
+            elif ch in '{[':
+                stack.append(ch)
+            elif ch in '}]':
+                if not stack or stack[-1] != pairs[ch]:
+                    return ""
+                stack.pop()
+                if not stack:
                     return text[start:i+1]
 
         return ""
@@ -156,10 +172,17 @@ class BaseVisionClient(ABC):
         # 元素
         if "elements" in data and isinstance(data["elements"], list):
             for el in data["elements"]:
+                if not isinstance(el, dict):
+                    continue
+                confidence = el.get("confidence", 0)
+                try:
+                    confidence = float(confidence) if confidence is not None else 0.0
+                except (TypeError, ValueError):
+                    confidence = 0.0
                 elem = DetectedElement(
                     element_type=el.get("type", ""),
                     content=el.get("content", ""),
-                    confidence=float(el.get("confidence", 0)),
+                    confidence=confidence,
                     bbox=el.get("bbox", []),
                 )
                 result.elements.append(elem)
@@ -176,12 +199,20 @@ class BaseVisionClient(ABC):
         while i < len(lines):
             if "|" in lines[i] and i + 1 < len(lines) and re.match(r'^[\s|:-]+$', lines[i + 1]):
                 # 找到表格开始
+                def split_row(line: str) -> List[str]:
+                    stripped = line.strip()
+                    if stripped.startswith("|"):
+                        stripped = stripped[1:]
+                    if stripped.endswith("|"):
+                        stripped = stripped[:-1]
+                    return [cell.strip() for cell in stripped.split("|")]
+
                 header_line = lines[i].strip()
-                headers = [c.strip() for c in header_line.split("|") if c.strip()]
+                headers = split_row(header_line)
                 data_rows = []
                 j = i + 2
                 while j < len(lines) and "|" in lines[j]:
-                    row = [c.strip() for c in lines[j].strip().split("|") if c.strip()]
+                    row = split_row(lines[j])
                     if row:
                         data_rows.append(row)
                     j += 1

@@ -58,6 +58,9 @@ class TokenBucket:
 class SlidingWindowLimiter:
     """滑动窗口限流器"""
 
+    # 最多跟踪的独立身份（防伪造 X-API-Key / 海量 IP 撑爆内存）
+    MAX_IDENTITIES = 10000
+
     def __init__(self, max_requests: int, window_seconds: int = 60):
         self.max_requests = max_requests
         self.window_seconds = window_seconds
@@ -69,6 +72,17 @@ class SlidingWindowLimiter:
             now = time.time()
             window_start = now - self.window_seconds
             if identifier not in self._requests:
+                # 身份表有界：优先淘汰已过期窗口，其次淘汰最旧的活跃身份
+                if len(self._requests) >= self.MAX_IDENTITIES:
+                    stale = [k for k, w in self._requests.items()
+                             if not w or w[-1] < window_start]
+                    for k in stale:
+                        del self._requests[k]
+                    if len(self._requests) >= self.MAX_IDENTITIES:
+                        oldest = sorted(self._requests.items(),
+                                        key=lambda kv: kv[1][0] if kv[1] else 0)
+                        for k, _ in oldest[: len(self._requests) // 10]:
+                            del self._requests[k]
                 self._requests[identifier] = deque()
             window = self._requests[identifier]
             while window and window[0] < window_start:

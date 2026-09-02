@@ -42,11 +42,11 @@ Excel Quality Checker - Excel 质量检查与自动修复
 import re
 import statistics
 from pathlib import Path
-from typing import Optional, List, Dict, Tuple, Any
+from typing import List
 from dataclasses import dataclass, field
 
 from openpyxl import load_workbook
-from openpyxl.styles import Font, PatternFill, Alignment, numbers
+from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter, column_index_from_string
 
 from .models import ExcelQualityIssue, DataProfile
@@ -140,7 +140,8 @@ class ExcelQualityChecker:
             return report
 
         try:
-            wb = load_workbook(file_path, data_only=False)
+            keep_vba = Path(file_path).suffix.lower() in (".xlsm", ".xltm")
+            wb = load_workbook(file_path, data_only=False, keep_vba=keep_vba)
         except Exception as e:
             report.issues.append(ExcelQualityIssue(
                 issue_type="file", severity="error",
@@ -148,12 +149,19 @@ class ExcelQualityChecker:
             ))
             self._calc_score(report)
             return report
+        self._chart_source_path = file_path
+        self._prepare_chart_inventory(file_path)
 
         for ws in wb.worksheets:
             sheet_issues = self._check_sheet(ws)
             report.issues.extend(sheet_issues)
 
         wb.close()
+
+        # 缓存错误值扫描：公式单元格的真实错误值（#REF!/#DIV/0! 等）只存在
+        # 于缓存值中，data_only=False 的结构检查看不到它们
+        report.issues.extend(self._check_cached_errors(file_path))
+
         self._calc_score(report)
         return report
 
@@ -170,7 +178,8 @@ class ExcelQualityChecker:
             return report
 
         try:
-            wb = load_workbook(file_path, data_only=False)
+            keep_vba = Path(file_path).suffix.lower() in (".xlsm", ".xltm")
+            wb = load_workbook(file_path, data_only=False, keep_vba=keep_vba)
         except Exception as e:
             report.issues.append(ExcelQualityIssue(
                 issue_type="file", severity="error",
@@ -179,6 +188,8 @@ class ExcelQualityChecker:
             self._calc_score(report)
             return report
 
+        self._chart_source_path = file_path
+        self._prepare_chart_inventory(file_path)
         for ws in wb.worksheets:
             # 先检查
             issues = self._check_sheet(ws)
@@ -188,7 +199,8 @@ class ExcelQualityChecker:
             report.fixed_count += fixed
 
         if output_path is None:
-            output_path = file_path.replace(".xlsx", "_fixed.xlsx")
+            source = Path(file_path)
+            output_path = str(source.with_name(f"{source.stem}_fixed{source.suffix}"))
 
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         wb.save(output_path)
@@ -325,29 +337,41 @@ class ExcelQualityChecker:
     def _check_formula_refs(self, ws, formula: str, cell_ref: str) -> List[ExcelQualityIssue]:
         """检查公式引用是否越界"""
         issues = []
-        max_row = ws.max_row
-        max_col = ws.max_column
-
-        # 提取单元格引用（如 A1, B2:C10）
-        cell_refs = re.findall(r'([A-Z]+)(\d+)(?::([A-Z]+)(\d+))?', formula)
-
-        for ref in cell_refs:
-            col_str, row_str, col2_str, row2_str = ref
+        reference_pattern = re.compile(
+            r"(?:(?:'((?:[^']|'')+)'|([A-Za-z_][\w .]*))!)?"
+            r"\$?([A-Z]{1,3})\$?(\d+)(?::\$?([A-Z]{1,3})\$?(\d+))?",
+            re.IGNORECASE,
+        )
+        for match in reference_pattern.finditer(formula):
+            quoted_sheet, plain_sheet, col_str, row_str, col2_str, row2_str = match.groups()
+            target_ws = ws
+            referenced_sheet = (quoted_sheet or plain_sheet or "").replace("''", "'")
+            if referenced_sheet:
+                try:
+                    target_ws = ws.parent[referenced_sheet]
+                except KeyError:
+                    issues.append(ExcelQualityIssue(
+                        sheet_name=ws.title, issue_type="formula", severity="error",
+                        message=f"公式引用了不存在的工作表 {referenced_sheet}",
+                        cell_ref=cell_ref, fixable=False,
+                    ))
+                    continue
             try:
-                col_num = column_index_from_string(col_str)
+                col_num = column_index_from_string(col_str.upper())
                 row_num = int(row_str)
-
-                if col_num > max_col or row_num > max_row:
-                    if "!" in formula:
-                        continue
+                end_col = column_index_from_string(col2_str.upper()) if col2_str else col_num
+                end_row = int(row2_str) if row2_str else row_num
+                if (col_num > target_ws.max_column or row_num > target_ws.max_row
+                        or end_col > target_ws.max_column or end_row > target_ws.max_row):
+                    display_ref = match.group(0)
                     issues.append(ExcelQualityIssue(
                         sheet_name=ws.title, issue_type="formula",
                         severity="warning",
-                        message=f"公式引用 {col_str}{row_str} 可能超出数据范围",
+                        message=f"公式引用 {display_ref} 可能超出数据范围",
                         cell_ref=cell_ref, fixable=False,
                     ))
-            except (ValueError, Exception):
-                pass
+            except ValueError:
+                continue
 
         return issues
 
@@ -425,7 +449,6 @@ class ExcelQualityChecker:
 
             null_count = 0
             total = 0
-            type_mismatch = 0
             has_number = False
             has_text_in_number_col = False
 
@@ -583,40 +606,88 @@ class ExcelQualityChecker:
 
         return issues
 
+    # 缓存值扫描上限：只读模式逐格扫大表开销大，限制每表规模
+    _CACHED_SCAN_MAX_ROWS = 5000
+
+    def _check_cached_errors(self, file_path: str) -> List[ExcelQualityIssue]:
+        """以 data_only=True 重开文件，捕获公式计算后的真实错误值。"""
+        issues = []
+        try:
+            wb = load_workbook(file_path, data_only=True, read_only=True)
+        except Exception:
+            return issues
+        try:
+            for ws in wb.worksheets:
+                scanned = 0
+                for row in ws.iter_rows(max_row=self._CACHED_SCAN_MAX_ROWS):
+                    for cell in row:
+                        scanned += 1
+                        val = cell.value
+                        if isinstance(val, str) and val in EXCEL_ERRORS:
+                            desc, detail, _fixable = EXCEL_ERRORS[val]
+                            issues.append(ExcelQualityIssue(
+                                sheet_name=ws.title,
+                                issue_type="formula",
+                                severity="error",
+                                message=f"{desc}：单元格 {cell.coordinate} 计算结果为 {val}（{detail}）",
+                                cell_ref=cell.coordinate,
+                                fixable=False,
+                            ))
+                            if len(issues) >= 20:
+                                return issues
+                _ = scanned
+        except Exception:
+            pass
+        finally:
+            wb.close()
+        return issues
+
     # ==========================================
     # 4. 图表检查
     # ==========================================
 
     def _check_charts(self, ws) -> List[ExcelQualityIssue]:
+        """图表检查：openpyxl 重新加载的文件解析不出已写入的图表对象，
+        改为检查包内图表部件（新写入的图表必落在 xl/charts/ 下）。"""
         issues = []
+        if not hasattr(self, "_chart_count"):
+            self._prepare_chart_inventory(getattr(self, "_chart_source_path", ""))
+        if getattr(self, "_chart_message_emitted", False):
+            return []
+        self._chart_message_emitted = True
         sheet_name = ws.title
+        chart_count = self._chart_count
 
-        try:
-            charts = ws._charts
-        except Exception:
-            charts = []
+        if chart_count == 0:
+            issues.append(ExcelQualityIssue(
+                sheet_name=sheet_name, issue_type="chart",
+                severity="warning", fixable=True,
+                message="未生成任何图表",
+            ))
+            return issues
 
-        for i, chart in enumerate(charts):
-            chart_title = ""
-            try:
-                if chart.title and chart.title.tx:
-                    chart_title = str(chart.title.tx.rich.p[0].r[0].t) if chart.title.tx.rich else f"图表{i+1}"
-            except Exception:
-                chart_title = f"图表{i+1}"
-
-            # 检查系列是否为空
-            try:
-                if not chart.series:
-                    issues.append(ExcelQualityIssue(
-                        sheet_name=sheet_name, issue_type="chart",
-                        severity="warning",
-                        message=f"图表「{chart_title}」没有数据系列",
-                        fixable=False,
-                    ))
-            except Exception:
-                pass
-
+        issues.append(ExcelQualityIssue(
+            sheet_name=sheet_name, issue_type="chart",
+            severity="info", fixable=False,
+            message=f"输出包含 {chart_count} 个图表，建议在 Excel/WPS 中打开确认渲染",
+        ))
         return issues
+
+    def _prepare_chart_inventory(self, file_path: str) -> None:
+        """每个工作簿只解压扫描一次图表部件，并只生成一条工作簿级提示。"""
+        self._chart_count = 0
+        self._chart_message_emitted = False
+        if not file_path:
+            return
+        try:
+            import zipfile as _zipfile
+            with _zipfile.ZipFile(file_path) as archive:
+                self._chart_count = sum(
+                    1 for name in archive.namelist()
+                    if name.startswith("xl/charts/chart")
+                )
+        except (OSError, _zipfile.BadZipFile):
+            self._chart_count = 0
 
     # ==========================================
     # 5. 计算异常
@@ -633,12 +704,11 @@ class ExcelQualityChecker:
 
             # 收集数值
             values = []
-            has_formula = False
             for row_idx in range(header_row + 1, max_row + 1):
                 cell = ws.cell(row=row_idx, column=col_idx)
                 val = cell.value
                 if isinstance(val, str) and val.startswith("="):
-                    has_formula = True
+                    continue
                 elif isinstance(val, (int, float)):
                     values.append((row_idx, val))
 
@@ -720,7 +790,7 @@ class ExcelQualityChecker:
                         cell = ws[issue.cell_ref]
                         if isinstance(cell.value, str) and cell.value.startswith("="):
                             inner = cell.value[1:]
-                            cell.value = f"=IFERROR({inner},0)"
+                            cell.value = f'=IFERROR({inner},"")'
                             issue.fixed = True
                             fixed += 1
 
@@ -729,7 +799,7 @@ class ExcelQualityChecker:
                         cell = ws[issue.cell_ref]
                         if isinstance(cell.value, str) and cell.value.startswith("="):
                             inner = cell.value[1:]
-                            cell.value = f"=IFERROR({inner},0)"
+                            cell.value = f'=IFERROR({inner},"")'
                             issue.fixed = True
                             fixed += 1
 
@@ -798,7 +868,9 @@ class ExcelQualityChecker:
                         fixed += 1
 
                 elif issue.issue_type == "data" and "连续空行" in issue.message:
-                    # 删除空行（从后往前删）
+                    # 只删除"末尾"连续空行：遇到第一个非空行立即停止。
+                    # （原实现收集 2+ 空行后才停止，会把数据中段的空行也删掉，
+                    # 使下方公式引用行号错位产生 #REF!）
                     rows_to_delete = []
                     for row_idx in range(max_row, header_row, -1):
                         is_empty = all(
@@ -807,8 +879,8 @@ class ExcelQualityChecker:
                         )
                         if is_empty:
                             rows_to_delete.append(row_idx)
-                        elif len(rows_to_delete) >= 2:
-                            break  # 只删除末尾连续空行
+                        else:
+                            break  # 第一个非空行即停止：只处理末尾空行
 
                     if len(rows_to_delete) >= 2:
                         for row_idx in rows_to_delete:
@@ -840,9 +912,10 @@ class ExcelQualityChecker:
 
     def _calc_score(self, report: QualityReport):
         """计算质量评分"""
-        report.error_count = sum(1 for i in report.issues if i.severity == "error")
-        report.warning_count = sum(1 for i in report.issues if i.severity == "warning")
-        report.info_count = sum(1 for i in report.issues if i.severity == "info")
+        unresolved = [i for i in report.issues if not getattr(i, "fixed", False)]
+        report.error_count = sum(1 for i in unresolved if i.severity == "error")
+        report.warning_count = sum(1 for i in unresolved if i.severity == "warning")
+        report.info_count = sum(1 for i in unresolved if i.severity == "info")
 
         score = 100
         score -= report.error_count * 10
@@ -852,16 +925,6 @@ class ExcelQualityChecker:
 
         report.score = max(0, min(100, score))
         report.passed = report.error_count == 0
-
-
-# 扩展 ExcelQualityIssue 模型
-def _issue_fixed_getter(self):
-    return getattr(self, '_fixed', False)
-
-def _issue_fixed_setter(self, val):
-    self._fixed = val
-
-ExcelQualityIssue.fixed = property(_issue_fixed_getter, _issue_fixed_setter)
 
 
 def check_excel(file_path: str) -> QualityReport:

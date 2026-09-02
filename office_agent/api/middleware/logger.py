@@ -5,17 +5,14 @@
 本文件保留仅为向后兼容，不再添加额外 handler。
 """
 import time
-import os
-import json
 import logging
-from datetime import datetime
-from typing import Dict, Any
+from datetime import datetime, timezone
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import Response, JSONResponse
+from starlette.responses import JSONResponse
 
-from ..core.config import settings
+from ...security.error_sanitizer import sanitize_error
 
 # 使用统一日志系统，不再在此模块配置 handler
 logger = logging.getLogger("office_agent.api")
@@ -34,11 +31,9 @@ class RequestLogMiddleware(BaseHTTPMiddleware):
         start = time.time()
         request_id = getattr(request.state, "request_id", str(time.time()))
 
-        body = None
         if request.method in ("POST", "PUT", "PATCH"):
             try:
                 raw_body = await request.body()
-                body = raw_body.decode("utf-8", errors="ignore")[:2000]
                 async def receive():
                     return {"type": "http.request", "body": raw_body}
                 request = Request(request.scope, receive)
@@ -55,8 +50,8 @@ class RequestLogMiddleware(BaseHTTPMiddleware):
                 content={
                     "success": False,
                     "error_code": "INTERNAL_ERROR",
-                    "message": str(e),
-                    "timestamp": datetime.now().isoformat(),
+                    "message": sanitize_error(e),
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
                 },
             )
 

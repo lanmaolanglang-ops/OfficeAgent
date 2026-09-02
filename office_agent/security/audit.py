@@ -6,8 +6,9 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from enum import Enum
-from typing import Optional, Callable
+from typing import Callable
 
 try:
     from office_agent.logging_system import get_logger
@@ -90,13 +91,59 @@ class AuditEntry:
 
 
 class AuditLogger:
-    """安全审计日志"""
+    """有界内存镜像 + 数据库持久化的安全审计日志。"""
 
-    def __init__(self, enable: bool = True):
+    def __init__(self, enable: bool = True, session_factory=None,
+                 max_memory_entries: int = 1000):
         self.enable = enable
         self._entries: list[AuditEntry] = []
         self._callbacks: list[Callable[[AuditEntry], None]] = []
-        self._db_repo = None  # 延迟初始化数据库
+        self._session_factory = session_factory
+        self._max_memory_entries = max(1, max_memory_entries)
+
+    def _get_session_factory(self):
+        if self._session_factory is None:
+            from office_agent.database.session import SessionLocal
+            self._session_factory = SessionLocal
+        return self._session_factory
+
+    def _persist(self, entry: AuditEntry) -> None:
+        from sqlalchemy import inspect, text
+        from office_agent.database.models import AuditLogModel, User
+
+        details = dict(entry.details)
+        occurred_at = datetime.fromtimestamp(entry.timestamp, timezone.utc)
+        with self._get_session_factory()() as session:
+            persisted_user_id = entry.user_id
+            if persisted_user_id:
+                inspector = inspect(session.connection())
+                legacy_fk = any(
+                    fk.get("referred_table") == "security_users"
+                    for fk in inspector.get_foreign_keys("security_audit_logs")
+                )
+                if legacy_fk:
+                    known = session.execute(text(
+                        "SELECT 1 FROM security_users WHERE id=:id"
+                    ), {"id": persisted_user_id}).first()
+                else:
+                    known = session.get(User, persisted_user_id)
+                if known is None:
+                    details.setdefault("subject_user_id", persisted_user_id)
+                    persisted_user_id = None
+            session.add(AuditLogModel(
+                user_id=persisted_user_id,
+                action=entry.action,
+                resource=entry.resource,
+                resource_id=entry.resource_id,
+                status=entry.status,
+                ip_address=entry.ip_address,
+                details=details,
+                risk_level=entry.risk_level,
+                timestamp=occurred_at,
+                created_at=occurred_at,
+                updated_at=occurred_at,
+            ))
+            session.commit()
 
     def add_callback(self, callback: Callable[[AuditEntry], None]):
         """添加审计回调（用于写入数据库等）"""
@@ -120,6 +167,8 @@ class AuditLogger:
 
         if self.enable:
             self._entries.append(entry)
+            if len(self._entries) > self._max_memory_entries:
+                del self._entries[:-self._max_memory_entries]
 
             # 日志输出
             log_msg = (
@@ -133,6 +182,11 @@ class AuditLogger:
                 logger.info(log_msg)
             else:
                 logger.debug(log_msg)
+
+            try:
+                self._persist(entry)
+            except Exception:
+                logger.exception("Audit persistence failed")
 
             # 回调
             for cb in self._callbacks:
@@ -225,6 +279,21 @@ class AuditLogger:
         dangerous = [e for e in self._entries
                     if e.risk_level in ("danger", "critical")]
         return dangerous[-limit:]
+
+    def cleanup_expired(self, retention_days: int = 90) -> int:
+        """按保留策略清理持久化审计记录。"""
+        if retention_days <= 0:
+            raise ValueError("retention_days 必须大于 0")
+        from sqlalchemy import delete
+        from office_agent.database.models import AuditLogModel
+
+        cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+        with self._get_session_factory()() as session:
+            result = session.execute(
+                delete(AuditLogModel).where(AuditLogModel.timestamp < cutoff)
+            )
+            session.commit()
+            return int(result.rowcount or 0)
 
     def clear(self):
         """清空（测试用）"""

@@ -36,7 +36,7 @@ class FailoverManager:
             **kwargs: 传递给 action 的额外参数
         """
         # 获取候选模型列表
-        if model_ids:
+        if model_ids is not None:
             candidates = model_ids
         else:
             candidates = self.model_manager.get_routing(task_type)
@@ -50,22 +50,27 @@ class FailoverManager:
                     available.append(mid)
         
         if not available:
-            # 所有模型都在冷却，重置冷却再试
-            self._failure_history.clear()
-            available = [mid for mid in candidates
-                        if self.model_manager.get_model(mid) and
-                        self.model_manager.get_model(mid).api_key]
-        
-        if not available:
+            configured = [
+                mid for mid in candidates
+                if (self.model_manager.get_model(mid)
+                    and self.model_manager.get_model(mid).enabled
+                    and self.model_manager.get_model(mid).api_key)
+            ]
+            message = (
+                "所有可用模型均在冷却，请稍后重试"
+                if configured else "没有可用的模型，请检查 API Key 配置"
+            )
             return ModelResponse(
                 success=False,
-                error="没有可用的模型，请检查 API Key 配置",
+                error=message,
             )
         
         errors = []
         attempts = 0
+        attempted_models = []
         
         for model_id in available:
+            attempted_models.append(model_id)
             client = self.model_manager.get_client(model_id)
             if not client:
                 errors.append(f"{model_id}: 客户端创建失败")
@@ -77,27 +82,60 @@ class FailoverManager:
                     attempts += 1
                     result = action(client, **kwargs)
                     if result.success:
-                        # 成功，记录并返回
+                        raw = dict(result.raw_response) if isinstance(result.raw_response, dict) else {}
+                        raw["_office_agent"] = {
+                            "attempts": attempts,
+                            "attempted_models": attempted_models,
+                            "fallback_used": model_id != candidates[0],
+                        }
+                        result.raw_response = raw
                         return result
                     else:
                         errors.append(f"{model_id} (attempt {attempt + 1}): {result.error}")
-                        # 非网络错误，不重试，直接切换下一个模型
-                        if attempt < self.max_retries - 1:
+                        self._record_failure(model_id)
+                        # 鉴权/参数等确定性错误重试不会恢复，直接切换备用模型。
+                        if (attempt < self.max_retries - 1
+                                and self._is_retryable_error(result.error)):
                             time.sleep(self.retry_delay)
                             continue
+                        break
                 except Exception as e:
                     errors.append(f"{model_id} (尝试{attempt+1}): {str(e)}")
-                    if attempt < self.max_retries - 1:
+                    self._record_failure(model_id)
+                    if (attempt < self.max_retries - 1
+                            and self._is_retryable_error(str(e))):
                         time.sleep(self.retry_delay)
-            
-            # 记录失败
-            self._record_failure(model_id)
+                        continue
+                    break
         
         # 所有模型都失败了
         return ModelResponse(
             success=False,
-            error=f"所有模型调用失败:\n" + "\n".join(errors[-5:]),
+            error="所有模型调用失败:\n" + "\n".join(errors[-5:]),
+            raw_response={"_office_agent": {
+                "attempts": attempts,
+                "attempted_models": attempted_models,
+                "fallback_used": len(attempted_models) > 1,
+            }},
         )
+
+    @staticmethod
+    def _is_retryable_error(error: str) -> bool:
+        """仅对可能自行恢复的网络、限流和服务端错误重试。"""
+        text = (error or "").lower()
+        permanent = (
+            "http 400", "http 401", "http 403", "http 404",
+            "authentication", "api key", "invalid_request", "invalid api",
+            "鉴权", "认证失败",
+        )
+        if any(marker in text for marker in permanent):
+            return False
+        transient = (
+            "http 408", "http 409", "http 425", "http 429", "http 5",
+            "timeout", "timed out", "connection", "连接错误", "连接超时",
+            "temporar", "rate limit", "限流", "服务繁忙",
+        )
+        return any(marker in text for marker in transient) or not text
     
     def _record_failure(self, model_id: str):
         """记录模型失败"""

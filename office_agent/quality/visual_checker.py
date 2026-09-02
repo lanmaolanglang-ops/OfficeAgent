@@ -71,12 +71,14 @@ class PageVisualResult:
     score: float = 100.0         # 单页评分
     summary: str = ""            # 单页评价
     raw_response: str = ""       # 原始模型响应
+    score_details: Dict[str, float] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
             "page_number": self.page_number,
             "score": self.score,
             "summary": self.summary,
+            "score_details": self.score_details,
             "issues": [i.to_dict() for i in self.issues],
         }
 

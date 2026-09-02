@@ -11,16 +11,16 @@ const DEFAULT_BASE_URL = 'http://127.0.0.1:8765';
 
 // 允许的文件扩展名
 export const ALLOWED_EXTENSIONS = [
-  '.docx', '.doc',
-  '.pptx', '.ppt',
-  '.xlsx', '.xls',
+  '.docx',
+  '.pptx',
+  '.xlsx',
   '.pdf',
   '.txt', '.md', '.csv', '.json', '.xml', '.html',
   '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg',
 ];
 
-// 最大文件大小 50MB
-export const MAX_FILE_SIZE = 50 * 1024 * 1024;
+// 与后端 StorageService 默认上限保持一致
+export const MAX_FILE_SIZE = 100 * 1024 * 1024;
 
 // 检查文件是否允许上传
 export function isAllowedFile(filename: string): boolean {
@@ -30,11 +30,16 @@ export function isAllowedFile(filename: string): boolean {
 
 // 格式化文件大小
 export function formatFileSize(bytes: number): string {
-  if (bytes === 0) return '0 B';
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
   const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.min(Math.floor(Math.log(bytes) / Math.log(k)), sizes.length - 1);
   return (bytes / Math.pow(k, i)).toFixed(1) + ' ' + sizes[i];
+}
+
+/** 当前生效的后端地址（设置页与本组件展示用） */
+export function getBackendUrl(): string {
+  return getBaseUrl();
 }
 
 function getBaseUrl(): string {
@@ -54,18 +59,36 @@ function getBackendError(payload: unknown, fallback: string): string {
   return fallback;
 }
 
+// 请求默认超时：本地后端被阻塞时 fetch 会无限挂起，
+// 必须有超时上限，否则轮询链永久卡住、发送按钮锁死
+const DEFAULT_REQUEST_TIMEOUT_MS = 15000;
+
 async function request<T>(
   path: string,
-  options: RequestInit = {}
+  options: RequestInit = {},
+  timeoutMs: number = DEFAULT_REQUEST_TIMEOUT_MS
 ): Promise<T> {
   const url = `${getBaseUrl()}${path}`;
-  const response = await fetch(url, {
-    headers: {
-      'Content-Type': 'application/json',
-      ...options.headers,
-    },
-    ...options,
-  });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      ...options,
+      headers: {
+        'Content-Type': 'application/json',
+        ...options.headers,
+      },
+      signal: options.signal ?? controller.signal,
+    });
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      throw new Error(`请求超时（${Math.round(timeoutMs / 1000)}s）：后端未响应`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
 
   if (!response.ok) {
     const errorText = await response.text().catch(() => 'Unknown error');
@@ -84,7 +107,16 @@ async function request<T>(
 // 健康检查 - /health 端点直接返回状态对象，不是 {success, data} 格式
 export async function checkHealth(): Promise<HealthResponse> {
   const url = `${getBaseUrl()}/health`;
-  const response = await fetch(url);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 5000);
+  let response: Response;
+  try {
+    response = await fetch(url, { signal: controller.signal });
+  } catch {
+    throw new Error('后端不可达');
+  } finally {
+    clearTimeout(timer);
+  }
   // 503 = 后端在线但整体降级；只有网络失败/非 503 错误才视为不可达
   if (!response.ok && response.status !== 503) {
     throw new Error(`HTTP ${response.status}`);
@@ -125,7 +157,22 @@ export async function setDefaultModel(modelId: string): Promise<ModelSettingsSta
   });
 }
 
-// 保存本地模型配置（API Key 仅写入后端 ~/.office_agent/models.json）
+export interface ModelConnectionTest {
+  success: boolean;
+  model_id: string;
+  latency_ms: number;
+  message: string;
+}
+
+export async function testModelConnection(modelId: string): Promise<ModelConnectionTest> {
+  return await request<ModelConnectionTest>(
+    `/api/settings/model/${encodeURIComponent(modelId)}/test`,
+    { method: 'POST' },
+    75_000,
+  );
+}
+
+// 保存本地模型配置（API Key 仅写入后端应用数据目录的加密配置）
 export async function saveModelSettings(payload: {
   provider: string;
   model: string;
@@ -148,6 +195,15 @@ export interface ImageModelSettings {
   api_key_mask: string;
 }
 
+export interface ImageModelConnectionTest {
+  success: boolean;
+  provider: string;
+  model: string;
+  latency_ms: number;
+  bytes?: number;
+  message: string;
+}
+
 // 获取生图模型配置
 export async function getImageModelSettings(): Promise<ImageModelSettings> {
   return await request<ImageModelSettings>('/api/settings/image-model');
@@ -167,10 +223,20 @@ export async function saveImageModelSettings(payload: {
   });
 }
 
-// 上传文件（支持进度回调）
+// 真实生成并立即删除一张测试图；由用户显式触发，可能产生一次计费
+export async function testImageModelConnection(): Promise<ImageModelConnectionTest> {
+  return await request<ImageModelConnectionTest>(
+    '/api/settings/image-model/test',
+    { method: 'POST' },
+    150_000,
+  );
+}
+
+// 上传文件（支持进度回调与中止信号）
 export async function uploadFile(
   file: File,
-  onProgress?: (progress: number) => void
+  onProgress?: (progress: number) => void,
+  signal?: AbortSignal
 ): Promise<UploadedFile> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
@@ -227,7 +293,18 @@ export async function uploadFile(
     });
 
     xhr.addEventListener('abort', () => {
-      reject(new Error('Upload aborted'));
+      reject(new Error('上传已取消'));
+    });
+
+    if (signal) {
+      if (signal.aborted) { xhr.abort(); }
+      else { signal.addEventListener('abort', () => xhr.abort(), { once: true }); }
+    }
+
+    // 大文件在回环地址上传很快，10 分钟足以覆盖 100MB 上限的最差情况
+    xhr.timeout = 10 * 60 * 1000;
+    xhr.addEventListener('timeout', () => {
+      reject(new Error('上传超时，请检查后端服务'));
     });
 
     xhr.open('POST', `${getBaseUrl()}/api/file/upload`);
@@ -322,12 +399,33 @@ export async function restoreFileVersion(fileId: string, version: number): Promi
   return result.data;
 }
 
-// 列出文件
-export async function listFiles(params?: {
+export interface FileListPage {
+  files: UploadedFile[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+function mapBackendFile(f: Record<string, unknown>): UploadedFile {
+  return {
+    file_id: (f.file_id as string) || (f.id as string) || '',
+    filename: (f.filename as string) || (f.name as string) || '',
+    file_type: (f.file_type as string) || '',
+    size: (f.size as number) || 0,
+    id: (f.file_id as string) || (f.id as string) || '',
+    name: (f.filename as string) || (f.name as string) || '',
+    type: (f.file_type as string) || '',
+    uploaded_at: (f.upload_time as string) || (f.created_at as string) || '',
+    deleted_at: (f.deleted_at as string) || undefined,
+  };
+}
+
+// 分页列出文件
+export async function listFilesPage(params?: {
   file_type?: string;
   page?: number;
   page_size?: number;
-}): Promise<UploadedFile[]> {
+}): Promise<FileListPage> {
   const query = new URLSearchParams();
   if (params?.file_type) query.set('file_type', params.file_type);
   if (params?.page) query.set('page', String(params.page));
@@ -338,28 +436,71 @@ export async function listFiles(params?: {
 
   const result = await request<{
     success: boolean;
-    data?: { files?: Array<Record<string, unknown>> };
+    data?: {
+      files?: Array<Record<string, unknown>>;
+      total?: number;
+      page?: number;
+      page_size?: number;
+    };
   }>(path);
 
-  return (result.data?.files || []).map((f) => ({
-    file_id: (f.file_id as string) || (f.id as string) || '',
-    filename: (f.filename as string) || (f.name as string) || '',
-    file_type: (f.file_type as string) || '',
-    size: (f.size as number) || 0,
-    id: (f.file_id as string) || (f.id as string) || '',
-    name: (f.filename as string) || (f.name as string) || '',
-    type: (f.file_type as string) || '',
-    uploaded_at: (f.upload_time as string) || (f.created_at as string) || new Date().toISOString(),
-  }));
+  const files = (result.data?.files || []).map(mapBackendFile);
+  return {
+    files,
+    total: result.data?.total ?? files.length,
+    page: result.data?.page ?? params?.page ?? 1,
+    page_size: result.data?.page_size ?? params?.page_size ?? 50,
+  };
+}
+
+// 兼容只需要单页数组的调用方
+export async function listFiles(params?: {
+  file_type?: string;
+  page?: number;
+  page_size?: number;
+}): Promise<UploadedFile[]> {
+  return (await listFilesPage(params)).files;
 }
 
 // 删除文件
-export async function deleteFile(fileId: string): Promise<void> {
-  await request(`/api/file/${fileId}`, { method: 'DELETE' });
+export async function deleteFile(fileId: string, permanent = false): Promise<void> {
+  const suffix = permanent ? '?permanent=true' : '';
+  await request(`/api/file/${fileId}${suffix}`, { method: 'DELETE' });
+}
+
+// 分页列出回收站文件
+export async function listDeletedFilesPage(params?: {
+  page?: number;
+  page_size?: number;
+}): Promise<FileListPage> {
+  const query = new URLSearchParams();
+  if (params?.page) query.set('page', String(params.page));
+  if (params?.page_size) query.set('page_size', String(params.page_size));
+  const qs = query.toString();
+  const result = await request<{
+    success: boolean;
+    data?: {
+      files?: Array<Record<string, unknown>>;
+      total?: number;
+      page?: number;
+      page_size?: number;
+    };
+  }>(qs ? `/api/file/trash?${qs}` : '/api/file/trash');
+  const files = (result.data?.files || []).map(mapBackendFile);
+  return {
+    files,
+    total: result.data?.total ?? files.length,
+    page: result.data?.page ?? params?.page ?? 1,
+    page_size: result.data?.page_size ?? params?.page_size ?? 50,
+  };
+}
+
+export async function restoreDeletedFile(fileId: string): Promise<void> {
+  await request(`/api/file/${fileId}/restore`, { method: 'POST' });
 }
 
 // 映射后端任务数据到前端Task
-function mapBackendTask(data: Record<string, unknown>): Task {
+export function mapBackendTask(data: Record<string, unknown>): Task {
   const statusMap: Record<string, Task['status']> = {
     pending: 'pending',
     queued: 'pending',
@@ -375,7 +516,7 @@ function mapBackendTask(data: Record<string, unknown>): Task {
 
   const backendStatus = (data.status as string) || 'pending';
   const status = statusMap[backendStatus] || 'pending';
-  const progress = (data.progress as number) ?? (status === 'completed' ? 1 : 0);
+  const progress = (data.progress as number) ?? (status === 'completed' ? 100 : 0);
 
   return {
     id: (data.task_id as string) || (data.id as string) || '',

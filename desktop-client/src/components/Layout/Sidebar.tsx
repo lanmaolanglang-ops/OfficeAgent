@@ -1,40 +1,50 @@
+import { useSettingsStore, useBackendStore } from '../../stores';
+import { getBackendUrl } from '../../services/api';
 import { NavLink } from 'react-router-dom';
 import {
   House, FileText, Presentation, Sheet,
-  FolderOpen, History, Settings, Sparkles,
+  FolderOpen, History, Settings,
 } from 'lucide-react';
 
 const navGroups = [
-  [
+  { label: '工作区', items: [
     { to: '/', icon: House, label: '工作台' },
-  ],
-  [
+  ] },
+  { label: '专业执行', items: [
     { to: '/word', icon: FileText, label: 'Word Agent' },
     { to: '/excel', icon: Sheet, label: 'Excel Agent' },
     { to: '/ppt', icon: Presentation, label: 'PPT Agent' },
-  ],
-  [
+  ] },
+  { label: '资产与系统', items: [
     { to: '/files', icon: FolderOpen, label: '文件管理' },
     { to: '/history', icon: History, label: '任务记录' },
     { to: '/settings', icon: Settings, label: '设置' },
-  ],
+  ] },
 ];
 
+function useBackendUrlLabel(): string {
+  const url = useSettingsStore((s) => s.settings.backend_url) || getBackendUrl();
+  try { return url.replace(/^https?:\/\//, ''); } catch { return url; }
+}
+
 export default function Sidebar() {
+  const backendUrlLabel = useBackendUrlLabel();
+  const { connected, degraded } = useBackendStore();
   return (
-    <aside className="app-sidebar w-[224px] bg-white border-r border-[#e8ebf2] flex flex-col h-full flex-shrink-0">
-      <div className="h-[76px] flex items-center gap-3 px-5 border-b border-[#edf0f5]">
-        <div className="brand-mark"><Sparkles className="w-5 h-5 text-white" /></div>
+    <aside className="app-sidebar flex h-full w-[236px] flex-shrink-0 flex-col">
+      <div className="sidebar-brand flex h-[88px] items-center gap-3 px-5">
+        <div className="brand-mark" aria-hidden="true"><span>OA</span></div>
         <div className="min-w-0">
-          <p className="text-[15px] font-bold text-[#182033] leading-tight">OfficeAgent</p>
-          <p className="text-[11px] text-[#8a94a8] mt-1">本地智能办公助手</p>
+          <p className="text-[15px] font-semibold leading-tight text-sidebar-strong">OfficeAgent</p>
+          <p className="mt-1 text-[10px] tracking-[.12em] text-sidebar-muted">本地执行台</p>
         </div>
       </div>
 
-      <nav className="flex-1 px-3 py-5 overflow-y-auto">
-        {navGroups.map((group, groupIndex) => (
-          <div key={groupIndex} className={groupIndex ? 'mt-5 pt-5 border-t border-[#f0f2f6]' : ''}>
-            {group.map((item) => {
+      <nav className="flex-1 overflow-y-auto px-3 py-5" aria-label="主要导航">
+        {navGroups.map((group) => (
+          <div key={group.label} className="sidebar-group">
+            <p className="sidebar-group-label">{group.label}</p>
+            {group.items.map((item) => {
               const Icon = item.icon;
               return (
                 <NavLink
@@ -44,7 +54,7 @@ export default function Sidebar() {
                   title={item.label}
                   className={({ isActive }) => `sidebar-link ${isActive ? 'sidebar-link-active' : ''}`}
                 >
-                  <Icon className="w-[18px] h-[18px] flex-shrink-0" />
+                  <Icon className="h-[17px] w-[17px] flex-shrink-0" aria-hidden="true" />
                   <span>{item.label}</span>
                 </NavLink>
               );
@@ -53,12 +63,12 @@ export default function Sidebar() {
         ))}
       </nav>
 
-      <div className="m-3 p-3.5 rounded-lg bg-[#f7f9fc] border border-[#edf0f5]">
-        <div className="flex items-center gap-2 text-xs font-medium text-[#35405a]">
-          <span className="w-2 h-2 rounded-full bg-[#22b573] shadow-[0_0_0_3px_rgba(34,181,115,.12)]" />
-          本地服务运行中
+      <div className="sidebar-service m-3 p-3.5">
+        <div className={`flex items-center gap-2 text-xs font-medium ${connected ? 'text-sidebar-ok' : degraded ? 'text-sidebar-warn' : 'text-sidebar-danger'}`}>
+          <span className="h-1.5 w-1.5 rounded-full bg-current" aria-hidden="true" />
+          {connected ? '本地服务运行中' : degraded ? '服务降级' : '服务未连接'}
         </div>
-        <p className="text-[10px] text-[#9aa3b5] mt-2">v0.50.0 · 127.0.0.1:8765</p>
+        <p className="mt-2 truncate font-mono text-[10px] text-sidebar-muted">v{__APP_VERSION__} · {backendUrlLabel}</p>
       </div>
     </aside>
   );

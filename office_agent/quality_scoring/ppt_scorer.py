@@ -100,7 +100,9 @@ class PPTQualityScorer:
             result.template_adherence * 0.30
         )
 
-        result.issues = self._collect_issues(slides_info, expected_slides)
+        result.issues = self._collect_issues(
+            slides_info, expected_slides, required_content
+        )
         result.suggestions = self._collect_suggestions(slides_info)
 
         return result
@@ -199,7 +201,8 @@ class PPTQualityScorer:
                                     pass
 
                     # 判断是否为标题
-                    if shape == slide.shapes.title or (
+                    title_shape = slide.shapes.title
+                    if (title_shape is not None and shape._element is title_shape._element) or (
                         shape.top and shape.top < Emu(2000000) and
                         any(run.font.size and run.font.size.pt >= 24
                             for para in shape.text_frame.paragraphs
@@ -270,6 +273,14 @@ class PPTQualityScorer:
             "color_consistency": round(color_consistency, 2),
             "title_position_consistency": round(title_pos_consistency, 2),
             "slides": slides_data,
+            "all_text": "\n".join(
+                text
+                for slide in prs.slides
+                for shape in slide.shapes
+                if getattr(shape, "has_text_frame", False)
+                for text in [shape.text_frame.text]
+                if text
+            ),
             "visual": {
                 "font_count": len(all_fonts),
                 "color_count": len(all_colors),
@@ -377,6 +388,16 @@ class PPTQualityScorer:
         elif 20 <= avg_text <= 500:
             score += 5
 
+        # 用户明确要求的内容必须真正出现在成品中。按关键词逐项计分，
+        # 全部缺失时不应仍得到高完整度分。
+        required = [str(item).strip() for item in (required_content or []) if str(item).strip()]
+        if required:
+            all_text = info.get("all_text", "").casefold()
+            matched = sum(1 for item in required if item.casefold() in all_text)
+            ratio = matched / len(required)
+            score += ratio * 10
+            score -= (1 - ratio) * 30
+
         return max(0, min(100, score))
 
     def _score_template(self, info: Dict) -> float:
@@ -398,7 +419,8 @@ class PPTQualityScorer:
 
         return max(0, min(100, score))
 
-    def _collect_issues(self, info, expected_slides) -> List[str]:
+    def _collect_issues(self, info, expected_slides,
+                        required_content: List[str] = None) -> List[str]:
         issues = []
         if info["font_count"] > 5:
             issues.append(f"字体种类过多({info['font_count']}种)，建议统一为2-3种")
@@ -410,6 +432,12 @@ class PPTQualityScorer:
             issues.append("部分幻灯片缺少标题")
         if expected_slides > 0 and info["slide_count"] < expected_slides * 0.7:
             issues.append(f"页数不足（期望{expected_slides}页，实际{info['slide_count']}页）")
+        required = [str(item).strip() for item in (required_content or []) if str(item).strip()]
+        if required:
+            all_text = info.get("all_text", "").casefold()
+            missing = [item for item in required if item.casefold() not in all_text]
+            if missing:
+                issues.append(f"缺少必含内容: {', '.join(missing)}")
         return issues
 
     def _collect_suggestions(self, info) -> List[str]:

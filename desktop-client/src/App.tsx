@@ -1,6 +1,8 @@
 import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
-import { lazy, Suspense } from 'react';
+import { lazy, Suspense, useEffect } from 'react';
 import MainLayout from './components/Layout/MainLayout';
+import { useSettingsStore } from './stores';
+import { isTauri, setMinimizeToTray } from './services/tauri';
 
 // 懒加载页面组件，减少初始bundle大小
 const Dashboard = lazy(() => import('./pages/Dashboard'));
@@ -16,14 +18,20 @@ function PageLoader() {
   return (
     <div className="flex h-full items-center justify-center">
       <div className="flex flex-col items-center gap-3">
-        <div className="h-8 w-8 animate-spin rounded-full border-4 border-gray-200 border-t-blue-500"></div>
-        <p className="text-sm text-gray-400">加载中...</p>
+        <div className="h-8 w-8 animate-spin rounded-full border-2 border-line border-t-brand"></div>
+        <p className="text-sm text-fg-muted">加载中...</p>
       </div>
     </div>
   );
 }
 
 function App() {
+  // 把"关闭时最小化到托盘"设置同步给 Rust（启动时 + 每次变更）
+  const minimizeToTray = useSettingsStore((s) => s.settings.minimize_to_tray);
+  useEffect(() => {
+    if (isTauri()) setMinimizeToTray(minimizeToTray);
+  }, [minimizeToTray]);
+
   return (
     <HashRouter>
       <Suspense fallback={<PageLoader />}>

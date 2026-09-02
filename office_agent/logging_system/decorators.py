@@ -217,13 +217,6 @@ def log_model_call_decorator(provider: str = None):
                     model=model_name, amount=cost
                 )
 
-                _save_model_log(
-                    model_name=model_name, provider=prov,
-                    input_tokens=input_tokens, output_tokens=output_tokens,
-                    latency_ms=int(latency), cost_estimate=cost,
-                    status="success",
-                )
-
                 return result
 
             except Exception as e:
@@ -237,11 +230,6 @@ def log_model_call_decorator(provider: str = None):
                 )
                 registry.counter("model_calls_total").inc(
                     model=model_name, provider=prov, status="error"
-                )
-                _save_model_log(
-                    model_name=model_name, provider=prov,
-                    latency_ms=int(latency),
-                    status="error", error_message=str(e),
                 )
                 raise
 
@@ -276,10 +264,13 @@ def _estimate_cost(model_name: str, input_tokens: int, output_tokens: int) -> fl
 def _save_execution_log(**kwargs):
     """异步保存执行日志到数据库"""
     try:
-        import threading
+        from .background import submit as submit_background
         from ..database.session import SessionLocal
         from ..database.repository import ExecutionLogRepository
         from .context import get_request_id, get_task_id, get_trace_id
+
+        request_id = get_request_id()
+        trace_id = get_trace_id()
 
         def _save():
             try:
@@ -287,8 +278,8 @@ def _save_execution_log(**kwargs):
                 try:
                     repo = ExecutionLogRepository(session)
                     repo.log_execution(
-                        request_id=get_request_id(),
-                        trace_id=get_trace_id(),
+                        request_id=request_id,
+                        trace_id=trace_id,
                         **kwargs,
                     )
                     session.commit()
@@ -299,40 +290,6 @@ def _save_execution_log(**kwargs):
             except Exception:
                 pass
 
-        t = threading.Thread(target=_save, daemon=True)
-        t.start()
-    except Exception:
-        pass
-
-
-def _save_model_log(**kwargs):
-    """异步保存模型调用日志到数据库"""
-    try:
-        import threading
-        from ..database.session import SessionLocal
-        from ..database.repository import ModelCallLogRepository
-        from .context import get_request_id, get_task_id, get_trace_id
-
-        def _save():
-            try:
-                session = SessionLocal()
-                try:
-                    repo = ModelCallLogRepository(session)
-                    repo.log_model_call(
-                        request_id=get_request_id(),
-                        trace_id=get_trace_id(),
-                        task_id=get_task_id(),
-                        **kwargs,
-                    )
-                    session.commit()
-                except Exception:
-                    session.rollback()
-                finally:
-                    session.close()
-            except Exception:
-                pass
-
-        t = threading.Thread(target=_save, daemon=True)
-        t.start()
+        submit_background(_save)
     except Exception:
         pass

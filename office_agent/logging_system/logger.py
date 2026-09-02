@@ -8,6 +8,7 @@
 """
 import os
 import logging
+import threading
 import time
 from typing import Optional
 
@@ -21,8 +22,19 @@ from .context import get_context_dict
 ROOT_LOGGER_NAME = "office_agent"
 
 _initialized = False
+_setup_lock = threading.RLock()
 
 
+def _synchronized(lock):
+    def decorate(func):
+        def wrapped(*args, **kwargs):
+            with lock:
+                return func(*args, **kwargs)
+        return wrapped
+    return decorate
+
+
+@_synchronized(_setup_lock)
 def setup_logging(
     log_level: str = None,
     log_dir: str = None,
@@ -45,14 +57,21 @@ def setup_logging(
     level = getattr(logging, level_name.upper(), logging.INFO)
 
     if log_dir is None:
-        log_dir = os.environ.get("LOG_DIR", os.path.expanduser("~/.office_agent/logs"))
+        log_dir = (os.environ.get("LOG_DIR") or os.environ.get("OFFICE_AGENT_LOG_DIR")
+                  or os.path.expanduser("~/.office_agent/logs"))
 
     # 根 logger
     root = logging.getLogger(ROOT_LOGGER_NAME)
     root.setLevel(level)
 
     # 清除已有 handler（避免重复）
+    old_handlers = list(root.handlers)
     root.handlers.clear()
+    for handler in old_handlers:
+        try:
+            handler.close()
+        except Exception:
+            pass
 
     # 控制台
     console_level = logging.DEBUG if level == logging.DEBUG else logging.INFO

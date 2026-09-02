@@ -6,6 +6,10 @@ Office Knowledge Base - 企业级知识库系统
 """
 import os
 import json
+import logging
+import tempfile
+import threading
+from functools import wraps
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 
@@ -17,6 +21,40 @@ from .document_parser import DocumentParser, ParsedDocument
 from .text_chunker import TextChunker, ChunkConfig
 from .embeddings import TfidfEmbedder, BaseEmbedder
 from .vector_store import VectorStore
+
+logger = logging.getLogger("office_agent.knowledge_base")
+
+
+def _atomic_json_write(path: str, data: Any, *, indent=None) -> None:
+    """在目标目录内写临时文件并原子替换，避免中断留下半截 JSON。"""
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, exist_ok=True)
+    fd, temp_path = tempfile.mkstemp(prefix=f".{os.path.basename(path)}.", suffix=".tmp", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(data, handle, ensure_ascii=False, indent=indent)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+    except Exception:
+        try:
+            os.unlink(temp_path)
+        except OSError:
+            pass
+        raise
+
+
+def _default_kb_storage_dir() -> str:
+    data_root = os.environ.get("OFFICE_AGENT_DATA_DIR") or os.path.expanduser("~/.office_agent")
+    return os.path.join(data_root, "kb_data")
+
+
+def _locked(method):
+    @wraps(method)
+    def wrapped(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+    return wrapped
 
 
 class OfficeKnowledgeBase:
@@ -43,15 +81,17 @@ class OfficeKnowledgeBase:
         print(ctx.to_text())
     """
 
-    def __init__(self, storage_dir: str = os.path.expanduser("~/.office_agent/kb_data"),
+    def __init__(self, storage_dir: str = None,
                  embedder: Optional[BaseEmbedder] = None,
                  chunk_config: Optional[ChunkConfig] = None):
+        storage_dir = storage_dir or _default_kb_storage_dir()
         self.storage_dir = storage_dir
         self.parser = DocumentParser()
         self.chunker = TextChunker(chunk_config or ChunkConfig())
         self.embedder = embedder or TfidfEmbedder()
         self.store = VectorStore(self.embedder)
         self.documents: Dict[str, KnowledgeDocument] = {}
+        self._lock = threading.RLock()
 
         os.makedirs(storage_dir, exist_ok=True)
 
@@ -60,6 +100,7 @@ class OfficeKnowledgeBase:
 
     # ==================== 导入文档 ====================
 
+    @_locked
     def import_document(self, file_path: str,
                         doc_type: str = "",
                         tags: List[str] = None,
@@ -105,10 +146,16 @@ class OfficeKnowledgeBase:
         self.documents[doc.id] = doc
 
         # 自动保存
-        self.save()
+        try:
+            self.save()
+        except Exception:
+            self.documents.pop(doc.id, None)
+            self._rebuild_index()
+            raise
 
         return doc
 
+    @_locked
     def add_text(self, text: str, title: str = "",
                  doc_type: str = "general",
                  tags: List[str] = None) -> KnowledgeDocument:
@@ -140,14 +187,20 @@ class OfficeKnowledgeBase:
 
         self.store.add_chunks(chunks)
         self.documents[doc.id] = doc
-        self.save()
+        try:
+            self.save()
+        except Exception:
+            self.documents.pop(doc.id, None)
+            self._rebuild_index()
+            raise
 
         return doc
 
+    @_locked
     def import_directory(self, dir_path: str,
                          doc_type: str = "") -> List[KnowledgeDocument]:
         """导入目录下所有支持的文档"""
-        supported = {".docx", ".doc", ".pptx", ".ppt", ".xlsx", ".xls",
+        supported = {".docx", ".pptx", ".xlsx",
                      ".csv", ".txt", ".md", ".pdf"}
         docs = []
 
@@ -178,6 +231,7 @@ class OfficeKnowledgeBase:
 
     # ==================== 检索 ====================
 
+    @_locked
     def search(self, query: str, top_k: int = 5,
                doc_type: str = "",
                min_score: float = 0.05) -> KnowledgeContext:
@@ -219,19 +273,27 @@ class OfficeKnowledgeBase:
 
     # ==================== 管理 ====================
 
+    @_locked
     def list_documents(self) -> List[Dict[str, Any]]:
         """列出所有文档"""
         return [doc.to_dict() for doc in self.documents.values()]
 
+    @_locked
     def remove_document(self, doc_id: str) -> bool:
         """删除文档（注意：向量不会自动删除，需要重建索引）"""
         if doc_id in self.documents:
-            del self.documents[doc_id]
+            removed = self.documents.pop(doc_id)
             self._rebuild_index()
-            self.save()
+            try:
+                self.save()
+            except Exception:
+                self.documents[doc_id] = removed
+                self._rebuild_index()
+                raise
             return True
         return False
 
+    @_locked
     def _rebuild_index(self):
         """重建索引"""
         self.store.clear()
@@ -242,6 +304,7 @@ class OfficeKnowledgeBase:
         if all_chunks:
             self.store.add_chunks(all_chunks)
 
+    @_locked
     def clear(self):
         """清空知识库"""
         self.documents.clear()
@@ -249,6 +312,7 @@ class OfficeKnowledgeBase:
         self.save()
 
     @property
+    @_locked
     def stats(self) -> Dict[str, Any]:
         """统计信息"""
         type_counts = {}
@@ -265,6 +329,7 @@ class OfficeKnowledgeBase:
 
     # ==================== 持久化 ====================
 
+    @_locked
     def save(self):
         """保存到磁盘"""
         # 保存文档元数据
@@ -283,24 +348,21 @@ class OfficeKnowledgeBase:
         }
 
         docs_path = os.path.join(self.storage_dir, "documents.json")
-        with open(docs_path, "w", encoding="utf-8") as f:
-            json.dump(docs_data, f, ensure_ascii=False, indent=2)
+        _atomic_json_write(docs_path, docs_data, indent=2)
 
         # 保存 chunks（含向量）
         chunks_data = []
+        embeddings_by_chunk_id = {
+            stored.chunk.id: stored.embedding for stored in self.store._chunks
+        }
         for doc in self.documents.values():
             for chunk in doc.chunks:
                 cd = chunk.to_dict(include_embedding=False)
-                # 从 store 中找到对应的向量
-                for stored in self.store._chunks:
-                    if stored.chunk.id == chunk.id:
-                        cd["embedding"] = stored.embedding
-                        break
+                cd["embedding"] = embeddings_by_chunk_id.get(chunk.id, [])
                 chunks_data.append(cd)
 
         chunks_path = os.path.join(self.storage_dir, "chunks.json")
-        with open(chunks_path, "w", encoding="utf-8") as f:
-            json.dump(chunks_data, f, ensure_ascii=False)
+        _atomic_json_write(chunks_path, chunks_data)
 
         # 保存 embedder 词汇表
         if hasattr(self.embedder, 'vocabulary'):
@@ -310,8 +372,7 @@ class OfficeKnowledgeBase:
                 "doc_count": self.embedder._doc_count,
             }
             emb_path = os.path.join(self.storage_dir, "embedder.json")
-            with open(emb_path, "w", encoding="utf-8") as f:
-                json.dump(embedder_data, f, ensure_ascii=False, indent=2)
+            _atomic_json_write(emb_path, embedder_data, indent=2)
 
     def _auto_load(self):
         """自动加载已有数据"""
@@ -327,9 +388,11 @@ class OfficeKnowledgeBase:
                 self.embedder.vocabulary = emb_data.get("vocabulary", {})
                 self.embedder.idf = emb_data.get("idf", {})
                 self.embedder._doc_count = emb_data.get("doc_count", 0)
-                self.store._fitted = True
-            except Exception:
-                pass
+                fitted = bool(self.embedder.vocabulary)
+                self.embedder._fitted = fitted
+                self.store._fitted = fitted
+            except Exception as exc:
+                logger.warning("加载知识库词表失败 %s: %s", emb_path, exc)
 
         # 加载 chunks
         if os.path.exists(chunks_path):
@@ -337,16 +400,20 @@ class OfficeKnowledgeBase:
                 with open(chunks_path, "r", encoding="utf-8") as f:
                     chunks_data = json.load(f)
 
-                for cd in chunks_data:
-                    emb = cd.pop("embedding", [])
-                    chunk = KnowledgeChunk(**{
-                        k: v for k, v in cd.items()
-                        if k in KnowledgeChunk.__dataclass_fields__
-                    })
-                    from .vector_store import StoredChunk
-                    self.store._chunks.append(StoredChunk(chunk=chunk, embedding=emb))
-            except Exception:
-                pass
+                for index, raw_chunk in enumerate(chunks_data):
+                    try:
+                        cd = dict(raw_chunk)
+                        emb = cd.pop("embedding", [])
+                        chunk = KnowledgeChunk(**{
+                            k: v for k, v in cd.items()
+                            if k in KnowledgeChunk.__dataclass_fields__
+                        })
+                        from .vector_store import StoredChunk
+                        self.store._chunks.append(StoredChunk(chunk=chunk, embedding=emb))
+                    except Exception as exc:
+                        logger.warning("跳过损坏的知识块 #%d: %s", index, exc)
+            except Exception as exc:
+                logger.warning("加载知识块文件失败 %s: %s", chunks_path, exc)
 
         # 加载文档元数据
         if os.path.exists(docs_path):
@@ -355,24 +422,27 @@ class OfficeKnowledgeBase:
                     docs_data = json.load(f)
 
                 for doc_id, dd in docs_data.items():
-                    doc = KnowledgeDocument(
-                        id=dd["id"],
-                        title=dd["title"],
-                        doc_type=dd["doc_type"],
-                        source_path=dd.get("source_path", ""),
-                        tags=dd.get("tags", []),
-                        metadata=dd.get("metadata", {}),
-                        created_at=dd.get("created_at", ""),
-                    )
-                    # 关联 chunks
-                    doc.chunks = [
-                        sc.chunk for sc in self.store._chunks
-                        if sc.chunk.document_id == doc_id
-                    ]
-                    doc.chunk_count = len(doc.chunks)
-                    self.documents[doc_id] = doc
-            except Exception:
-                pass
+                    try:
+                        doc = KnowledgeDocument(
+                            id=dd["id"],
+                            title=dd["title"],
+                            doc_type=dd["doc_type"],
+                            source_path=dd.get("source_path", ""),
+                            tags=dd.get("tags", []),
+                            metadata=dd.get("metadata", {}),
+                            created_at=dd.get("created_at", ""),
+                        )
+                        # 关联 chunks
+                        doc.chunks = [
+                            sc.chunk for sc in self.store._chunks
+                            if sc.chunk.document_id == doc_id
+                        ]
+                        doc.chunk_count = len(doc.chunks)
+                        self.documents[doc_id] = doc
+                    except Exception as exc:
+                        logger.warning("跳过损坏的知识文档 %s: %s", doc_id, exc)
+            except Exception as exc:
+                logger.warning("加载知识文档文件失败 %s: %s", docs_path, exc)
 
     def info(self) -> str:
         """知识库信息"""
@@ -394,13 +464,13 @@ class OfficeKnowledgeBase:
         return "\n".join(lines)
 
 
-def create_default_kb(storage_dir: str = os.path.expanduser("~/.office_agent/kb_data")) -> OfficeKnowledgeBase:
+def create_default_kb(storage_dir: str = None) -> OfficeKnowledgeBase:
     """
     创建带内置知识的默认知识库
 
     内置一些常用办公规范，开箱即用。
     """
-    kb = OfficeKnowledgeBase(storage_dir=storage_dir)
+    kb = OfficeKnowledgeBase(storage_dir=storage_dir or _default_kb_storage_dir())
 
     # 如果已有数据，不重复添加
     if kb.stats["total_documents"] > 0:

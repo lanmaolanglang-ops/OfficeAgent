@@ -1,6 +1,5 @@
 """用户 Repository"""
 from typing import Optional, List
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .base import BaseRepository
@@ -33,8 +32,8 @@ class UserRepository(BaseRepository[User]):
         return self.create(user)
 
     def update_last_login(self, user_id: str):
-        from datetime import datetime
-        self.update(user_id, {"last_login": datetime.utcnow()})
+        from ..time import utc_now
+        self.update(user_id, {"last_login": utc_now()})
 
     def set_preferences(self, user_id: str, prefs_json: str):
         self.update(user_id, {"preferences": prefs_json})

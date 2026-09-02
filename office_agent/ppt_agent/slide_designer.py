@@ -8,9 +8,10 @@ Slide Designer - 幻灯片视觉设计器
 4. 内容溢出处理（自动调整字号/分页）
 5. 视觉一致性保障
 """
-from typing import Optional, List
+import copy
+from typing import Optional
 
-from .models import PPTOutline, SlideContent, ColorScheme, FontScheme, SlideLayout
+from .models import PPTOutline, SlideContent, ColorScheme, FontScheme
 from .ppt_service import THEME_COLORS, DEFAULT_FONTS
 
 
@@ -60,8 +61,9 @@ class SlideDesigner:
 
             # 内容适配
             slide = self._fit_content(slide)
-
-            designed_slides.append(slide)
+            for page in self._paginate_slide(slide):
+                page.body_font_size = page.body_font_size or self.suggest_font_size(page)
+                designed_slides.append(page)
 
         outline.slides = designed_slides
 
@@ -117,26 +119,58 @@ class SlideDesigner:
         return "content"
 
     def _fit_content(self, slide: SlideContent) -> SlideContent:
-        """内容适配：处理溢出"""
+        """内容适配：规范类型但绝不静默删除正文。"""
         bullets = slide.bullets or []
-
-        # 截断过长的要点
-        fitted_bullets = []
-        for b in bullets:
-            if isinstance(b, str):
-                if len(b) > self.MAX_CHARS_PER_BULLET:
-                    b = b[:self.MAX_CHARS_PER_BULLET - 3] + "..."
-                fitted_bullets.append(b)
-            else:
-                fitted_bullets.append(b)
-
-        slide.bullets = fitted_bullets[:self.MAX_BULLETS_PER_SLIDE]
-
-        # 如果要点过多，保留主要的
-        if len(bullets) > self.MAX_BULLETS_PER_SLIDE:
-            slide.notes = (slide.notes or "") + f"\n注：原{len(bullets)}个要点，已精简为{self.MAX_BULLETS_PER_SLIDE}个"
+        slide.bullets = [b if isinstance(b, str) else str(b) for b in bullets]
+        if (len(bullets) > self.MAX_BULLETS_PER_SLIDE
+                or any(len(b) > self.MAX_CHARS_PER_BULLET for b in slide.bullets)):
+            slide.notes = (slide.notes or "") + "\n版式提示：内容密度较高，已启用自动缩字。"
 
         return slide
+
+    @staticmethod
+    def _paginate_slide(slide: SlideContent) -> list[SlideContent]:
+        """把有明确容量上限的内容拆页，确保渲染层不会静默丢数据。"""
+        if slide.layout in ("content", "content_list") and slide.bullets:
+            page_size = 6 if slide.layout == "content" else 8
+            chunks = [slide.bullets[i:i + page_size]
+                      for i in range(0, len(slide.bullets), page_size)]
+            pages = []
+            for index, chunk in enumerate(chunks):
+                page = copy.deepcopy(slide)
+                page.bullets = chunk
+                if index:
+                    page.title = f"{slide.title}（续{index + 1}）"
+                pages.append(page)
+            return pages
+
+        if slide.layout == "data_cards" and len(slide.data or []) > 4:
+            chunks = [slide.data[i:i + 4] for i in range(0, len(slide.data), 4)]
+            pages = []
+            for index, chunk in enumerate(chunks):
+                page = copy.deepcopy(slide)
+                page.data = chunk
+                if index:
+                    page.title = f"{slide.title}（续{index + 1}）"
+                pages.append(page)
+            return pages
+
+        if slide.layout == "table" and len(slide.table_data or []) > 40:
+            header = slide.table_data[:1] if slide.table_header else []
+            body = slide.table_data[1:] if header else slide.table_data
+            body_page_size = 39 if header else 40
+            chunks = [body[i:i + body_page_size]
+                      for i in range(0, len(body), body_page_size)]
+            pages = []
+            for index, chunk in enumerate(chunks):
+                page = copy.deepcopy(slide)
+                page.table_data = header + chunk
+                if index:
+                    page.title = f"{slide.title}（续{index + 1}）"
+                pages.append(page)
+            return pages
+
+        return [slide]
 
     def estimate_content_density(self, slide: SlideContent) -> str:
         """估算内容密度"""

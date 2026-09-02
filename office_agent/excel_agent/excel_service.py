@@ -10,19 +10,18 @@ Excel Service - Excel 底层操作服务
 - 数据筛选/排序
 """
 from pathlib import Path
-from typing import Optional, List, Dict, Any, Tuple, Union
+from typing import Optional, List, Any, Tuple
 from copy import copy
 
+import math
+import re
+
 from openpyxl import Workbook, load_workbook
+from openpyxl.cell.cell import MergedCell
 from openpyxl.styles import (
-    Font, PatternFill, Alignment, Border, Side, NamedStyle
+    Font, PatternFill, Alignment, Border, Side
 )
-from openpyxl.utils import get_column_letter, column_index_from_string
-from openpyxl.chart import (
-    BarChart, LineChart, PieChart, AreaChart, ScatterChart,
-    DoughnutChart, Reference
-)
-from openpyxl.chart.label import DataLabelList
+from openpyxl.utils import get_column_letter
 from openpyxl.formatting.rule import ColorScaleRule, DataBarRule
 
 import pandas as pd
@@ -61,11 +60,46 @@ HEADER_BORDER = Border(
 ZEBRA_FILL = PatternFill(start_color="F5F7FA", end_color="F5F7FA", fill_type="solid")
 
 
+def _derive_output_path(file_path: str, suffix: str) -> str:
+        """默认输出路径：大小写不敏感替换 .xlsx；非 xlsx 扩展名直接追加后缀，
+        避免替换失败时输出路径与输入相同而覆写原文件。"""
+        p = Path(file_path)
+        if p.suffix.lower() == ".xlsx":
+            return str(p.with_name(p.stem + suffix + ".xlsx"))
+        return str(p) + suffix + ".xlsx"
+
+
+def _sanitize_cell_value(value):
+    """NaN/Infinity/NaT 会写出非法 OOXML（空 <v> 触发 Excel 修复提示），统一转 None"""
+    if value is None:
+        return None
+    if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
+        return None
+    try:
+        # pandas NaT / numpy nan
+        if value != value:  # NaN 自反性
+            return None
+    except Exception:
+        pass
+    if value is pd.NaT:
+        return None
+    return value
+
+
 def hex_to_color(hex_str: str):
     """十六进制颜色转 openpyxl Color"""
     from openpyxl.styles import Color
-    h = hex_str.lstrip("#")
-    return Color(rgb=h)
+    if not isinstance(hex_str, str):
+        raise ValueError("颜色值必须是字符串")
+    h = hex_str.strip().lstrip("#")
+    if len(h) == 3:
+        h = "".join(ch * 2 for ch in h)
+    if not re.fullmatch(r"[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?", h):
+        raise ValueError(f"无效的十六进制颜色: {hex_str!r}")
+    # openpyxl 使用 ARGB；六位 RGB 显式补不透明 alpha，避免被解释为透明色。
+    if len(h) == 6:
+        h = f"FF{h}"
+    return Color(rgb=h.upper())
 
 
 class ExcelService:
@@ -85,6 +119,7 @@ class ExcelService:
     def __init__(self):
         self.wb: Optional[Workbook] = None
         self.file_path: str = ""
+        self._opened_from: Optional[str] = None
         self.changes: List[str] = []
 
     def create(self, file_path: str, sheet_name: str = "Sheet1") -> 'ExcelService':
@@ -92,6 +127,8 @@ class ExcelService:
         self.wb = Workbook()
         self.wb.active.title = sheet_name
         self.file_path = file_path
+        # 新建工作簿没有"磁盘上的原始数据"，保存到同一路径是安全的
+        self._opened_from: Optional[str] = None
         self.changes.append(f"创建新工作簿: {file_path}")
         return self
 
@@ -99,8 +136,11 @@ class ExcelService:
         """打开已有工作簿"""
         if not Path(file_path).exists():
             raise FileNotFoundError(f"文件不存在: {file_path}")
-        self.wb = load_workbook(file_path, data_only=False)
+        # 宏工作簿必须 keep_vba，否则另存时 VBA/宏被静默剥离
+        keep_vba = Path(file_path).suffix.lower() in (".xlsm", ".xltm")
+        self.wb = load_workbook(file_path, data_only=False, keep_vba=keep_vba)
         self.file_path = file_path
+        self._opened_from = str(file_path)
         self.changes.append(f"打开文件: {Path(file_path).name}")
         return self
 
@@ -112,6 +152,14 @@ class ExcelService:
         path = output_path or self.file_path
         if not path:
             return ExcelResult(success=False, message="未指定输出路径")
+
+        # 禁止把输出写回"从磁盘打开的输入文件"（防止磁盘满/中途失败损坏
+        # 用户原始数据）；create() 新建的工作簿不受限制
+        if self._opened_from and Path(path).resolve() == Path(self._opened_from).resolve():
+            return ExcelResult(
+                success=False,
+                message=f"拒绝保存：输出路径与输入文件相同（{Path(path).name}），请另存为新文件",
+            )
 
         # 确保目录存在
         Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -183,11 +231,11 @@ class ExcelService:
 
         for r_idx, row_data in enumerate(data):
             for c_idx, value in enumerate(row_data):
-                cell = ws.cell(
-                    row=start_row + r_idx,
-                    column=start_col + c_idx,
-                    value=value
-                )
+                value = _sanitize_cell_value(value)
+                cell = ws.cell(row=start_row + r_idx, column=start_col + c_idx)
+                if isinstance(cell, MergedCell):
+                    continue
+                cell.value = value
                 # 表头样式
                 if has_header and r_idx == 0:
                     cell.font = HEADER_FONT
@@ -258,7 +306,9 @@ class ExcelService:
         """设置单元格值"""
         ws = self.get_sheet(sheet_name)
         if ws:
-            ws[cell_ref] = value
+            cell = ws[cell_ref]
+            if not isinstance(cell, MergedCell):
+                cell.value = value
 
     # ==========================================
     # 公式
@@ -270,11 +320,30 @@ class ExcelService:
         if ws is None or not spec.target_cell:
             return
 
-        formula = spec.formula
+        formula = spec.formula or ""
+        category = getattr(spec, "category", "") or ""
+        # header/label 规格是纯文本（如 "环比增长率"、"华东"），写成
+        # "=中文" 会变成 #NAME? 错误公式；仅真正的公式才加 "=" 前缀
+        is_plain_text = category in ("header", "label") or (
+            formula.startswith("=")
+            and not re.search(r"[A-Za-z0-9$(]", formula)
+        )
+        if is_plain_text:
+            cell = ws[spec.target_cell]
+            if isinstance(cell, MergedCell):
+                self.changes.append(f"跳过合并从属单元格: {spec.target_cell}")
+                return
+            cell.value = formula.lstrip("=")
+            cell.font = Font(name="微软雅黑", size=10, bold=True, color="1F4E79")
+            self.changes.append(f"写入文本 {spec.target_cell}: {formula.lstrip('=')}")
+            return
         if not formula.startswith("="):
             formula = "=" + formula
 
         cell = ws[spec.target_cell]
+        if isinstance(cell, MergedCell):
+            self.changes.append(f"跳过合并从属单元格: {spec.target_cell}")
+            return
         cell.value = formula
         cell.font = Font(name="微软雅黑", size=10, bold=True, color="1F4E79")
         self.changes.append(f"添加公式 {spec.target_cell}: {formula}")
@@ -377,6 +446,17 @@ class ExcelService:
                     pass
             ws.column_dimensions[col_letter].width = min(max(max_len * 0.8 + 2, 8), 50)
 
+    def set_column_width(self, col_letter: str, width: float,
+                         sheet_name: str = None):
+        """设置单列列宽"""
+        ws = self.get_sheet(sheet_name)
+        if ws is None or not col_letter:
+            return
+        try:
+            ws.column_dimensions[col_letter].width = float(width)
+        except (TypeError, ValueError):
+            pass
+
     def freeze_header(self, sheet_name: str = None):
         """冻结首行"""
         ws = self.get_sheet(sheet_name)
@@ -392,6 +472,8 @@ class ExcelService:
         if not range_str:
             if ws.max_row > 1:
                 range_str = f"A1:{get_column_letter(ws.max_column)}{ws.max_row}"
+        if not range_str:
+            return
         ws.auto_filter.ref = range_str
         self.changes.append(f"添加筛选: {ws.title}")
 
@@ -400,63 +482,9 @@ class ExcelService:
     # ==========================================
 
     def add_chart(self, spec: ChartSpec, sheet_name: str = None):
-        """添加图表"""
-        ws = self.get_sheet(sheet_name)
-        if ws is None or not spec.data_range:
-            return
-
-        # 解析数据范围
-        data_ref = Reference(ws, range_string=f"{ws.title}!{spec.data_range}")
-
-        # 创建图表
-        chart_type_map = {
-            "bar": BarChart,
-            "column": BarChart,
-            "line": LineChart,
-            "pie": PieChart,
-            "area": AreaChart,
-            "scatter": ScatterChart,
-            "doughnut": DoughnutChart,
-        }
-        chart_cls = chart_type_map.get(spec.chart_type, BarChart)
-        chart = chart_cls()
-
-        # 柱状图方向
-        if spec.chart_type == "bar":
-            chart.type = "bar"
-        elif spec.chart_type == "column":
-            chart.type = "col"
-
-        chart.title = spec.title or ""
-        chart.style = 10
-
-        # 添加数据
-        chart.add_data(data_ref, titles_from_data=True)
-
-        # 类别（X轴）
-        if spec.categories_range:
-            cats = Reference(ws, range_string=f"{ws.title}!{spec.categories_range}")
-            chart.set_categories(cats)
-
-        # 轴标题
-        if spec.y_title:
-            chart.y_axis.title = spec.y_title
-        if spec.x_title:
-            chart.x_axis.title = spec.x_title
-
-        # 数据标签（饼图）
-        if spec.chart_type in ("pie", "doughnut"):
-            chart.dataLabels = DataLabelList()
-            chart.dataLabels.showPercent = True
-
-        # 图表大小
-        chart.width = spec.width * 0.3937 * 72  # cm → EMU 近似
-        chart.height = spec.height * 0.3937 * 72
-
-        # 放置位置
-        anchor = spec.position or "H2"
-        ws.add_chart(chart, anchor)
-        self.changes.append(f"添加图表: {spec.title or spec.chart_type}")
+        """添加图表，并完整应用 ChartSpec 的类型、堆积、图例和组合图字段。"""
+        from .chart_generator import ChartGenerator
+        ChartGenerator()._render_chart(self, spec, sheet_name)
 
     def add_charts(self, specs: List[ChartSpec], sheet_name: str = None):
         """批量添加图表"""
@@ -469,35 +497,110 @@ class ExcelService:
 
     def sort_data(self, sheet_name: str, sort_col: int,
                   ascending: bool = True, has_header: bool = True):
-        """排序数据"""
+        """排序数据，同时保留公式、单元格样式、批注和超链接。"""
         ws = self.get_sheet(sheet_name)
         if ws is None:
             return
 
-        data = self.read_data(sheet_name)
-        if not data:
+        # 数据区域存在合并单元格时跳过重写（写入 MergedCell 会抛异常，
+        # 且整表重写会破坏合并结构）
+        ws_target = ws
+        if getattr(ws_target, "merged_cells", None) and ws_target.merged_cells.ranges:
+            self.changes.append(f"排序跳过: {sheet_name} 含合并单元格")
             return
 
-        header = data[0] if has_header else None
-        rows = data[1:] if has_header else data
+        first_data_row = 2 if has_header else 1
+        if ws.max_row < first_data_row:
+            return
 
-        rows.sort(key=lambda r: r[sort_col] if sort_col < len(r) else None,
-                  reverse=not ascending)
+        sort_column = sort_col + 1
+        if sort_column < 1 or sort_column > ws.max_column:
+            raise ValueError(f"排序列超出范围: {sort_col}")
 
-        if header:
-            data = [header] + rows
-        else:
-            data = rows
+        # 不能经 values_only/整表 write_data 往返，否则公式会固化、样式会被重建。
+        # 这里为每一行保留完整单元格状态；公式在换行时按 Excel 的相对引用规则平移。
+        row_snapshots = []
+        for source_row in range(first_data_row, ws.max_row + 1):
+            cells = []
+            for cell in ws[source_row]:
+                cells.append({
+                    "coordinate": cell.coordinate,
+                    "value": cell.value,
+                    "style": copy(cell._style),
+                    "comment": copy(cell.comment),
+                    "hyperlink": copy(cell.hyperlink),
+                })
+            row_snapshots.append((source_row, cells))
 
-        self.write_data(sheet_name, data, has_header=has_header)
+        def sort_key(snapshot):
+            _source_row, cells = snapshot
+            value = cells[sort_column - 1]["value"]
+            if value is None:
+                return (2, "")
+            if isinstance(value, bool):
+                return (0, int(value))
+            if isinstance(value, (int, float)):
+                return (0, float(value))
+            if hasattr(value, "timestamp"):
+                try:
+                    return (0, value.timestamp())
+                except (OSError, ValueError):
+                    pass
+            return (1, str(value).casefold())
+
+        non_blank = [row for row in row_snapshots
+                     if row[1][sort_column - 1]["value"] is not None]
+        blank = [row for row in row_snapshots
+                 if row[1][sort_column - 1]["value"] is None]
+        non_blank.sort(key=sort_key, reverse=not ascending)
+        sorted_rows = non_blank + blank
+
+        from openpyxl.formula.translate import Translator
+        for target_row, (_source_row, cells) in enumerate(sorted_rows, start=first_data_row):
+            for col_idx, snapshot in enumerate(cells, start=1):
+                target = ws.cell(row=target_row, column=col_idx)
+                value = snapshot["value"]
+                if isinstance(value, str) and value.startswith("="):
+                    try:
+                        value = Translator(
+                            value, origin=snapshot["coordinate"]
+                        ).translate_formula(target.coordinate)
+                    except (TypeError, ValueError):
+                        # 外部链接、结构化引用等 Translator 不认识时保留原公式，
+                        # 仍优于把公式固化为缓存值。
+                        pass
+                target.value = value
+                target._style = copy(snapshot["style"])
+                target.comment = copy(snapshot["comment"])
+                target._hyperlink = copy(snapshot["hyperlink"])
+
         self.changes.append(f"排序: {sheet_name} 第{sort_col+1}列 {'升序' if ascending else '降序'}")
 
     def add_summary_row(self, sheet_name: str, label: str = "合计",
-                        sum_cols: List[int] = None):
+                        sum_cols: List[int] = None, data_start_row: int | None = None):
         """添加汇总行"""
         ws = self.get_sheet(sheet_name)
         if ws is None:
             return
+
+        normalized_label = str(label).strip()
+        summary_labels = {"合计", "总计", "汇总", normalized_label}
+        for row in range(max(1, ws.max_row - 4), ws.max_row + 1):
+            existing = ws.cell(row=row, column=1).value
+            if isinstance(existing, str) and existing.strip() in summary_labels:
+                self.changes.append(f"汇总行已存在，跳过: {existing.strip()}")
+                return
+
+        if data_start_row is None:
+            data_start_row = 2
+            # 表格对象给出了比“固定第 2 行”更可靠的数据起点。
+            if ws.tables:
+                from openpyxl.utils.cell import range_boundaries
+                table = next(iter(ws.tables.values()))
+                _min_col, min_row, _max_col, _max_row = range_boundaries(table.ref)
+                data_start_row = min_row + 1
+        if data_start_row < 1 or data_start_row > ws.max_row:
+            raise ValueError(f"汇总数据起始行无效: {data_start_row}")
 
         last_row = ws.max_row + 1
         ws.cell(row=last_row, column=1, value=label).font = Font(
@@ -507,7 +610,7 @@ class ExcelService:
         if sum_cols:
             for col in sum_cols:
                 col_letter = get_column_letter(col + 1)
-                formula = f"=SUM({col_letter}2:{col_letter}{last_row - 1})"
+                formula = f"=SUM({col_letter}{data_start_row}:{col_letter}{last_row - 1})"
                 cell = ws.cell(row=last_row, column=col + 1, value=formula)
                 cell.font = Font(name="微软雅黑", size=10, bold=True, color="1F4E79")
 

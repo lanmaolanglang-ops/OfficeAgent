@@ -2,6 +2,7 @@
 本地文件系统存储实现
 """
 import os
+import uuid
 import shutil
 import hashlib
 from datetime import datetime
@@ -41,9 +42,16 @@ class LocalStorage(StorageBackend):
         """将相对路径转为绝对路径，防止路径穿越"""
         # 规范化路径
         full = os.path.normpath(os.path.join(self.root_path, storage_path))
-        # 安全检查：必须在 root_path 下
-        if not full.startswith(os.path.normpath(self.root_path)):
-            raise ValueError(f"非法路径: {storage_path}")
+        root = os.path.normpath(self.root_path)
+        # 安全检查：必须在 root_path 下（用 commonpath 防止前缀目录名伪造，
+        # 例如 root=...\\storage 时 ...\\storage_evil\\x 不再被放行）
+        try:
+            if os.path.commonpath([full, root]) != root:
+                raise ValueError(f"非法路径: {storage_path}")
+        except ValueError as exc:
+            if "非法路径" in str(exc):
+                raise
+            raise ValueError(f"非法路径: {storage_path}") from exc
         return full
 
     def _ensure_parent(self, full_path: str):
@@ -51,12 +59,26 @@ class LocalStorage(StorageBackend):
         parent = os.path.dirname(full_path)
         os.makedirs(parent, exist_ok=True)
 
+    def _atomic_write(self, full_path: str, writer) -> None:
+        """先写临时文件再原子替换，避免半写文件被当作正常文件"""
+        self._ensure_parent(full_path)
+        tmp_path = f"{full_path}.tmp-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+        try:
+            with open(tmp_path, "wb") as f:
+                writer(f)
+            os.replace(tmp_path, full_path)
+        except BaseException:
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except OSError:
+                pass
+            raise
+
     def upload(self, storage_path: str, content: bytes,
                content_type: str = None) -> dict:
         full_path = self._full_path(storage_path)
-        self._ensure_parent(full_path)
-        with open(full_path, "wb") as f:
-            f.write(content)
+        self._atomic_write(full_path, lambda f: f.write(content))
         return {
             "path": storage_path,
             "size": len(content),
@@ -66,10 +88,11 @@ class LocalStorage(StorageBackend):
     def upload_fileobj(self, storage_path: str, fileobj: BinaryIO,
                        content_type: str = None) -> dict:
         full_path = self._full_path(storage_path)
-        self._ensure_parent(full_path)
         size = 0
         md5 = hashlib.md5()
-        with open(full_path, "wb") as f:
+
+        def _copy(f):
+            nonlocal size
             while True:
                 chunk = fileobj.read(8192)
                 if not chunk:
@@ -77,6 +100,8 @@ class LocalStorage(StorageBackend):
                 f.write(chunk)
                 md5.update(chunk)
                 size += len(chunk)
+
+        self._atomic_write(full_path, _copy)
         return {"path": storage_path, "size": size, "etag": md5.hexdigest()}
 
     def download(self, storage_path: str) -> bytes:
@@ -85,6 +110,21 @@ class LocalStorage(StorageBackend):
             raise FileNotFoundError(f"文件不存在: {storage_path}")
         with open(full_path, "rb") as f:
             return f.read()
+
+    def iter_file(self, storage_path: str, chunk_size: int = 1024 * 1024):
+        """分块迭代文件内容（避免大文件整读进内存）"""
+        full_path = self._full_path(storage_path)
+        if not os.path.exists(full_path):
+            raise FileNotFoundError(f"文件不存在: {storage_path}")
+
+        def _gen():
+            with open(full_path, "rb") as f:
+                while True:
+                    chunk = f.read(chunk_size)
+                    if not chunk:
+                        break
+                    yield chunk
+        return _gen()
 
     def download_fileobj(self, storage_path: str, fileobj: BinaryIO) -> None:
         full_path = self._full_path(storage_path)
@@ -194,28 +234,44 @@ class LocalStorage(StorageBackend):
         try:
             with open(os.path.join(mp_dir, ".meta")) as f:
                 target_path = f.read().strip()
-        except:
+        except OSError:
             target_path = storage_path
 
         full_path = self._full_path(target_path)
         self._ensure_parent(full_path)
 
-        # 合并分片
+        # 合并分片（先写临时文件，全部成功后原子替换）
         total_size = 0
         md5 = hashlib.md5()
-        with open(full_path, "wb") as out:
-            for part in sorted(parts, key=lambda p: p["part_number"]):
-                part_path = os.path.join(mp_dir, f"part_{part['part_number']:05d}")
-                if not os.path.exists(part_path):
-                    raise ValueError(f"分片 {part['part_number']} 不存在")
-                with open(part_path, "rb") as pf:
-                    while True:
-                        chunk = pf.read(8192)
-                        if not chunk:
-                            break
-                        out.write(chunk)
-                        md5.update(chunk)
-                        total_size += len(chunk)
+        tmp_path = f"{full_path}.tmp-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+        try:
+            with open(tmp_path, "wb") as out:
+                for part in sorted(parts, key=lambda p: p["part_number"]):
+                    part_path = os.path.join(mp_dir, f"part_{part['part_number']:05d}")
+                    if not os.path.exists(part_path):
+                        raise ValueError(f"分片 {part['part_number']} 不存在")
+                    expected_etag = part.get("etag")
+                    if expected_etag:
+                        with open(part_path, "rb") as pf:
+                            actual_etag = hashlib.md5(pf.read()).hexdigest()
+                        if actual_etag != expected_etag:
+                            raise ValueError(f"分片 {part['part_number']} 校验失败")
+                    with open(part_path, "rb") as pf:
+                        while True:
+                            chunk = pf.read(8192)
+                            if not chunk:
+                                break
+                            out.write(chunk)
+                            md5.update(chunk)
+                            total_size += len(chunk)
+            os.replace(tmp_path, full_path)
+        except BaseException:
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except OSError:
+                pass
+            raise
 
         # 清理临时分片
         shutil.rmtree(mp_dir, ignore_errors=True)

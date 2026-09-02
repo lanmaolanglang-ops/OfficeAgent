@@ -22,8 +22,7 @@
 """
 import os
 import uuid
-from datetime import datetime
-from typing import Optional
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -49,7 +48,7 @@ def generate_version_id() -> str:
 
 def _date_path() -> str:
     """生成日期路径：YYYY/MM/DD"""
-    now = datetime.now()
+    now = datetime.now(timezone.utc)
     return os.path.join(f"{now.year:04d}", f"{now.month:02d}", f"{now.day:02d}")
 
 

@@ -5,7 +5,7 @@ import uuid
 from dataclasses import dataclass, field, asdict
 from typing import Optional, List, Dict, Any
 from enum import Enum
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 class DocumentType(Enum):
@@ -70,8 +70,8 @@ class KnowledgeDocument:
         if not self.id:
             self.id = f"doc_{uuid.uuid4().hex[:12]}"
         if not self.created_at:
-            self.created_at = datetime.now().isoformat()
-        self.updated_at = datetime.now().isoformat()
+            self.created_at = datetime.now(timezone.utc).isoformat()
+        self.updated_at = datetime.now(timezone.utc).isoformat()
         self.chunk_count = len(self.chunks)
 
     def to_dict(self) -> dict:

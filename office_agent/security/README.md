@@ -120,12 +120,12 @@ if result.has_injection:
     safe_text = result.sanitized_text
 ```
 
-### 6. 代码沙箱
+### 6. 代码执行安全边界
 
 ```python
 from office_agent.security import Sandbox, SandboxStatus
 
-sandbox = Sandbox(timeout_seconds=30, max_memory_mb=512)
+sandbox = Sandbox()
 
 # 执行数据分析代码
 result = sandbox.execute_data_analysis("""
@@ -134,13 +134,13 @@ df = pd.DataFrame({"a": [1,2,3], "b": [4,5,6]})
 result = {"mean": float(df["a"].mean())}
 """)
 
-if result.success:
-    print(result.result)
-elif result.status == SandboxStatus.BLOCKED:
-    print(f"代码被阻止: {result.error}")
-elif result.status == SandboxStatus.TIMEOUT:
-    print("执行超时")
+assert result.status == SandboxStatus.BLOCKED
 ```
+
+本地子进程、临时目录和源码关键词过滤不构成操作系统级隔离，因此默认拒绝
+执行。只有可信的本地测试可显式传入 `allow_unsafe_subprocess=True`；生产环境
+必须保持 `ENABLE_SANDBOX=false`，直到接入具备网络禁用、只读文件系统、CPU /
+内存配额和独立身份的外部执行器。
 
 ### 7. 审计日志
 
@@ -183,8 +183,7 @@ ENABLE_FILE_SCAN=true
 
 # 沙箱
 SANDBOX_TIMEOUT=30
-SANDBOX_MAX_MEMORY=512
-ENABLE_SANDBOX=true
+ENABLE_SANDBOX=false
 
 # 登录安全
 MAX_LOGIN_ATTEMPTS=5

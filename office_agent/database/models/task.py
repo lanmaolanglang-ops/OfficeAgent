@@ -3,7 +3,6 @@ import uuid
 from datetime import datetime
 from sqlalchemy import String, Integer, Text, ForeignKey, DateTime, Float
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from sqlalchemy.sql import func
 
 from ..base import Base, TimestampMixin
 
@@ -23,7 +22,9 @@ class Task(Base, TimestampMixin):
     # pending/running/waiting/success/failed/cancelled
     agent_name: Mapped[str] = mapped_column(String(64), nullable=True, index=True)
     instruction: Mapped[str] = mapped_column(Text, nullable=False)
-    parent_task_id: Mapped[str] = mapped_column(String(32), ForeignKey("task.id"), nullable=True, index=True)
+    parent_task_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("task.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     revision_number: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
 
     # 进度
@@ -36,7 +37,7 @@ class Task(Base, TimestampMixin):
 
     # 用户
     user_id: Mapped[str] = mapped_column(
-        String(32), ForeignKey("user.id"), nullable=True, index=True
+        String(32), ForeignKey("user.id", ondelete="SET NULL"), nullable=True, index=True
     )
 
     # 结果和错误
@@ -62,8 +63,10 @@ class Task(Base, TimestampMixin):
 
     # 关系
     user = relationship("User", back_populates="tasks")
-    parent_task = relationship("Task", remote_side=[id], backref="revisions")
-    logs = relationship("ExecutionLog", back_populates="task", lazy="dynamic")
+    parent_task = relationship("Task", remote_side=[id], backref="revisions", passive_deletes=True)
+    logs = relationship(
+        "ExecutionLog", back_populates="task", lazy="dynamic", passive_deletes=True
+    )
 
     def __repr__(self):
         return f"<Task {self.id} [{self.status}] {self.task_type}>"

@@ -11,16 +11,16 @@ Excel Analysis Engine - 数据分析引擎
 
 输出：结构化分析报告
 """
-import math
+import re
 import statistics
-from datetime import datetime
-from typing import List, Dict, Optional, Any, Tuple
+from datetime import datetime, timezone
+from typing import List, Dict, Optional, Tuple
 from collections import defaultdict
 
 from .models import (
     AnalysisReport, AnalysisFinding, ColumnAnalysis, GroupAnalysis,
     TrendAnalysis, FindingType, FindingSeverity,
-    DataProfile, SheetInfo, ColumnInfo, DataSchema, SheetSchema,
+    DataProfile, DataSchema,
 )
 
 
@@ -44,32 +44,54 @@ class AnalysisEngine:
     def analyze_file(self, file_path: str,
                      sheet_name: str = None) -> AnalysisReport:
         """分析 Excel 文件，生成完整报告"""
-        from .excel_service import ExcelService
-
-        # 1. 读取数据
-        service = ExcelService()
-        service.open(file_path)
-
-        if sheet_name is None:
-            sheet_name = service.wb.sheetnames[0]
-
-        ws = service.get_sheet(sheet_name)
-        self._read_sheet_data(ws, sheet_name)
+        # 1. 使用公式缓存值读取数据。data_only=False 会把公式字符串当文本，
+        # 使包含公式的数值列被静默排除。
+        from openpyxl import load_workbook
+        wb_values = load_workbook(file_path, data_only=True, read_only=True)
+        try:
+            requested_sheets = [sheet_name] if sheet_name else list(wb_values.sheetnames)
+            missing = [name for name in requested_sheets if name not in wb_values.sheetnames]
+            if missing:
+                raise KeyError(f"工作表不存在: {missing[0]}")
+            for current_sheet in requested_sheets:
+                self._read_sheet_data(wb_values[current_sheet], current_sheet)
+        finally:
+            wb_values.close()
 
         # 2. 分析数据画像
         try:
             from .data_analyzer import DataAnalyzer
             analyzer = DataAnalyzer()
-            self.profile = analyzer.analyze(file_path)
             self.schema = analyzer.analyze_schema(file_path)
         except Exception:
-            self.profile = None
             self.schema = None
 
-        # 3. 执行分析
-        report = self._run_analysis(file_path, sheet_name)
+        reports = [self._run_analysis(file_path, name) for name in requested_sheets]
+        if len(reports) == 1:
+            return reports[0]
 
-        return report
+        combined = AnalysisReport(
+            file_path=file_path,
+            file_name=reports[0].file_name,
+            sheet_name="全部工作表",
+            analysis_time=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+            total_rows=sum(report.total_rows for report in reports),
+            total_columns=sum(report.total_columns for report in reports),
+            sheet_reports=reports,
+        )
+        combined.findings = [finding for report in reports for finding in report.findings]
+        combined.summary = "；".join(
+            f"{report.sheet_name}: {report.summary}" for report in reports if report.summary
+        )
+        combined.key_findings = "\n".join(
+            f"[{report.sheet_name}] {finding.title}"
+            for report in reports for finding in report.findings[:5]
+        )
+        combined.recommendations = "\n".join(
+            f"[{report.sheet_name}] {report.recommendations}"
+            for report in reports if report.recommendations
+        )
+        return combined
 
     def analyze_data(self, data: List[List], headers: List[str] = None,
                      sheet_name: str = "Sheet1",
@@ -94,7 +116,7 @@ class AnalysisEngine:
             file_path=file_path,
             file_name=file_path.split("/")[-1].split("\\")[-1] if file_path else "data.xlsx",
             sheet_name=sheet_name,
-            analysis_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            analysis_time=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
         )
 
         rows = self.raw_data.get(sheet_name, [])
@@ -115,7 +137,9 @@ class AnalysisEngine:
 
         # 1. 逐列统计分析
         for col_idx in numeric_cols:
-            col_analysis = self._analyze_column(rows, headers, col_idx, text_cols)
+            col_analysis = self._analyze_column(
+                rows, headers, col_idx, text_cols, sheet_name=sheet_name
+            )
             report.column_analyses.append(col_analysis)
 
         # 2. 趋势分析（有时间/有序列时）
@@ -195,7 +219,9 @@ class AnalysisEngine:
                     date_count += 1
                 else:
                     try:
-                        float(str(v).replace(",", "").replace("%", ""))
+                        number = self._to_float(v)
+                        if number is None:
+                            raise ValueError
                         num_count += 1
                     except (ValueError, TypeError):
                         pass
@@ -218,13 +244,28 @@ class AnalysisEngine:
                 if isinstance(v, (int, float)) and not isinstance(v, bool):
                     values.append(float(v))
                 else:
-                    try:
-                        s = str(v).replace(",", "").replace("%", "").strip()
-                        if s:
-                            values.append(float(s))
-                    except (ValueError, TypeError):
-                        pass
+                    number = self._to_float(v)
+                    if number is not None:
+                        values.append(number)
         return values
+
+    def _get_numeric_points(self, rows: List[List], col_idx: int) -> List[Tuple[int, float]]:
+        """返回源行索引和数值，避免过滤空值后与时间标签错位。"""
+        points = []
+        for row_index, row in enumerate(rows):
+            if col_idx >= len(row) or row[col_idx] is None:
+                continue
+            value = row[col_idx]
+            try:
+                if isinstance(value, bool):
+                    continue
+                number = self._to_float(value)
+                if number is None:
+                    continue
+            except (TypeError, ValueError):
+                continue
+            points.append((row_index, number))
+        return points
 
     def _find_time_column(self, headers: List[str],
                            date_cols: List[int],
@@ -235,13 +276,17 @@ class AnalysisEngine:
             return date_cols[0]
 
         # 通过列名识别
-        time_keywords = ["月", "年", "季度", "日期", "时间", "month", "year",
-                        "date", "quarter", "期", "周"]
+        exact_keywords = {"期", "周期", "周", "月份", "季度", "年度", "日期", "时间"}
+        token_pattern = re.compile(
+            r"(?:^|[_\-\s])(month|year|date|quarter|week|period)(?:$|[_\-\s])",
+            re.IGNORECASE,
+        )
         for i, h in enumerate(headers):
-            h_lower = str(h).lower()
-            for kw in time_keywords:
-                if kw in h_lower:
-                    return i
+            header = str(h).strip()
+            if (header in exact_keywords
+                    or any(word in header for word in ("日期", "时间", "月份", "季度", "年度"))
+                    or token_pattern.search(header)):
+                return i
 
         # 第一列文本列
         return text_cols[0] if text_cols else -1
@@ -251,7 +296,8 @@ class AnalysisEngine:
     # ==========================================
 
     def _analyze_column(self, rows: List[List], headers: List[str],
-                         col_idx: int, text_cols: List[int]) -> ColumnAnalysis:
+                         col_idx: int, text_cols: List[int],
+                         sheet_name: str | None = None) -> ColumnAnalysis:
         """分析单列"""
         col_name = headers[col_idx] if col_idx < len(headers) else f"列{col_idx+1}"
         values = self._get_numeric_values(rows, col_idx)
@@ -264,7 +310,7 @@ class AnalysisEngine:
 
         # 从 schema 获取语义类型和单位
         if self.schema and self.schema.sheets:
-            sheet = self.schema.get_sheet()
+            sheet = self.schema.get_sheet(sheet_name)
             if sheet and col_idx < len(sheet.columns):
                 col_info = sheet.columns[col_idx]
                 ca.semantic_type = col_info.semantic_type or ""
@@ -365,8 +411,9 @@ class AnalysisEngine:
             return []
 
         sorted_vals = sorted(values)
-        q1 = sorted_vals[len(sorted_vals) // 4]
-        q3 = sorted_vals[3 * len(sorted_vals) // 4]
+        # inclusive 分位数对小样本做线性插值，避免位次法直接把端点
+        # 当作四分位数而漏报明显离群值。
+        q1, _, q3 = statistics.quantiles(sorted_vals, n=4, method="inclusive")
         iqr = q3 - q1
         lower = q1 - 1.5 * iqr
         upper = q3 + 1.5 * iqr
@@ -391,9 +438,10 @@ class AnalysisEngine:
     def _analyze_trend(self, rows: List[List], headers: List[str],
                         col_idx: int, time_col: int) -> Optional[TrendAnalysis]:
         """分析时间序列趋势"""
-        values = self._get_numeric_values(rows, col_idx)
-        if len(values) < 2:
+        points = self._get_numeric_points(rows, col_idx)
+        if len(points) < 2:
             return None
+        values = [value for _, value in points]
 
         col_name = headers[col_idx] if col_idx < len(headers) else f"列{col_idx+1}"
         time_name = headers[time_col] if 0 <= time_col < len(headers) else ""
@@ -406,14 +454,17 @@ class AnalysisEngine:
 
         # 逐期环比
         growth_rates = []
+        growth_periods = []
         for i in range(1, len(values)):
             if values[i-1] != 0:
                 rate = (values[i] - values[i-1]) / abs(values[i-1])
                 growth_rates.append(rate)
 
-                period_label = ""
-                if time_col >= 0 and time_col < len(rows[i-1]):
-                    period_label = str(rows[i][time_col]) if i < len(rows) else f"第{i+1}期"
+                source_row = points[i][0]
+                period_label = f"第{i+1}期"
+                if 0 <= source_row < len(rows) and 0 <= time_col < len(rows[source_row]):
+                    period_label = str(rows[source_row][time_col])
+                growth_periods.append(period_label)
 
                 ta.periods.append({
                     "period": period_label,
@@ -429,16 +480,10 @@ class AnalysisEngine:
             max_growth_idx = max(range(len(growth_rates)), key=lambda i: growth_rates[i])
             max_decline_idx = min(range(len(growth_rates)), key=lambda i: growth_rates[i])
 
-            if max_growth_idx + 1 < len(rows) and time_col >= 0:
-                ta.max_growth_period = str(rows[max_growth_idx + 1][time_col])
-            else:
-                ta.max_growth_period = f"第{max_growth_idx+2}期"
+            ta.max_growth_period = growth_periods[max_growth_idx]
             ta.max_growth_rate = growth_rates[max_growth_idx]
 
-            if max_decline_idx + 1 < len(rows) and time_col >= 0:
-                ta.max_decline_period = str(rows[max_decline_idx + 1][time_col])
-            else:
-                ta.max_decline_period = f"第{max_decline_idx+2}期"
+            ta.max_decline_period = growth_periods[max_decline_idx]
             ta.max_decline_rate = growth_rates[max_decline_idx]
 
         # 整体增长率
@@ -561,7 +606,7 @@ class AnalysisEngine:
                             finding_type=FindingType.ANOMALY_HIGH.value,
                             severity=FindingSeverity.IMPORTANT.value,
                             title=f"{outlier['label']}{ca.column_name}异常偏高：{self._fmt_num(outlier['value'])}{ca.unit}",
-                            description=f"该值显著高于正常范围（Q3+1.5IQR），建议核实数据",
+                            description="该值显著高于正常范围（Q3+1.5IQR），建议核实数据",
                             column_name=ca.column_name,
                             dimension_value=outlier["label"],
                             value=outlier["value"],
@@ -607,7 +652,7 @@ class AnalysisEngine:
                     finding_type=FindingType.GROWTH.value,
                     severity=FindingSeverity.NOTABLE.value,
                     title=f"{ta.max_growth_period}{ta.column_name}增长{ta.max_growth_rate:+.1%}",
-                    description=f"环比增幅最大的时期",
+                    description="环比增幅最大的时期",
                     column_name=ta.column_name,
                     dimension_value=ta.max_growth_period,
                     change_rate=ta.max_growth_rate,
@@ -619,7 +664,7 @@ class AnalysisEngine:
                     finding_type=FindingType.DECLINE.value,
                     severity=FindingSeverity.NOTABLE.value,
                     title=f"{ta.max_decline_period}{ta.column_name}下降{abs(ta.max_decline_rate):.1%}",
-                    description=f"环比降幅最大的时期，建议分析原因",
+                    description="环比降幅最大的时期，建议分析原因",
                     column_name=ta.column_name,
                     dimension_value=ta.max_decline_period,
                     change_rate=ta.max_decline_rate,
@@ -732,9 +777,13 @@ class AnalysisEngine:
         if isinstance(v, (int, float)) and not isinstance(v, bool):
             return float(v)
         try:
-            s = str(v).replace(",", "").replace("%", "").strip()
+            s = str(v).replace(",", "").strip()
             if s:
-                return float(s)
+                is_percent = s.endswith("%")
+                if is_percent:
+                    s = s[:-1].strip()
+                number = float(s)
+                return number / 100.0 if is_percent else number
         except (ValueError, TypeError):
             pass
         return None

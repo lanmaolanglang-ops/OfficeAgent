@@ -1,7 +1,7 @@
 """执行日志 Repository"""
 import json
-from typing import Optional, List, Dict
-from datetime import datetime, timedelta
+from typing import List
+from datetime import datetime, timedelta, timezone
 from sqlalchemy import select, and_, func
 from sqlalchemy.orm import Session
 
@@ -53,6 +53,11 @@ class ExecutionLogRepository(BaseRepository[ExecutionLog]):
                       duration_ms: int = 0, status: str = "success",
                       error_message: str = None, metadata: dict = None,
                       start_time: datetime = None, end_time: datetime = None) -> ExecutionLog:
+        started_at = start_time or datetime.now(timezone.utc)
+        terminal_statuses = {"success", "error", "failed", "cancelled", "completed"}
+        finished_at = end_time
+        if finished_at is None and status in terminal_statuses:
+            finished_at = datetime.now(timezone.utc)
         log = ExecutionLog(
             agent=agent, action=action, task_id=task_id,
             request_id=request_id, trace_id=trace_id,
@@ -63,14 +68,14 @@ class ExecutionLogRepository(BaseRepository[ExecutionLog]):
             duration_ms=duration_ms, status=status,
             error_message=error_message,
             metadata_json=json.dumps(metadata, ensure_ascii=False) if metadata else None,
-            start_time=start_time or datetime.now(),
-            end_time=end_time or datetime.now(),
+            start_time=started_at,
+            end_time=finished_at,
         )
         return self.create(log)
 
     def get_stats(self, hours: int = 24) -> dict:
         """获取执行统计"""
-        since = datetime.now() - timedelta(hours=hours)
+        since = datetime.now(timezone.utc) - timedelta(hours=hours)
         total = self.session.execute(
             select(func.count(ExecutionLog.id)).where(
                 ExecutionLog.created_at >= since
@@ -111,7 +116,7 @@ class ExecutionLogRepository(BaseRepository[ExecutionLog]):
         return {
             "total_executions": total,
             "errors": errors,
-            "success_rate": round((total - errors) / total * 100, 2) if total else 100,
+            "success_rate": round((total - errors) / total * 100, 2) if total else None,
             "avg_duration_ms": round(float(avg_duration), 2),
             "total_tokens": total_tokens,
             "total_cost": round(float(total_cost), 4),
@@ -157,7 +162,7 @@ class ModelCallLogRepository(BaseRepository[ModelCallLog]):
 
     def get_stats(self, hours: int = 24) -> dict:
         """获取模型调用统计"""
-        since = datetime.now() - timedelta(hours=hours)
+        since = datetime.now(timezone.utc) - timedelta(hours=hours)
         total = self.session.execute(
             select(func.count(ModelCallLog.id)).where(
                 ModelCallLog.created_at >= since
@@ -203,7 +208,7 @@ class ModelCallLogRepository(BaseRepository[ModelCallLog]):
         return {
             "total_calls": total,
             "errors": errors,
-            "success_rate": round((total - errors) / total * 100, 2) if total else 100,
+            "success_rate": round((total - errors) / total * 100, 2) if total else None,
             "total_input_tokens": total_input,
             "total_output_tokens": total_output,
             "total_tokens": total_input + total_output,
@@ -237,7 +242,7 @@ class ErrorLogRepository(BaseRepository[ErrorLog]):
                   level: str = "ERROR", logger_name: str = None,
                   extra: dict = None) -> ErrorLog:
         log = ErrorLog(
-            error_type=error_type[:128],
+            error_type=(error_type or "UnknownError")[:128],
             error_message=(error_message or "")[:2000],
             stack_trace=stack_trace,
             request_id=request_id, task_id=task_id, trace_id=trace_id,
@@ -251,7 +256,7 @@ class ErrorLogRepository(BaseRepository[ErrorLog]):
         self.update(error_id, {"resolved": True, "resolution_note": note})
 
     def get_stats(self, hours: int = 24) -> dict:
-        since = datetime.now() - timedelta(hours=hours)
+        since = datetime.now(timezone.utc) - timedelta(hours=hours)
         total = self.session.execute(
             select(func.count(ErrorLog.id)).where(
                 ErrorLog.created_at >= since
@@ -260,7 +265,7 @@ class ErrorLogRepository(BaseRepository[ErrorLog]):
         unresolved = self.session.execute(
             select(func.count(ErrorLog.id)).where(and_(
                 ErrorLog.created_at >= since,
-                ErrorLog.resolved == False,
+                ErrorLog.resolved.is_(False),
             ))
         ).scalar() or 0
 

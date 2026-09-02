@@ -11,9 +11,9 @@ import re
 import json
 import logging
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional
 
-from .models import PPTOutline, SlideContent, SlideLayout
+from .models import PPTOutline, SlideContent
 
 logger = logging.getLogger("office_agent.ppt.content_planner")
 
@@ -42,10 +42,10 @@ THEME_TEMPLATES = {
         ("toc", "目录", ""),
         ("content", "产品概述", ["产品定位", "目标用户", "核心价值"]),
         ("content", "市场背景", ["市场规模", "用户痛点", "竞品分析"]),
-        ("content_image", "核心功能", ["功能亮点一", "功能亮点二", "功能亮点三"]),
+        ("content_image", "核心功能", ["待补充：真实的产品功能与用户价值"]),
         ("two_column", "产品优势", []),
         ("data_cards", "核心数据", []),
-        ("content", "应用场景", ["场景一", "场景二", "场景三"]),
+        ("content", "应用场景", ["待补充：真实的应用场景与使用方式"]),
         ("timeline", "发展规划", []),
         ("summary", "感谢聆听", []),
     ],
@@ -53,7 +53,7 @@ THEME_TEMPLATES = {
         ("cover", "工作总结", "{subtitle}"),
         ("toc", "目录", ""),
         ("content", "工作概述", ["工作背景", "职责范围", "总体评价"]),
-        ("content", "重点工作", ["重点任务一", "重点任务二", "重点任务三"]),
+        ("content", "重点工作", ["待补充：已完成的具体任务与结果"]),
         ("data_cards", "工作成果", []),
         ("content", "经验总结", ["成功经验", "不足之处", "改进方向"]),
         ("content", "下一步计划", ["工作计划", "个人成长", "资源需求"]),
@@ -76,7 +76,7 @@ THEME_TEMPLATES = {
         ("cover", "{title}", "{subtitle}"),
         ("toc", "目录", ""),
         ("content", "背景介绍", ["背景概述", "现状分析", "核心问题"]),
-        ("content", "核心内容", ["要点一", "要点二", "要点三"]),
+        ("content", "核心内容", ["待补充：与主题相关的事实、分析与结论"]),
         ("content", "详细说明", ["具体内容", "关键细节", "实施路径"]),
         ("data_cards", "数据展示", []),
         ("content", "总结", ["主要结论", "后续计划", "行动建议"]),
@@ -84,21 +84,9 @@ THEME_TEMPLATES = {
     ],
 }
 
-# 数据卡片默认数据
-DEFAULT_DATA = [
-    ("增长率", "126", "%"),
-    ("用户数", "50", "万"),
-    ("满意度", "98", "%"),
-    ("完成度", "100", "%"),
-]
-
-# 时间线默认数据
-DEFAULT_TIMELINE = [
-    ("Q1", "启动", "项目立项"),
-    ("Q2", "开发", "核心功能"),
-    ("Q3", "测试", "质量保障"),
-    ("Q4", "上线", "正式发布"),
-]
+# 缺少真实输入时保持为空。示例数字/时间线绝不能进入用户成品。
+DEFAULT_DATA = []
+DEFAULT_TIMELINE = []
 
 
 class ContentPlanner:
@@ -114,6 +102,30 @@ class ContentPlanner:
 
     def __init__(self, model_gateway=None):
         self.model_gateway = model_gateway
+
+    @staticmethod
+    def _enforce_slide_budget(outline: PPTOutline, budget: int) -> PPTOutline:
+        """把大纲裁剪到预算页数：保留首页（封面）与末页（总结/致谢），
+        从中间超量部分截断；页数不足不伪造内容。"""
+        try:
+            budget = max(2, int(budget))
+        except (TypeError, ValueError):
+            budget = 10
+        slides = outline.slides
+        if len(slides) <= budget:
+            # 页数仍受绝对上限保护
+            if len(slides) > 50:
+                outline.slides = slides[:49] + [slides[-1]]
+                for i, s in enumerate(outline.slides):
+                    s.page_number = i + 1
+            return outline
+        keep_head = budget - 1  # 留 1 页给总结
+        head = slides[:keep_head]
+        tail = slides[-1:]
+        outline.slides = head + tail
+        for i, s in enumerate(outline.slides):
+            s.page_number = i + 1
+        return outline
 
     def plan_from_theme(self, theme: str,
                         slide_count: int = 10,
@@ -141,7 +153,9 @@ class ContentPlanner:
             ai_outline = self._generate_with_ai(clean_title, slide_count, style)
 
         if ai_outline and ai_outline.slides:
-            return ai_outline
+            # 页数预算强制：LLM 无视 slide_count 要求时以用户要求为准
+            # （保留封面与总结页，裁掉中间超量页），杜绝"要 10 页给 30 页"
+            return self._enforce_slide_budget(ai_outline, slide_count)
 
         # 3. LLM 失败/未配置时回退模板，保证有产出，同时用 used_template 标记避免冒充 AI
         if self.model_gateway:
@@ -235,7 +249,7 @@ class ContentPlanner:
 
             # 普通文本 → 如果有当前页，作为要点；否则新建内容页
             if current_slide:
-                if len(line) > 10:
+                if line.strip():
                     current_bullets.append(line.strip())
             else:
                 current_slide = SlideContent(
@@ -368,7 +382,15 @@ class ContentPlanner:
                 left_content=data.get("left_content", []),
                 right_content=data.get("right_content", []),
                 image_path=data.get("image_path", ""),
+                image_alt=data.get("image_alt", ""),
+                image_prompt=data.get("image_prompt", ""),
                 data=data.get("data", []),
+                table_data=data.get("table_data", []),
+                table_header=data.get("table_header", True),
+                chart_type=data.get("chart_type", "bar"),
+                chart_title=data.get("chart_title", ""),
+                chart_categories=data.get("chart_categories", []),
+                chart_series=data.get("chart_series", []),
                 quote_text=data.get("quote_text", ""),
                 quote_source=data.get("quote_source", ""),
                 timeline_items=data.get("timeline_items", []),
@@ -409,45 +431,41 @@ class ContentPlanner:
             return outline
 
         if current < target:
-            # 需要增加内容页
-            content_layouts = ["content", "content_list", "two_column"]
-            idx = 0
-            insert_pos = len(outline.slides) - 1  # 在总结页前插入
-
-            while len(outline.slides) < target:
-                layout = content_layouts[idx % len(content_layouts)]
-                slide = SlideContent(
-                    layout=layout,
-                    title=f"补充内容 {idx + 1}",
-                    bullets=["要点一", "要点二", "要点三"],
-                )
-                if layout == "data_cards":
-                    slide.data = DEFAULT_DATA
-                outline.slides.insert(insert_pos, slide)
-                insert_pos += 1
-                idx += 1
+            # 内容不足时宁可少页，也不为满足页数伪造“补充内容/要点”。
+            return outline
         else:
-            # 需要减少页数，保留封面、目录、章节页、总结页
-            essential = []
-            removable = []
-            for s in outline.slides:
-                if s.layout in ("cover", "toc", "section", "summary"):
-                    essential.append(s)
-                else:
-                    removable.append(s)
-
-            # 保留必要页 + 部分内容页
-            keep_count = target - len(essential)
-            if keep_count > 0:
-                # 均匀选取内容页
-                step = max(1, len(removable) // keep_count)
-                kept = removable[::step][:keep_count]
-                result = essential[:2]  # 封面+目录
-                result.extend(kept)
-                result.extend(essential[2:])  # 章节+总结
-                outline.slides = result[:target]
+            essential_indices = [
+                i for i, slide in enumerate(outline.slides)
+                if slide.layout in ("cover", "toc", "section", "summary")
+            ]
+            required_indices = set(essential_indices)
+            # 每个章节页至少保留其后的一个内容页，防止出现“只有章节封面”。
+            for section_index in [
+                i for i, slide in enumerate(outline.slides) if slide.layout == "section"
+            ]:
+                for follower in range(section_index + 1, current):
+                    if outline.slides[follower].layout in ("section", "summary"):
+                        break
+                    if outline.slides[follower].layout not in ("cover", "toc"):
+                        required_indices.add(follower)
+                        break
+            # 目标小于结构完整所需页数时宁可超出，也不截掉总结或孤立章节。
+            if target < len(required_indices):
+                selected = required_indices
             else:
-                outline.slides = essential[:target]
+                removable_indices = [
+                    i for i in range(current) if i not in required_indices
+                ]
+                keep_count = min(target - len(required_indices), len(removable_indices))
+                chosen = {
+                    removable_indices[(i * len(removable_indices)) // keep_count]
+                    for i in range(keep_count)
+                } if keep_count else set()
+                selected = required_indices | chosen
+            # 只按索引筛选，保持章节页与内容页的原始相对顺序。
+            outline.slides = [
+                slide for i, slide in enumerate(outline.slides) if i in selected
+            ]
 
         # 重新编号
         for i, s in enumerate(outline.slides):
@@ -464,7 +482,9 @@ class ContentPlanner:
             # 为内容页生成更具体的要点
             for slide in outline.slides:
                 if slide.layout in ("content", "content_list") and slide.title:
-                    if not slide.bullets or slide.bullets == ["要点一", "要点二", "要点三"]:
+                    if not slide.bullets or all(
+                        str(item).startswith("待补充：") for item in slide.bullets
+                    ):
                         prompt = (
                             f"为PPT主题'{theme}'的页面'{slide.title}'"
                             f"生成3-5个要点，每行一个，不要编号。"
@@ -573,10 +593,12 @@ class ContentPlanner:
             # 解析JSON
             content = result.content.strip()
             # 去掉可能的markdown代码块标记
-            if "```json" in content:
-                content = content.split("```json")[1].split("```")[0].strip()
-            elif "```" in content:
-                content = content.split("```")[1].split("```")[0].strip()
+            fenced = re.search(
+                r"```(?:json)?\s*(.*?)```", content,
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+            if fenced:
+                content = fenced.group(1).strip()
 
             data = json.loads(content)
             return self._parse_ai_outline(data, title, style)
@@ -588,42 +610,112 @@ class ContentPlanner:
             logger.warning(f"AI生成大纲失败: {e}")
             return None
 
+    @staticmethod
+    def _scalar_text(value) -> str:
+        """LLM 可能对任意字段返回 null/数字/嵌套结构，统一转为可渲染文本"""
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value
+        if isinstance(value, (dict, list)):
+            import json as _json
+            try:
+                return _json.dumps(value, ensure_ascii=False)
+            except (TypeError, ValueError):
+                return str(value)
+        return str(value)
+
+    @classmethod
+    def _normalize_str_list(cls, value) -> list:
+        """bullets/left/right 列表规范化：全部元素转为字符串"""
+        if not isinstance(value, list):
+            return []
+        out = []
+        for item in value:
+            if isinstance(item, str):
+                out.append(item)
+            elif isinstance(item, dict) and isinstance(item.get("text"), str):
+                out.append(item["text"])
+            elif item is None:
+                continue
+            else:
+                out.append(cls._scalar_text(item))
+        return out
+
+    @classmethod
+    def _normalize_table(cls, value) -> list:
+        """table_data 规范化：二维字符串列表"""
+        if not isinstance(value, list):
+            return []
+        rows = []
+        for row in value:
+            if isinstance(row, (list, tuple)) and len(row) > 0:
+                rows.append([cls._scalar_text(c) for c in row])
+            elif isinstance(row, str):
+                rows.append([row])
+        return rows
+
     def _parse_ai_outline(self, data: dict, title: str, style: str) -> PPTOutline:
-        """解析AI返回的JSON为PPTOutline"""
+        """解析AI返回的JSON为PPTOutline（字段类型不可信，全部规范化）"""
         outline = PPTOutline(
             title=title,
-            subtitle=data.get("subtitle", ""),
+            subtitle=self._scalar_text(data.get("subtitle")),
             theme=style,
         )
 
-        for slide_data in data.get("slides", []):
+        slides_raw = data.get("slides")
+        if not isinstance(slides_raw, list):
+            slides_raw = []
+        for slide_data in slides_raw:
+            if not isinstance(slide_data, dict):
+                continue
             layout = slide_data.get("layout", "content")
+            if not isinstance(layout, str):
+                layout = "content"
             slide = SlideContent(
                 layout=layout,
-                title=slide_data.get("title", ""),
-                subtitle=slide_data.get("subtitle", ""),
-                bullets=slide_data.get("bullets", []) or [],
-                image_prompt=slide_data.get("image_prompt", "") or "",
-                table_data=slide_data.get("table_data", []) or [],
+                title=self._scalar_text(slide_data.get("title")),
+                subtitle=self._scalar_text(slide_data.get("subtitle")),
+                bullets=self._normalize_str_list(slide_data.get("bullets")),
+                image_prompt=self._scalar_text(slide_data.get("image_prompt")),
+                table_data=self._normalize_table(slide_data.get("table_data")),
             )
 
-            # 数据卡片
-            if layout == "data_cards" and slide_data.get("data"):
-                slide.data = [tuple(d) for d in slide_data["data"] if len(d) >= 3]
+            # 数据卡片：[(label, value, unit), ...]
+            if layout == "data_cards" and isinstance(slide_data.get("data"), list):
+                cards = []
+                for d in slide_data["data"]:
+                    if isinstance(d, (list, tuple)) and len(d) >= 2:
+                        cards.append(tuple(str(x) if x is not None else "" for x in d[:3]))
+                    elif isinstance(d, dict):
+                        cards.append((self._scalar_text(d.get("label")),
+                                      self._scalar_text(d.get("value")),
+                                      self._scalar_text(d.get("unit"))))
+                slide.data = cards
             elif layout == "data_cards":
-                slide.data = DEFAULT_DATA
+                slide.data = []
 
             # 时间线
-            if layout == "timeline" and slide_data.get("timeline"):
-                slide.timeline_items = [tuple(t) for t in slide_data["timeline"]]
+            if layout == "timeline" and isinstance(slide_data.get("timeline"), list):
+                items = []
+                for t in slide_data["timeline"]:
+                    if isinstance(t, (list, tuple)) and len(t) >= 2:
+                        items.append(tuple(str(x) if x is not None else "" for x in t[:3]))
+                    elif isinstance(t, dict):
+                        items.append((self._scalar_text(t.get("time")),
+                                      self._scalar_text(t.get("title")),
+                                      self._scalar_text(t.get("desc"))))
+                slide.timeline_items = items
             elif layout == "timeline":
-                slide.timeline_items = DEFAULT_TIMELINE
+                slide.timeline_items = []
 
             # 两栏内容
-            if slide_data.get("left_content"):
-                slide.left_content = slide_data["left_content"]
-            if slide_data.get("right_content"):
-                slide.right_content = slide_data["right_content"]
+            left = self._normalize_str_list(slide_data.get("left_content"))
+            right = self._normalize_str_list(slide_data.get("right_content"))
+            if left:
+                slide.left_content = left
+            if right:
+                slide.right_content = right
 
             outline.add_slide(slide)
 
@@ -674,9 +766,9 @@ class ContentPlanner:
             )
 
             if layout == "data_cards" and not actual_bullets:
-                slide.data = DEFAULT_DATA
+                slide.data = []
             elif layout == "timeline" and not actual_bullets:
-                slide.timeline_items = DEFAULT_TIMELINE
+                slide.timeline_items = []
             elif layout == "cover":
                 slide.subtitle = subtitle or ""
                 slide.notes = author or ""

@@ -32,6 +32,7 @@ class VectorStore:
     def __init__(self, embedder: Optional[BaseEmbedder] = None):
         self.embedder = embedder or TfidfEmbedder()
         self._chunks: List[StoredChunk] = []
+        self._keyword_cache: Dict[str, set] = {}
         self._fitted = False
 
     def add_chunks(self, chunks: List[KnowledgeChunk]) -> int:
@@ -39,22 +40,27 @@ class VectorStore:
         if not chunks:
             return 0
 
-        # 准备文本
-        texts = [c.content for c in chunks]
-
-        # 如果 embedder 未训练，先训练
-        if not self._fitted and hasattr(self.embedder, 'fit'):
+        # 本地可训练的 embedder 每次都基于完整语料重建。TF-IDF 的词汇表和
+        # IDF 会随新文档变化，只在首批数据上 fit 会令后续文档接近零向量。
+        if hasattr(self.embedder, 'fit'):
+            all_chunks = [stored.chunk for stored in self._chunks] + list(chunks)
+            texts = [c.content for c in all_chunks]
             self.embedder.fit(texts)
             self._fitted = True
-
-        # 计算向量
-        embeddings = self.embedder.embed(texts)
-
-        for chunk, emb in zip(chunks, embeddings):
-            # 提取关键词
-            if hasattr(self.embedder, 'get_keywords'):
-                chunk.keywords = self.embedder.get_keywords(chunk.content, top_k=15)
-            self._chunks.append(StoredChunk(chunk=chunk, embedding=emb))
+            embeddings = self.embedder.embed(texts)
+            self._chunks = []
+            self._keyword_cache.clear()
+            for chunk, emb in zip(all_chunks, embeddings):
+                if hasattr(self.embedder, 'get_keywords'):
+                    chunk.keywords = self.embedder.get_keywords(chunk.content, top_k=15)
+                self._chunks.append(StoredChunk(chunk=chunk, embedding=emb))
+                self._cache_chunk_keywords(chunk)
+        else:
+            texts = [c.content for c in chunks]
+            embeddings = self.embedder.embed(texts)
+            for chunk, emb in zip(chunks, embeddings):
+                self._chunks.append(StoredChunk(chunk=chunk, embedding=emb))
+                self._cache_chunk_keywords(chunk)
 
         return len(chunks)
 
@@ -107,7 +113,7 @@ class VectorStore:
             final_score = vec_score + keyword_score * 0.15
 
             if final_score >= min_score:
-                matched = list(query_keywords & set(stored.chunk.keywords))
+                matched = list(query_keywords & self._cache_chunk_keywords(stored.chunk))
                 results.append(SearchResult(
                     chunk=stored.chunk,
                     score=final_score,
@@ -128,10 +134,10 @@ class VectorStore:
         for stored in self._chunks:
             score = self._keyword_match_score(keywords, stored.chunk)
             if score > 0:
-                matched = list(keywords & set(stored.chunk.keywords))
+                matched = list(keywords & self._cache_chunk_keywords(stored.chunk))
                 results.append(SearchResult(
                     chunk=stored.chunk,
-                    score=score / len(keywords) if keywords else 0,
+                    score=score,
                     document_title=stored.chunk.metadata.get("doc_title", ""),
                     document_id=stored.chunk.document_id,
                     matched_keywords=matched,
@@ -145,9 +151,17 @@ class VectorStore:
         """关键词匹配分数"""
         if not query_keywords:
             return 0.0
-        chunk_words = set(chunk.keywords) | set(self._extract_keywords(chunk.content))
+        chunk_words = self._cache_chunk_keywords(chunk)
         matched = query_keywords & chunk_words
-        return len(matched)
+        return len(matched) / max(1, len(query_keywords))
+
+    def _cache_chunk_keywords(self, chunk: KnowledgeChunk) -> set:
+        """每个知识块只提取一次关键词，避免每次查询重复扫描正文。"""
+        cached = self._keyword_cache.get(chunk.id)
+        if cached is None:
+            cached = set(chunk.keywords) | set(self._extract_keywords(chunk.content))
+            self._keyword_cache[chunk.id] = cached
+        return cached
 
     def _extract_keywords(self, text: str) -> List[str]:
         """简单关键词提取"""
@@ -167,6 +181,7 @@ class VectorStore:
 
     def clear(self):
         self._chunks.clear()
+        self._keyword_cache.clear()
         self._fitted = False
 
     def save(self, path: str):
@@ -204,10 +219,14 @@ class VectorStore:
             self.embedder.vocabulary = data.get("vocabulary", {})
             self.embedder.idf = data.get("idf", {})
             self.embedder._doc_count = data.get("doc_count", 0)
-            self._fitted = data.get("fitted", False)
+            fitted = bool(data.get("fitted", False) and self.embedder.vocabulary)
+            self._fitted = fitted
+            if hasattr(self.embedder, "_fitted"):
+                self.embedder._fitted = fitted
 
         # 恢复 chunks
         self._chunks.clear()
+        self._keyword_cache.clear()
         for chunk_data in data.get("chunks", []):
             emb = chunk_data.pop("embedding", [])
             chunk = KnowledgeChunk(**{
@@ -215,5 +234,6 @@ class VectorStore:
                 if k in KnowledgeChunk.__dataclass_fields__
             })
             self._chunks.append(StoredChunk(chunk=chunk, embedding=emb))
+            self._cache_chunk_keywords(chunk)
 
         return len(self._chunks)

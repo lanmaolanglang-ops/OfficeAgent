@@ -5,13 +5,12 @@
 import os
 import time
 import platform
-from typing import Optional
+import asyncio
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
 from ..core.config import settings
-from ..core.task_manager import task_manager
 from ..core.file_manager import file_manager
 from ..schemas.response import BaseResponse
 
@@ -31,7 +30,7 @@ def _check_database() -> dict:
             return {"status": "healthy", "message": "连接正常"}
         finally:
             session.close()
-    except Exception as e:
+    except Exception:
         # 尝试SQLite
         try:
             import sqlite3
@@ -41,8 +40,8 @@ def _check_database() -> dict:
             conn.execute("SELECT 1")
             conn.close()
             return {"status": "healthy", "message": "SQLite连接正常", "type": "sqlite"}
-        except Exception as e2:
-            return {"status": "unhealthy", "message": str(e2)[:200]}
+        except Exception:
+            return {"status": "unhealthy", "message": "数据库连接失败"}
 
 
 def _check_storage() -> dict:
@@ -50,21 +49,24 @@ def _check_storage() -> dict:
     try:
         stats = file_manager.get_storage_stats()
         return {"status": "healthy", "message": "存储正常", **stats}
-    except Exception as e:
-        return {"status": "unhealthy", "message": str(e)[:200]}
+    except Exception:
+        return {"status": "unhealthy", "message": "存储检查失败"}
 
 
 def _check_workers() -> dict:
     """检查Worker状态"""
     try:
-        active = task_manager.get_active_count()
+        # 实际任务由 LocalWorker 执行；旧的 API task_manager 仅是数据库不可用时
+        # 的兼容回退，用它统计会永远显示 0。
+        from office_agent.task_queue import get_worker
+        active = get_worker().get_active_count()
         return {
             "status": "healthy",
             "active_tasks": active,
             "message": f"{active}个活跃任务",
         }
-    except Exception as e:
-        return {"status": "unknown", "message": str(e)[:200]}
+    except Exception:
+        return {"status": "unknown", "message": "任务引擎状态未知"}
 
 
 def _check_models() -> dict:
@@ -74,12 +76,13 @@ def _check_models() -> dict:
         gateway = ModelGateway()
         available = gateway.manager.list_available_models()
         if available:
-            primary = available[0]
+            primary = gateway.manager.get_default_model() or available[0]
+            ordered = [primary, *(m for m in available if m.id != primary.id)]
             return {
                 "status": "configured",
                 "model": primary.model or primary.id,
                 "provider": primary.provider.value,
-                "fallback_chain": [m.model or m.id for m in available],
+                "fallback_chain": [m.model or m.id for m in ordered],
             }
         env_model = os.environ.get("MODEL_PRIMARY_MODEL", "")
         return {
@@ -87,8 +90,8 @@ def _check_models() -> dict:
             "model": None,
             "fallback_chain": [env_model] if env_model else [],
         }
-    except Exception as e:
-        return {"status": "error", "model": None, "message": str(e)[:200]}
+    except Exception:
+        return {"status": "error", "model": None, "message": "模型配置检查失败"}
 
 def _check_system() -> dict:
     """检查系统资源"""
@@ -99,7 +102,7 @@ def _check_system() -> dict:
             "cpu_count": psutil.cpu_count(),
             "memory_percent": psutil.virtual_memory().percent,
             "memory_available_mb": round(psutil.virtual_memory().available / 1024 / 1024),
-            "disk_percent": psutil.disk_usage("/").percent if platform.system() != "Windows" else psutil.disk_usage("C:\\").percent,
+            "disk_percent": psutil.disk_usage(settings.output_dir).percent,
         }
     except ImportError:
         return {"status": "psutil not installed"}
@@ -135,20 +138,29 @@ async def health():
     """
     健康检查端点 - 用于Docker HEALTHCHECK和K8s liveness/readiness探针
     返回各组件状态和系统资源
+
+    桌面端启动探针只依赖本端点；数据库不可用属于"降级可用"（服务本身可
+    响应），返回 200 + status=degraded，避免一次 DB 故障把整个桌面应用卡死
+    在启动页。
     """
     uptime = time.time() - _start_time
+    database, storage, workers, models, system = await asyncio.gather(
+        asyncio.to_thread(_check_database),
+        asyncio.to_thread(_check_storage),
+        asyncio.to_thread(_check_workers),
+        asyncio.to_thread(_check_models),
+        asyncio.to_thread(_check_system),
+    )
     checks = {
         "api": {"status": "healthy", "message": "API运行中"},
-        "database": _check_database(),
-        "storage": _check_storage(),
-        "workers": _check_workers(),
-        "models": _check_models(),
+        "database": database,
+        "storage": storage,
+        "workers": workers,
+        "models": models,
     }
     overall = _get_overall_status(checks)
-    system = _check_system()
-    status_code = 200 if overall == "healthy" else 503
     return JSONResponse(
-        status_code=status_code,
+        status_code=200,
         content={
             "status": overall,
             "version": settings.version,
@@ -166,21 +178,28 @@ async def health_detail():
     """详细健康检查（含认证）"""
     uptime = time.time() - _start_time
     agents = ["word_agent", "ppt_agent", "excel_agent"]
+    database, storage, workers, models, system = await asyncio.gather(
+        asyncio.to_thread(_check_database),
+        asyncio.to_thread(_check_storage),
+        asyncio.to_thread(_check_workers),
+        asyncio.to_thread(_check_models),
+        asyncio.to_thread(_check_system),
+    )
     checks = {
         "api": {"status": "healthy"},
-        "database": _check_database(),
-        "storage": _check_storage(),
-        "workers": _check_workers(),
-        "models": _check_models(),
+        "database": database,
+        "storage": storage,
+        "workers": workers,
+        "models": models,
     }
     return BaseResponse(data={
         "status": _get_overall_status(checks),
         "version": settings.version,
         "uptime": round(uptime, 2),
         "agents": agents,
-        "active_tasks": task_manager.get_active_count(),
+        "active_tasks": workers.get("active_tasks", 0),
         "checks": checks,
-        "system": _check_system(),
+        "system": system,
     })
 
 
@@ -198,9 +217,7 @@ async def version():
 @router.get("/ready", summary="就绪探针")
 async def readiness():
     """K8s readiness probe - 服务是否准备好接收流量"""
-    checks = {
-        "database": _check_database(),
-    }
+    checks = {"database": await asyncio.to_thread(_check_database)}
     overall = _get_overall_status(checks)
     status_code = 200 if overall == "healthy" else 503
     return JSONResponse(

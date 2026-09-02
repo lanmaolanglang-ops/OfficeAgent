@@ -7,7 +7,9 @@ Word 文档生成后自动检查：
 
 输出检查报告，支持自动修复建议。
 """
+import logging
 import re
+from difflib import SequenceMatcher
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 from typing import Optional, Dict
@@ -18,6 +20,8 @@ from docx.oxml.ns import qn
 
 from ..models.schemas import FormatConfig
 from ..parsers.document_structure import DocumentStructureAnalyzer, DocumentTree
+
+logger = logging.getLogger(__name__)
 
 
 class IssueSeverity(Enum):
@@ -150,7 +154,9 @@ class QualityReport:
             elif issue.type == "font_size" and "正文" in issue.message:
                 fix["size"] = issue.expected
             elif issue.type == "line_spacing":
-                fix["line_spacing"] = float(issue.expected.replace("倍", ""))
+                match = re.search(r"\d+(?:\.\d+)?", issue.expected or "")
+                if match:
+                    fix["line_spacing"] = float(match.group())
         return fix
 
 
@@ -374,6 +380,11 @@ class QualityChecker:
 
             text = node.text.strip()
 
+            # 无编号标题不参与编号序列；否则它会把后续正常编号整体推后一位。
+            num = self._extract_heading_number(text, level)
+            if num is None:
+                continue
+
             # 更新计数器
             if level == 1:
                 counters[1] += 1
@@ -386,11 +397,6 @@ class QualityChecker:
                 counters[4] = 0
             elif level == 4:
                 counters[4] += 1
-
-            # 提取编号
-            num = self._extract_heading_number(text, level)
-            if num is None:
-                continue
 
             # 获取实际编号（最后一级）
             if isinstance(num, tuple):
@@ -456,7 +462,11 @@ class QualityChecker:
                             ))
 
     def _check_indent(self, doc: Document, config: FormatConfig, report: QualityReport):
-        expected_indent = config.body_paragraph.first_line_indent
+        expected_indent = (
+            config.body_paragraph.first_line_indent_chars * config.body_font.size
+            if config.body_paragraph.first_line_indent_chars
+            else config.body_paragraph.first_line_indent
+        )
         if expected_indent <= 0:
             return
 
@@ -543,10 +553,16 @@ class QualityChecker:
             curr_text = "\n".join(p.text for p in doc.paragraphs if p.text.strip())
 
             orig_sentences = re.split(r"[。！？\n]", orig_text)
+            current_sentences = [
+                sentence.strip() for sentence in re.split(r"[。！？\n]", curr_text)
+                if sentence.strip()
+            ]
             missing = []
             for sent in orig_sentences:
                 sent = sent.strip()
-                if len(sent) > 15 and sent not in curr_text:
+                if (len(sent) > 15 and sent not in curr_text
+                        and not any(self._text_similarity(sent, current) >= 0.72
+                                    for current in current_sentences)):
                     missing.append(sent)
 
             if missing:
@@ -559,8 +575,20 @@ class QualityChecker:
                     fixable=False,
                     fix_suggestion="检查并补全：" + "；".join(m[:30] for m in missing[:3]),
                 ))
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.exception("原文保留检查失败: %s", original_path)
+            report.add_issue(QualityIssue(
+                type="missing_text", severity="info",
+                message=f"原文保留检查未完成：{exc}", fixable=False,
+                fix_suggestion="确认原文文件可读取后重新检查",
+            ))
+
+    @staticmethod
+    def _text_similarity(left: str, right: str) -> float:
+        def normalize(value: str) -> str:
+            return re.sub(r"[\W_]+", "", value, flags=re.UNICODE).lower()
+
+        return SequenceMatcher(None, normalize(left), normalize(right)).ratio()
 
     # ==========================================
     # 辅助方法

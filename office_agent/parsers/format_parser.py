@@ -169,10 +169,14 @@ class ParsedFormatRule:
                 result["size"] = self.body["size"]
             if "line_spacing" in self.body:
                 result["line_spacing"] = self.body["line_spacing"]
+            if "line_spacing_rule" in self.body:
+                result["line_spacing_rule"] = self.body["line_spacing_rule"]
             if "alignment" in self.body:
                 result["alignment"] = self.body["alignment"]
             if "first_line_indent" in self.body:
                 result["first_line_indent"] = self.body["first_line_indent"]
+            if "first_line_indent_chars" in self.body:
+                result["first_line_indent_chars"] = self.body["first_line_indent_chars"]
             if "bold" in self.body:
                 result["bold"] = self.body["bold"]
             if "italic" in self.body:
@@ -205,7 +209,7 @@ class ParsedFormatRule:
         # 表格
         if self.table:
             if "three_line" in self.table:
-                pass  # 默认就是三线表
+                result["table_three_line"] = bool(self.table["three_line"])
             if "top_border" in self.table:
                 result["table_top"] = self.table["top_border"]
             if "numbering" in self.table:
@@ -280,6 +284,8 @@ class FormatRuleParser:
         spacing = self._extract_line_spacing(text)
         if spacing is not None:
             global_cfg["line_spacing"] = spacing
+            if PT_SPACING_PATTERN.search(text):
+                global_cfg["line_spacing_rule"] = "exactly"
             self.keywords_found.append(f"行距:{spacing}")
 
         # 对齐方式（全局）
@@ -289,10 +295,16 @@ class FormatRuleParser:
             self.keywords_found.append(f"对齐:{alignment}")
 
         # 首行缩进（全局，通常用于正文）
-        indent = self._extract_first_line_indent(text)
-        if indent is not None:
-            global_cfg["first_line_indent"] = indent
-            self.keywords_found.append(f"首行缩进:{indent}pt")
+        indent_chars_match = INDENT_CHAR_PATTERN.search(text)
+        if indent_chars_match:
+            indent_chars = float(indent_chars_match.group(1))
+            global_cfg["first_line_indent_chars"] = indent_chars
+            self.keywords_found.append(f"首行缩进:{indent_chars}字符")
+        else:
+            indent = self._extract_first_line_indent(text)
+            if indent is not None:
+                global_cfg["first_line_indent"] = indent
+                self.keywords_found.append(f"首行缩进:{indent}pt")
 
         # 段前段后（全局）
         sb = self._extract_space_before(text)
@@ -426,7 +438,8 @@ class FormatRuleParser:
 
     def _apply_body_defaults(self, rule: ParsedFormatRule, global_cfg: dict):
         """将全局设置应用到正文（加粗/斜体不从全局继承，避免标题加粗影响正文）"""
-        for key in ["line_spacing", "alignment", "first_line_indent",
+        for key in ["line_spacing", "line_spacing_rule", "alignment", "first_line_indent",
+                    "first_line_indent_chars",
                     "space_before", "space_after", "color"]:
             if key in global_cfg and key not in rule.body:
                 rule.body[key] = global_cfg[key]
@@ -502,11 +515,16 @@ class FormatRuleParser:
 
         # 中文颜色名（精确匹配，"黑体"不算"黑色"）
         # 使用正则确保颜色词后面不是"体"字
+        # 优先选择文本中起点更早、同起点名称更长的颜色。“深蓝色”里
+        # “深蓝”起点早于“蓝色”，不能被基础色抢先。
+        matches = []
         for name, hex_val in COLOR_MAP.items():
-            # 匹配颜色名，但后面不能紧跟"体"
             pattern = re.escape(name) + r"(?!体)"
-            if re.search(pattern, text_for_color):
-                return hex_val
+            match = re.search(pattern, text_for_color)
+            if match:
+                matches.append((match.start(), -len(name), hex_val))
+        if matches:
+            return min(matches)[2]
 
         return None
 
@@ -537,13 +555,7 @@ class FormatRuleParser:
         return None
 
     def _extract_first_line_indent(self, text: str) -> Optional[float]:
-        """提取首行缩进（返回磅值）"""
-        # X字符（1字符≈12pt，按小四字计算）
-        m = INDENT_CHAR_PATTERN.search(text)
-        if m:
-            chars = float(m.group(1))
-            return chars * 12  # 粗略换算：1字符≈12pt
-
+        """提取首行缩进的绝对磅值；字符值由解析主流程保留原单位。"""
         # X磅
         m = INDENT_PT_PATTERN.search(text)
         if m:

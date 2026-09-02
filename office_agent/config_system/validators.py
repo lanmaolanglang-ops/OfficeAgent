@@ -18,6 +18,7 @@ logger = get_logger("config.validator")
 class Severity(str, Enum):
     ERROR = "error"      # 阻止启动
     WARNING = "warning"  # 警告但继续
+    INFO = "info"        # 仅提示，不影响启动
 
 
 class ValidationIssue:
@@ -184,7 +185,11 @@ class ConfigValidator:
     def summary(self) -> str:
         errors = [i for i in self.issues if i.severity == Severity.ERROR]
         warnings = [i for i in self.issues if i.severity == Severity.WARNING]
-        lines = [f"配置校验完成: {len(errors)} 错误, {len(warnings)} 警告"]
+        infos = [i for i in self.issues if i.severity == Severity.INFO]
+        lines = [
+            f"配置校验完成: {len(errors)} 错误, {len(warnings)} 警告, "
+            f"{len(infos)} 提示"
+        ]
         for i in self.issues:
             lines.append(f"  {i}")
         return "\n".join(lines)

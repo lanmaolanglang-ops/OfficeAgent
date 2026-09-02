@@ -85,6 +85,7 @@ class SlideContent:
     quote_source: str = ""          # 引用来源
     timeline_items: list = field(default_factory=list)  # [(time, title, desc)]
     notes: str = ""                 # 备注
+    body_font_size: Optional[int] = None  # 内容密度自适应字号
     page_number: int = 0
 
 

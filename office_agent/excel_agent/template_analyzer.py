@@ -23,6 +23,7 @@ from typing import Optional, List, Dict, Any, Tuple
 from dataclasses import dataclass, field
 
 from openpyxl import load_workbook
+from openpyxl.cell.cell import MergedCell
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side, numbers
 from openpyxl.utils import get_column_letter, column_index_from_string
 from openpyxl.formatting.rule import Rule
@@ -680,6 +681,8 @@ class ExcelTemplateAnalyzer:
             row_num = start_row + i
             for j, col in enumerate(sheet_tpl.columns):
                 cell = ws.cell(row=row_num, column=j + 1)
+                if isinstance(cell, MergedCell):
+                    continue  # 合并从属单元格只读
 
                 # 公式列：使用公式模板（不管输入数据有没有这一列）
                 if col.has_formula and col.formula_pattern:
@@ -828,6 +831,8 @@ class ExcelTemplateAnalyzer:
         for row_idx in range(sheet_tpl.data_start_row, sheet_tpl.row_count + 1):
             for col_idx in range(1, sheet_tpl.col_count + 1):
                 cell = ws.cell(row=row_idx, column=col_idx)
+                if isinstance(cell, MergedCell):
+                    continue  # 合并从属单元格只读，直接写入会抛异常
                 cell.value = None
 
     def _apply_zebra(self, ws, sheet_tpl: SheetTemplate, data_count: int):

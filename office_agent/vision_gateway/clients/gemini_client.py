@@ -4,7 +4,6 @@ Google Gemini Vision 客户端
 """
 import json
 import time
-from typing import Optional
 
 from .base import BaseVisionClient
 from ..vision_models import VisionRequest, VisionResponse
@@ -43,16 +42,16 @@ class GeminiVisionClient(BaseVisionClient):
                 b64 = img.to_base64()
                 if b64:
                     parts.append({
-                        "inline_data": {
-                            "mime_type": img.get_mime(),
+                        "inlineData": {
+                            "mimeType": img.get_mime(),
                             "data": b64,
                         }
                     })
                 elif img.url:
                     parts.append({
-                        "file_data": {
-                            "mime_type": img.get_mime(),
-                            "file_uri": img.url,
+                        "fileData": {
+                            "mimeType": img.get_mime(),
+                            "fileUri": img.url,
                         }
                     })
 
@@ -64,8 +63,11 @@ class GeminiVisionClient(BaseVisionClient):
                 },
             }
 
-            url = f"{self.base_url}/models/{self.model}:generateContent?key={self.api_key}"
-            headers = {"Content-Type": "application/json"}
+            url = f"{self.base_url}/models/{self.model}:generateContent"
+            headers = {
+                "Content-Type": "application/json",
+                "x-goog-api-key": self.api_key,
+            }
             data = json.dumps(payload).encode("utf-8")
 
             resp = self._http_post(url, headers, data)

@@ -12,7 +12,7 @@ import threading
 import subprocess
 from pathlib import Path
 from enum import Enum
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional, Callable
 import urllib.request
 import urllib.error
@@ -33,7 +33,7 @@ class AppStatus(str, Enum):
 class AppConfig:
     """应用配置"""
     app_name: str = "OfficeAgent"
-    app_version: str = "0.50.0"
+    app_version: str = "0.51.1"
     host: str = "127.0.0.1"
     port: int = 8765
     backend_module: str = "office_agent.api.main:app"
@@ -41,6 +41,7 @@ class AppConfig:
     auto_restart: bool = True
     max_restarts: int = 5
     restart_delay: float = 2.0
+    restart_reset_after: float = 300.0
     health_check_interval: float = 5.0
     startup_timeout: float = 30.0
     shutdown_timeout: float = 10.0
@@ -150,7 +151,8 @@ class ApplicationRuntimeManager:
             with urllib.request.urlopen(req, timeout=3) as resp:
                 if resp.status == 200:
                     data = json.loads(resp.read().decode("utf-8"))
-                    self.state.health_ok = data.get("status") == "ok"
+                    # /health 返回 "healthy"/"degraded"；兼容历史 "ok"
+                    self.state.health_ok = data.get("status") in ("healthy", "degraded", "ok")
                     self.state.last_health_check = time.time()
                     self._health_failures = 0
                     return self.state.health_ok
@@ -199,6 +201,7 @@ class ApplicationRuntimeManager:
             logger.warning(f"Port {self.config.port} in use but health check failed")
             return False
         self._set_status(AppStatus.STARTING)
+        log_handle = None
         try:
             cmd = self._build_command()
             env = self._get_env()
@@ -238,6 +241,13 @@ class ApplicationRuntimeManager:
         except Exception as e:
             self._set_status(AppStatus.ERROR, str(e))
             return False
+        finally:
+            # 子进程已继承写句柄，父进程侧的句柄用完即关，避免每次 start 泄漏一个
+            if log_handle is not None:
+                try:
+                    log_handle.close()
+                except Exception:
+                    pass
 
     def stop(self, timeout: float = None) -> bool:
         """停止Backend"""
@@ -309,6 +319,11 @@ class ApplicationRuntimeManager:
             else:
                 self._health_failures = 0
                 self.state.uptime_seconds = time.time() - self.state.start_time
+                if (self.state.restart_count
+                        and self.state.uptime_seconds >= self.config.restart_reset_after):
+                    logger.info("Backend stable for %.0fs; resetting restart budget",
+                                self.state.uptime_seconds)
+                    self.state.restart_count = 0
 
     def _do_restart(self):
         """执行重启"""
@@ -344,9 +359,25 @@ class ApplicationRuntimeManager:
         if not log_file.exists():
             return ""
         try:
-            with open(log_file, "r", encoding="utf-8", errors="ignore") as f:
-                all_lines = f.readlines()
-                return "".join(all_lines[-lines:])
+            if lines <= 0:
+                return ""
+            with open(log_file, "rb") as f:
+                f.seek(0, os.SEEK_END)
+                position = f.tell()
+                chunks = []
+                newline_count = 0
+                while position > 0 and newline_count <= lines:
+                    read_size = min(8192, position)
+                    position -= read_size
+                    f.seek(position)
+                    chunk = f.read(read_size)
+                    chunks.append(chunk)
+                    newline_count += chunk.count(b"\n")
+                data = b"".join(reversed(chunks))
+                text = b"\n".join(data.splitlines()[-lines:]).decode(
+                    "utf-8", errors="ignore"
+                )
+                return text + ("\n" if text else "")
         except Exception:
             return ""
 

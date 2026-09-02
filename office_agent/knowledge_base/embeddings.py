@@ -6,6 +6,7 @@ Embedding 模块 - 文本向量化
 """
 import re
 import math
+import hashlib
 from typing import List, Dict, Optional, Any
 from collections import Counter
 from abc import ABC, abstractmethod
@@ -29,6 +30,48 @@ class BaseEmbedder(ABC):
     def dimension(self) -> int:
         """向量维度"""
         pass
+
+
+class HashingEmbedder(BaseEmbedder):
+    """Stateless, deterministic local embedder for persisted task embeddings.
+
+    Unlike TF-IDF, the vector space does not depend on an in-memory fitted
+    vocabulary, so vectors written by one worker remain queryable after restart.
+    """
+
+    def __init__(self, dimensions: int = 512):
+        if dimensions < 32:
+            raise ValueError("dimensions must be at least 32")
+        self._dimension = dimensions
+
+    @staticmethod
+    def _tokens(text: str) -> List[str]:
+        lowered = (text or "").lower()
+        words = re.findall(r"[a-z0-9_]+|[\u4e00-\u9fff]", lowered)
+        # CJK single characters alone are weak signals; add adjacent bigrams.
+        cjk = "".join(re.findall(r"[\u4e00-\u9fff]", lowered))
+        words.extend(cjk[i:i + 2] for i in range(max(0, len(cjk) - 1)))
+        return words
+
+    def _vectorize(self, text: str) -> List[float]:
+        vector = [0.0] * self._dimension
+        for token, count in Counter(self._tokens(text)).items():
+            digest = hashlib.sha256(token.encode("utf-8")).digest()
+            index = int.from_bytes(digest[:8], "big") % self._dimension
+            sign = 1.0 if digest[8] & 1 else -1.0
+            vector[index] += sign * (1.0 + math.log(count))
+        norm = math.sqrt(sum(value * value for value in vector))
+        return [value / norm for value in vector] if norm else vector
+
+    def embed(self, texts: List[str]) -> List[List[float]]:
+        return [self._vectorize(text) for text in texts]
+
+    def embed_query(self, text: str) -> List[float]:
+        return self._vectorize(text)
+
+    @property
+    def dimension(self) -> int:
+        return self._dimension
 
 
 class TfidfEmbedder(BaseEmbedder):

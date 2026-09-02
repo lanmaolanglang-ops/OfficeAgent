@@ -1,5 +1,5 @@
 """
-Logging & Monitoring Layer v0.50.0
+Logging & Monitoring Layer v0.51.1
 
 统一日志、监控、追踪系统。
 """
@@ -36,7 +36,7 @@ from .tracer import (
 )
 from .decorators import log_execution, log_model_call_decorator
 
-__version__ = "0.50.0"
+__version__ = "0.51.1"
 
 __all__ = [
     # Context

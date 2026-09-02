@@ -6,7 +6,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional
+import threading
+import time
 
 try:
     from office_agent.logging_system import get_logger
@@ -74,7 +75,7 @@ DEFAULT_TOOLS: dict[str, ToolInfo] = {
         name="file_writer",
         description="文件写入",
         risk_level=RiskLevel.MEDIUM,
-        allowed_agents={"word", "ppt", "excel"},
+        allowed_agents={"word", "ppt", "excel", "pdf", "image"},
         timeout_seconds=10,
     ),
     "chart_generator": ToolInfo(
@@ -126,32 +127,18 @@ DEFAULT_TOOLS: dict[str, ToolInfo] = {
 }
 
 
-# Agent允许的工具
-AGENT_TOOL_PERMISSIONS: dict[str, set[str]] = {
-    "word": {
-        "docx_parser", "pptx_parser", "pdf_parser",
-        "format_engine", "file_writer",
-    },
-    "ppt": {
-        "pptx_parser", "docx_parser", "pdf_parser",
-        "format_engine", "file_writer", "chart_generator",
-    },
-    "excel": {
-        "xlsx_parser", "pdf_parser", "format_engine",
-        "file_writer", "chart_generator", "formula_engine",
-        "python_executor",
-    },
-    "research": {
-        "docx_parser", "pptx_parser", "xlsx_parser", "pdf_parser",
-        "browser",
-    },
-    "pdf": {
-        "pdf_parser", "file_writer",
-    },
-    "image": {
-        "file_writer",
-    },
-}
+def _agent_tool_permissions(tools: dict[str, ToolInfo]) -> dict[str, set[str]]:
+    """Build the compatibility view from ToolInfo, the sole policy source."""
+    permissions: dict[str, set[str]] = {}
+    for tool in tools.values():
+        for agent in tool.allowed_agents:
+            permissions.setdefault(agent, set()).add(tool.name)
+    return permissions
+
+
+# Compatibility/export view. Authorization below consults ToolInfo directly so
+# this derived dictionary cannot diverge from the actual decision policy.
+AGENT_TOOL_PERMISSIONS: dict[str, set[str]] = _agent_tool_permissions(DEFAULT_TOOLS)
 
 
 class ToolRegistry:
@@ -178,8 +165,7 @@ class ToolRegistry:
         """列出工具"""
         tools = list(self._tools.values())
         if agent:
-            perms = AGENT_TOOL_PERMISSIONS.get(agent, set())
-            tools = [t for t in tools if t.name in perms or not t.allowed_agents]
+            tools = [t for t in tools if not t.allowed_agents or agent in t.allowed_agents]
         return [t for t in tools if t.enabled]
 
     def check_access(self, agent: str, tool_name: str) -> tuple[bool, str]:
@@ -193,12 +179,8 @@ class ToolRegistry:
         if not tool.enabled:
             return False, f"工具已禁用: {tool_name}"
 
-        # 检查Agent权限
-        agent_perms = AGENT_TOOL_PERMISSIONS.get(agent, set())
-        if tool_name not in agent_perms:
-            return False, f"Agent '{agent}' 无权使用工具 '{tool_name}'"
-
-        # 检查工具允许的Agent列表
+        # ToolInfo.allowed_agents is the sole authorization source. An empty
+        # set means all agents, as documented by ToolInfo.
         if tool.allowed_agents and agent not in tool.allowed_agents:
             return False, f"工具 '{tool_name}' 不允许Agent '{agent}' 使用"
 
@@ -217,6 +199,7 @@ class AgentPermissionManager:
         self.registry = registry or ToolRegistry()
         self._agent_blacklist: dict[str, set[str]] = {}  # agent -> blocked tools
         self._call_counts: dict[tuple[str, str], list[float]] = {}  # (agent, tool) -> timestamps
+        self._lock = threading.RLock()
 
     def can_use_tool(self, agent: str, tool_name: str) -> tuple[bool, str]:
         """检查Agent是否可以使用工具（含频率限制）"""
@@ -226,36 +209,37 @@ class AgentPermissionManager:
             return False, reason
 
         # 黑名单检查
-        if tool_name in self._agent_blacklist.get(agent, set()):
-            return False, f"工具 '{tool_name}' 已被Agent '{agent}' 禁用"
+        with self._lock:
+            if tool_name in self._agent_blacklist.get(agent, set()):
+                return False, f"工具 '{tool_name}' 已被Agent '{agent}' 禁用"
 
-        # 频率限制
-        tool = self.registry.get(tool_name)
-        if tool:
-            key = (agent, tool_name)
-            now = __import__("time").time()
-            # 清理过期记录
-            self._call_counts[key] = [
-                t for t in self._call_counts.get(key, [])
-                if now - t < 60
-            ]
-            if len(self._call_counts[key]) >= tool.max_calls_per_minute:
-                return False, f"调用频率超限: {tool.max_calls_per_minute}/分钟"
-            self._call_counts[key].append(now)
+            tool = self.registry.get(tool_name)
+            if tool:
+                key = (agent, tool_name)
+                now = time.time()
+                self._call_counts[key] = [
+                    timestamp for timestamp in self._call_counts.get(key, [])
+                    if now - timestamp < 60
+                ]
+                if len(self._call_counts[key]) >= tool.max_calls_per_minute:
+                    return False, f"调用频率超限: {tool.max_calls_per_minute}/分钟"
+                self._call_counts[key].append(now)
 
         return True, "允许"
 
     def block_tool(self, agent: str, tool_name: str):
         """禁用Agent的某个工具"""
-        if agent not in self._agent_blacklist:
-            self._agent_blacklist[agent] = set()
-        self._agent_blacklist[agent].add(tool_name)
+        with self._lock:
+            if agent not in self._agent_blacklist:
+                self._agent_blacklist[agent] = set()
+            self._agent_blacklist[agent].add(tool_name)
         logger.warning(f"Tool blocked: agent={agent}, tool={tool_name}")
 
     def unblock_tool(self, agent: str, tool_name: str):
         """解禁Agent的工具"""
-        if agent in self._agent_blacklist:
-            self._agent_blacklist[agent].discard(tool_name)
+        with self._lock:
+            if agent in self._agent_blacklist:
+                self._agent_blacklist[agent].discard(tool_name)
 
     def get_agent_tools(self, agent: str) -> list[ToolInfo]:
         """获取Agent可用的工具列表"""
@@ -264,4 +248,4 @@ class AgentPermissionManager:
     def check_tool_risk(self, tool_name: str) -> RiskLevel:
         """获取工具风险等级"""
         tool = self.registry.get(tool_name)
-        return tool.risk_level if tool else RiskLevel.LOW
+        return tool.risk_level if tool else RiskLevel.CRITICAL

@@ -5,6 +5,7 @@
 """
 import time
 import json
+import contextvars
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 from contextlib import contextmanager
@@ -81,7 +82,7 @@ class Span:
 
 
 class TraceContext:
-    """追踪上下文（线程内）"""
+    """单个异步任务/请求的追踪上下文。"""
 
     def __init__(self):
         self.spans: Dict[str, Span] = {}
@@ -154,15 +155,18 @@ class TraceContext:
         }
 
 
-# 线程本地存储
-import threading
-_local = threading.local()
+# ContextVar 在同一事件循环线程的并发请求之间隔离值。
+_trace_context_var: contextvars.ContextVar[Optional[TraceContext]] = (
+    contextvars.ContextVar("trace_context", default=None)
+)
 
 
 def get_trace_context() -> TraceContext:
-    if not hasattr(_local, "trace_context"):
-        _local.trace_context = TraceContext()
-    return _local.trace_context
+    ctx = _trace_context_var.get()
+    if ctx is None:
+        ctx = TraceContext()
+        _trace_context_var.set(ctx)
+    return ctx
 
 
 @contextmanager
@@ -174,7 +178,11 @@ def trace_span(name: str, span_type: str = "operation", **attributes):
         with trace_span("format_document", "agent", agent="WordAgent") as span:
             do_something()
     """
-    ctx = get_trace_context()
+    ctx = _trace_context_var.get()
+    token = None
+    if ctx is None:
+        ctx = TraceContext()
+        token = _trace_context_var.set(ctx)
     span = ctx.start_span(name, span_type, attributes)
     try:
         yield span
@@ -182,6 +190,10 @@ def trace_span(name: str, span_type: str = "operation", **attributes):
     except Exception as e:
         ctx.end_span(span, error=e)
         raise
+    finally:
+        # 最外层 span 结束即释放整棵树，避免常驻工作线程无限积累。
+        if token is not None:
+            _trace_context_var.reset(token)
 
 
 @contextmanager

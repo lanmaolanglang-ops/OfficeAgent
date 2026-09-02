@@ -4,6 +4,7 @@ from typing import Optional, List
 from datetime import datetime, timedelta
 from sqlalchemy import select, and_
 from sqlalchemy.orm import Session
+from ..time import utc_now
 
 from .base import BaseRepository
 from ..models.file import File, FileVersion
@@ -19,14 +20,14 @@ class FileRepository(BaseRepository[File]):
     def get_by_owner(self, owner_id: str, offset: int = 0, limit: int = 100) -> List[File]:
         stmt = select(File).where(and_(
             File.owner_id == owner_id,
-            File.status != "deleted",
+            File.status.notin_(("deleted", "deleting")),
         )).offset(offset).limit(limit)
         return list(self.session.execute(stmt).scalars().all())
 
     def get_by_type(self, file_type: str, offset: int = 0, limit: int = 100) -> List[File]:
         stmt = select(File).where(and_(
             File.file_type == file_type,
-            File.status != "deleted",
+            File.status.notin_(("deleted", "deleting")),
         )).offset(offset).limit(limit)
         return list(self.session.execute(stmt).scalars().all())
 
@@ -67,7 +68,10 @@ class FileRepository(BaseRepository[File]):
         self.update(file_id, {"status": status})
 
     def mark_deleted(self, file_id: str):
-        self.update(file_id, {"status": "deleted"})
+        self.update(file_id, {"status": "deleted", "deleted_at": utc_now()})
+
+    def restore_deleted(self, file_id: str):
+        self.update(file_id, {"status": "ready", "deleted_at": None})
 
     def mark_archived(self, file_id: str):
         self.update(file_id, {"status": "archived"})
@@ -76,24 +80,40 @@ class FileRepository(BaseRepository[File]):
         """记录访问"""
         self.update(file_id, {
             "access_count": File.access_count + 1,
-            "last_accessed_at": datetime.now(),
+            "last_accessed_at": utc_now(),
         })
 
     def get_expired_temp_files(self, hours: int = 24) -> List[File]:
         """获取过期的临时文件"""
-        cutoff = datetime.now() - timedelta(hours=hours)
+        cutoff = utc_now() - timedelta(hours=hours)
         stmt = select(File).where(and_(
             File.bucket == "temp",
-            File.status != "deleted",
+            File.status.notin_(("deleted", "deleting")),
             File.created_at < cutoff,
         ))
         return list(self.session.execute(stmt).scalars().all())
 
     def get_old_versions(self, keep: int = 5) -> List[FileVersion]:
         """获取需要归档的旧版本（每个文件保留最近 N 个版本）"""
-        # 简单实现：返回所有 archived 状态之外的旧版本
-        stmt = select(FileVersion).order_by(
-            FileVersion.parent_file_id, FileVersion.version_number.desc()
+        from sqlalchemy import func
+
+        try:
+            keep = max(0, int(keep))
+        except (TypeError, ValueError):
+            keep = 5
+
+        ranked = select(
+            FileVersion.id.label("version_id"),
+            func.row_number().over(
+                partition_by=FileVersion.parent_file_id,
+                order_by=FileVersion.version_number.desc(),
+            ).label("version_rank"),
+        ).subquery()
+        stmt = (
+            select(FileVersion)
+            .join(ranked, ranked.c.version_id == FileVersion.id)
+            .where(ranked.c.version_rank > keep)
+            .order_by(FileVersion.parent_file_id, FileVersion.version_number.desc())
         )
         return list(self.session.execute(stmt).scalars().all())
 
@@ -101,16 +121,19 @@ class FileRepository(BaseRepository[File]):
         """存储统计"""
         from sqlalchemy import func
         total = self.session.execute(
-            select(func.count(File.id)).where(File.status != "deleted")
+            select(func.count(File.id)).where(File.status.notin_(("deleted", "deleting")))
         ).scalar() or 0
         total_size = self.session.execute(
-            select(func.coalesce(func.sum(File.file_size), 0)).where(File.status != "deleted")
+            select(func.coalesce(func.sum(File.file_size), 0)).where(
+                File.status.notin_(("deleted", "deleting"))
+            )
         ).scalar() or 0
         by_type = {}
         for t in ["word", "ppt", "excel", "pdf", "text", "image"]:
             count = self.session.execute(
                 select(func.count(File.id)).where(
-                    and_(File.file_type == t, File.status != "deleted")
+                    and_(File.file_type == t,
+                         File.status.notin_(("deleted", "deleting")))
                 )
             ).scalar() or 0
             if count:
@@ -139,6 +162,11 @@ class FileVersionRepository(BaseRepository[FileVersion]):
         return self.session.execute(stmt).scalar_one_or_none()
 
     def get_next_version_number(self, file_id: str) -> int:
+        # PostgreSQL/MySQL 上锁住父文件行，使“取号+创建版本”可在同一事务内
+        # 串行化；SQLite 由唯一约束作为最终并发保护。
+        self.session.execute(
+            select(File.id).where(File.id == file_id).with_for_update()
+        )
         latest = self.get_latest_version(file_id)
         return (latest.version_number + 1) if latest else 1
 

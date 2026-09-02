@@ -12,8 +12,8 @@ project_root = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 # 导入 Base 和所有模型
-from office_agent.database.base import Base
-from office_agent.database import models  # noqa: F401
+from office_agent.database.base import Base  # noqa: E402
+from office_agent.database import models  # noqa: E402, F401
 
 # Alembic Config
 config = context.config
@@ -22,9 +22,13 @@ config = context.config
 db_url = os.environ.get("DATABASE_URL")
 if db_url:
     config.set_main_option("sqlalchemy.url", db_url)
-else:
+elif not config.get_main_option("sqlalchemy.url"):
     # 默认 SQLite
-    db_path = Path(os.path.expanduser("~/.office_agent/db/office_agent.db"))
+    data_root = Path(
+        os.environ.get("OFFICE_AGENT_DATA_DIR")
+        or os.path.expanduser("~/.office_agent")
+    )
+    db_path = data_root / "db" / "office_agent.db"
     db_path.parent.mkdir(parents=True, exist_ok=True)
     config.set_main_option("sqlalchemy.url", f"sqlite:///{db_path}")
 
@@ -53,7 +57,12 @@ def run_migrations_online() -> None:
         poolclass=pool.NullPool,
     )
     with connectable.connect() as connection:
-        context.configure(connection=connection, target_metadata=target_metadata)
+        context.configure(
+            connection=connection,
+            target_metadata=target_metadata,
+            render_as_batch=connection.dialect.name == "sqlite",
+            compare_type=True,
+        )
         with context.begin_transaction():
             context.run_migrations()
 

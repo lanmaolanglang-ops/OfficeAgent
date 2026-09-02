@@ -11,6 +11,7 @@ Word 相关后台任务
 """
 import os
 import time
+import uuid
 import logging
 import traceback
 import json
@@ -20,12 +21,32 @@ from pathlib import Path
 
 logger = logging.getLogger("office_agent.tasks.word")
 
-OUTPUT_DIR = os.path.expanduser("~/.office_agent/outputs")
+OUTPUT_DIR = os.path.join(
+    os.environ.get("OFFICE_AGENT_DATA_DIR") or os.path.expanduser("~/.office_agent"),
+    "outputs")
 
 
 def _safe_output(ext: str = ".docx") -> str:
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-    return os.path.join(OUTPUT_DIR, f"word_{time.strftime('%Y%m%d_%H%M%S')}{ext}")
+    # 时间戳只精确到秒，normal 队列并发下同秒完成的任务会写同一路径互相覆盖
+    unique = f"{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+    return os.path.join(OUTPUT_DIR, f"word_{unique}{ext}")
+
+
+def _display_stem(input_path: str, options: dict) -> str:
+    """输出文件名应基于用户上传时的原始文件名，而非内部 file_id 路径。"""
+    stem = os.path.splitext(os.path.basename(input_path or ""))[0]
+    input_ids = (options or {}).get("input_file_ids") or []
+    if input_ids:
+        try:
+            from ...storage.storage_service import get_storage_service
+            original = get_storage_service().get_info(input_ids[0]).original_name or ""
+            original_stem = os.path.splitext(original)[0]
+            if original_stem and not original_stem.startswith("file_"):
+                stem = original_stem
+        except Exception:
+            pass
+    return stem or "output"
 
 
 def _llm_format_config(instruction: str, input_path: str, options: dict):
@@ -81,8 +102,8 @@ def _llm_format_config(instruction: str, input_path: str, options: dict):
     except Exception as exc:
         if isinstance(options, dict):
             options["model_call"] = {"called": True, "success": False,
-                                      "fallback_used": True, "error": str(exc), "attempts": 0}
-        logger.warning("Word LLM解析不可用，回退规则解析: %s", exc)
+                                      "fallback_used": True, "error": sanitize_error(exc, "模型解析不可用"), "attempts": 0}
+        logger.warning("Word LLM解析不可用，回退规则解析: %s", sanitize_error(exc, "模型解析不可用"))
         return None
 
 
@@ -163,7 +184,7 @@ def process_word(input_path: str, output_path: str = None,
 
         storage = get_storage_service()
         original_name = options.get("output_filename") or (
-            f"{Path(input_path).stem}_formatted.docx"
+            f"{_display_stem(input_path, options)}_formatted.docx"
         )
         file_info = storage.save_new_output(
             source_path=output,
@@ -188,7 +209,6 @@ def process_word(input_path: str, output_path: str = None,
     except Exception as e:
         logger.error("Word任务 %s 失败: %s", _task_id, sanitize_error(e))
         result["status"] = "failed"
-        from ...security.error_sanitizer import sanitize_error
         result["error"] = sanitize_error(e)
 
     if options.get("model_call"):

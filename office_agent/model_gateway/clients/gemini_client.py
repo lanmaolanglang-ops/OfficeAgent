@@ -7,7 +7,6 @@ import time
 from typing import Optional
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
-from urllib.parse import urlencode
 
 from .base import BaseModelClient
 from ...models.model_schemas import ModelConfig, ModelResponse
@@ -58,11 +57,11 @@ class GeminiClient(BaseModelClient):
         if system_instruction:
             payload["systemInstruction"] = system_instruction
         
-        # 添加 API key 作为查询参数
-        params = urlencode({"key": self.api_key})
-        url = f"{self.api_url}?{params}"
-        
-        headers = {"Content-Type": "application/json"}
+        url = self.api_url
+        headers = {
+            "Content-Type": "application/json",
+            "x-goog-api-key": self.api_key,
+        }
         
         try:
             data = json.dumps(payload).encode("utf-8")
@@ -89,7 +88,7 @@ class GeminiClient(BaseModelClient):
             error_body = ""
             try:
                 error_body = e.read().decode("utf-8")
-            except:
+            except Exception:
                 pass
             return self._make_error(
                 f"HTTP {e.code}: {e.reason} {error_body[:200]}", start
@@ -136,10 +135,11 @@ class GeminiClient(BaseModelClient):
                     "parts": [{"text": system_prompt}]
                 }
             
-            params = urlencode({"key": self.api_key})
-            url = f"{self.api_url}?{params}"
-            
-            headers = {"Content-Type": "application/json"}
+            url = self.api_url
+            headers = {
+                "Content-Type": "application/json",
+                "x-goog-api-key": self.api_key,
+            }
             data = json.dumps(payload).encode("utf-8")
             req = Request(url, data=data, headers=headers, method="POST")
             

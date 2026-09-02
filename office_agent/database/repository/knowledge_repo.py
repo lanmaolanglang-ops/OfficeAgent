@@ -1,5 +1,5 @@
 """知识库 Repository"""
-from typing import Optional, List
+from typing import List
 from sqlalchemy import select, or_
 from sqlalchemy.orm import Session
 
@@ -16,11 +16,12 @@ class KnowledgeRepository(BaseRepository[Knowledge]):
 
     def search_by_text(self, query: str, limit: int = 20) -> List[Knowledge]:
         """简单文本搜索（向量搜索由上层实现）"""
-        like = f"%{query}%"
+        escaped = str(query).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        like = f"%{escaped}%"
         stmt = select(Knowledge).where(
             or_(
-                Knowledge.title.ilike(like),
-                Knowledge.content.ilike(like),
+                Knowledge.title.ilike(like, escape="\\"),
+                Knowledge.content.ilike(like, escape="\\"),
             )
         ).limit(limit)
         return list(self.session.scalars(stmt))
@@ -39,6 +40,9 @@ class KnowledgeRepository(BaseRepository[Knowledge]):
         return self.create(kb)
 
     def increment_usage(self, kb_id: str):
-        kb = self.get_by_id(kb_id)
-        if kb:
-            self.update(kb_id, {"usage_count": kb.usage_count + 1})
+        from sqlalchemy import update
+        return self.session.execute(
+            update(Knowledge).where(Knowledge.id == kb_id)
+            .values(usage_count=Knowledge.usage_count + 1)
+            .execution_options(synchronize_session="fetch")
+        ).rowcount

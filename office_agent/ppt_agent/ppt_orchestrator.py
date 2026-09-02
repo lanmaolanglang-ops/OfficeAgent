@@ -5,10 +5,13 @@ PPT Orchestrator - PPT 生成总控
 用户需求 → 内容规划 → 模板解析 → 视觉设计 → 生成文件 → 质量检查 → 输出
 """
 import logging
+import re
+import tempfile
 from pathlib import Path
-from typing import Optional
 
-from .models import PPTOutline, PPTGenerationResult, SlideContent
+from ..security.error_sanitizer import sanitize_error
+
+from .models import PPTOutline, PPTGenerationResult
 from .content_planner import ContentPlanner
 from .template_analyzer import TemplateAnalyzer
 from .slide_designer import SlideDesigner
@@ -16,6 +19,13 @@ from .ppt_service import PPTService
 from .quality_checker import PPTQualityChecker, check_and_fix_outline
 
 logger = logging.getLogger("office_agent.ppt.orchestrator")
+
+
+def _safe_presentation_name(value: str, fallback: str = "presentation") -> str:
+    """Create a Windows-safe basename and prevent relative-path traversal."""
+    name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", str(value or ""))
+    name = re.sub(r"_+", "_", name).strip(" ._")[:30]
+    return name or fallback
 
 
 class PPTOrchestrator:
@@ -38,9 +48,18 @@ class PPTOrchestrator:
         result = orch.generate_from_outline("标题", slides_data, output_path="out.pptx")
     """
 
-    def __init__(self, model_gateway=None, image_gateway=None):
+    def __init__(self, model_gateway=None, image_gateway=None,
+                 max_generated_images: int = 3):
         self.model_gateway = model_gateway
         self.image_gateway = image_gateway
+        self.max_generated_images = max(0, min(int(max_generated_images), 8))
+        self.image_generation = {
+            "configured": False,
+            "attempted": 0,
+            "generated": 0,
+            "errors": [],
+        }
+        self._generated_temp_images = []
         self.planner = ContentPlanner(model_gateway=model_gateway)
         self.template_analyzer = TemplateAnalyzer()
         self.service = PPTService()
@@ -95,19 +114,15 @@ class PPTOrchestrator:
 
             # 4. 生成文件
             if not output_path:
-                safe_name = theme.replace(" ", "_").replace("/", "_")[:30]
+                safe_name = _safe_presentation_name(theme)
                 output_path = f"{safe_name}.pptx"
 
-            result = self.service.generate(outline, output_path)
+            result = self._generate_file(outline, output_path)
             if not result.success:
                 return result
 
             # 5. 质量检查
-            quality = self.quality_checker.check(output_path, expected_slides=slide_count)
-            result.quality_score = quality.score
-            result.quality_issues = [i.to_dict() for i in quality.issues]
-
-            result.changes.append(f"质量分数: {quality.score:.0f}/100")
+            self._attach_quality(result, output_path, slide_count)
 
             return result
 
@@ -138,18 +153,18 @@ class PPTOrchestrator:
             designer = SlideDesigner(style=style)
             outline = designer.design(outline)
 
+            outline = self._generate_marked_images(outline)
+
             # 3. 生成
             if not output_path:
                 output_path = "content_presentation.pptx"
 
-            result = self.service.generate(outline, output_path)
+            result = self._generate_file(outline, output_path)
             if not result.success:
                 return result
 
             # 4. 质量检查
-            quality = self.quality_checker.check(output_path)
-            result.quality_score = quality.score
-            result.quality_issues = [i.to_dict() for i in quality.issues]
+            self._attach_quality(result, output_path)
 
             return result
 
@@ -181,19 +196,19 @@ class PPTOrchestrator:
             designer = SlideDesigner(style=style)
             outline = designer.design(outline)
 
+            outline = self._generate_marked_images(outline)
+
             # 3. 生成
             if not output_path:
                 stem = Path(docx_path).stem
                 output_path = f"{stem}_presentation.pptx"
 
-            result = self.service.generate(outline, output_path)
+            result = self._generate_file(outline, output_path)
             if not result.success:
                 return result
 
             # 4. 质量检查
-            quality = self.quality_checker.check(output_path)
-            result.quality_score = quality.score
-            result.quality_issues = [i.to_dict() for i in quality.issues]
+            self._attach_quality(result, output_path)
 
             return result
 
@@ -229,19 +244,19 @@ class PPTOrchestrator:
             designer = SlideDesigner(style=style)
             outline = designer.design(outline)
 
+            outline = self._generate_marked_images(outline)
+
             # 3. 生成
             if not output_path:
-                safe_name = title.replace(" ", "_")[:30] if title else "presentation"
+                safe_name = _safe_presentation_name(title)
                 output_path = f"{safe_name}.pptx"
 
-            result = self.service.generate(outline, output_path)
+            result = self._generate_file(outline, output_path)
             if not result.success:
                 return result
 
             # 4. 质量检查
-            quality = self.quality_checker.check(output_path)
-            result.quality_score = quality.score
-            result.quality_issues = [i.to_dict() for i in quality.issues]
+            self._attach_quality(result, output_path)
 
             return result
 
@@ -274,7 +289,7 @@ class PPTOrchestrator:
                 )
 
             # 分析模板
-            template_info = self.template_analyzer.analyze(template_path)
+            self.template_analyzer.analyze(template_path)
 
             # 规划内容
             if slides_data:
@@ -302,18 +317,22 @@ class PPTOrchestrator:
             )
             outline = designer.design(outline)
 
+            outline = self._generate_marked_images(outline)
+
             # 生成
             if not output_path:
                 stem = Path(template_path).stem
                 output_path = f"{stem}_new.pptx"
 
-            result = self.service.generate(outline, output_path)
+            # 以模板为基底生成（继承母版/主题/页面尺寸），输出路径必须不同于模板
+            outline._base_template_path = template_path
+
+            result = self._generate_file(outline, output_path)
             if not result.success:
                 return result
 
             # 质量检查
-            quality = self.quality_checker.check(output_path)
-            result.quality_score = quality.score
+            self._attach_quality(result, output_path)
 
             return result
 
@@ -324,28 +343,77 @@ class PPTOrchestrator:
             )
 
     def _generate_marked_images(self, outline: PPTOutline) -> PPTOutline:
-        """为标记了 image_prompt 的 content_image 页生成配图（按需生图）"""
-        if not self.image_gateway:
+        """为适合图文表达的内容页生成配图，并保证配置有效时真正发起调用。"""
+        if not self.image_gateway or self.max_generated_images <= 0:
             return outline
         try:
             if not self.image_gateway.available():
                 return outline
-        except Exception:
+            self.image_generation["configured"] = True
+        except Exception as exc:
+            self.image_generation["errors"].append(sanitize_error(exc))
             return outline
-        import tempfile
-        for slide in outline.slides:
-            if slide.layout != "content_image" or slide.image_path:
-                continue
-            if not slide.image_prompt:
-                continue
+        # 优先处理 LLM 明确标记的图文页；若模型没有标记任何页面，则从普通
+        # 内容页中确定性选择，避免“配置了生图但规划结果全是文本”。
+        candidates = [
+            slide for slide in outline.slides
+            if slide.layout == "content_image" and not slide.image_path
+        ]
+        candidates.extend(
+            slide for slide in outline.slides
+            if slide.layout in ("content", "content_list")
+            and not slide.image_path and slide not in candidates
+        )
+
+        for slide in candidates:
+            if self.image_generation["generated"] >= self.max_generated_images:
+                break
+            prompt = (slide.image_prompt or (
+                f"{outline.title}商务演示配图，页面主题：{slide.title}。"
+                f"核心内容：{'；'.join(str(item) for item in slide.bullets[:4])}。"
+                "横向构图，专业、简洁、有清晰视觉主体，避免文字和水印。"
+            )).strip()
+            original_layout = slide.layout
+            self.image_generation["attempted"] += 1
             try:
-                slide.image_path = self.image_gateway.generate(
-                    slide.image_prompt, output_dir=tempfile.gettempdir()
+                image_path = self.image_gateway.generate(
+                    prompt, size="1024x768", output_dir=tempfile.gettempdir()
                 )
-                slide.image_alt = slide.image_prompt[:50]
+                if not image_path or not Path(image_path).is_file():
+                    raise RuntimeError("生图服务未生成可用文件")
+                slide.layout = "content_image"
+                slide.image_prompt = prompt
+                slide.image_path = image_path
+                slide.image_alt = prompt[:50]
+                self._generated_temp_images.append(str(Path(image_path).resolve()))
+                self.image_generation["generated"] += 1
             except Exception as e:
-                logger.warning("第 %s 页配图生成失败: %s", slide.page_number, e)
+                slide.layout = original_layout
+                error = sanitize_error(e)
+                self.image_generation["errors"].append(error)
+                logger.warning("第 %s 页配图生成失败: %s", slide.page_number, error)
+                lowered = error.lower()
+                if any(code in lowered for code in (
+                    "http 400", "http 401", "http 403", "http 404", "http 429",
+                    "getaddrinfo", "name resolution", "连接失败", "timed out", "timeout",
+                )):
+                    break
         return outline
+
+    def _generate_file(self, outline: PPTOutline, output_path: str) -> PPTGenerationResult:
+        """Render the deck, then remove only images generated in the OS temp directory."""
+        try:
+            return self.service.generate(outline, output_path)
+        finally:
+            temp_root = Path(tempfile.gettempdir()).resolve()
+            for image_path in self._generated_temp_images:
+                path = Path(image_path)
+                try:
+                    if path.is_file() and path.parent.resolve() == temp_root:
+                        path.unlink()
+                except OSError:
+                    logger.warning("临时配图清理失败: %s", path.name)
+            self._generated_temp_images.clear()
 
     def _pre_check_and_fix(self, outline: PPTOutline,
                            expected_slides: int = None) -> PPTOutline:
@@ -375,7 +443,16 @@ class PPTOrchestrator:
         from .models import PPTGenerationResult
         result = PPTGenerationResult(success=True, output_path=output_path)
 
-        quality = self.quality_checker.check(output_path, expected_slides)
+        try:
+            quality = self.quality_checker.check(output_path, expected_slides)
+        except Exception as exc:
+            logger.exception("PPT 已生成，但质量检查失败: %s", output_path)
+            result.message = f"PPT 生成成功，但质量检查未完成：{sanitize_error(exc)}"
+            result.quality_issues = [{
+                "type": "quality_check", "severity": "warning",
+                "message": result.message,
+            }]
+            return result
         result.quality_score = quality.score
         result.quality_issues = [i.to_dict() for i in quality.issues]
         result.slide_count = quality.slide_count
@@ -387,3 +464,23 @@ class PPTOrchestrator:
             result.message += f"，{len(quality.warnings())}个警告"
 
         return result
+
+    def _attach_quality(self, result: PPTGenerationResult, output_path: str,
+                        expected_slides: int = None) -> None:
+        """附加质量信息；检查器故障不得反向覆盖已成功生成的产物。"""
+        try:
+            quality = self.quality_checker.check(output_path, expected_slides)
+        except Exception as exc:
+            logger.exception("PPT 已生成，但质量检查失败: %s", output_path)
+            warning = f"质量检查未完成：{sanitize_error(exc)}"
+            result.quality_issues.append({
+                "type": "quality_check", "severity": "warning", "message": warning,
+            })
+            result.changes.append(warning)
+            return
+        result.quality_score = quality.score
+        result.quality_issues = [
+            issue.to_dict() for issue in getattr(quality, "issues", [])
+        ]
+        result.slide_count = getattr(quality, "slide_count", 0) or result.slide_count
+        result.changes.append(f"质量分数: {quality.score:.0f}/100")

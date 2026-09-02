@@ -9,18 +9,16 @@ Data Analyzer - 数据理解器
 5. 生成 DataSchema JSON
 """
 from pathlib import Path
-from typing import Optional, List, Dict, Any, Tuple
+from typing import Optional, List, Dict
 from collections import Counter
 import re
-import json
 from datetime import datetime
 
 import pandas as pd
-import numpy as np
 
 from .models import (
     DataProfile, SheetInfo, ColumnInfo,
-    DataSchema, SheetSchema, DataRelation, SemanticType,
+    DataSchema, SheetSchema, DataRelation,
 )
 from .excel_service import ExcelService
 
@@ -136,7 +134,7 @@ class DataAnalyzer:
             all_sheets_data = {}
 
             for sheet_name in xls.sheet_names:
-                df = pd.read_excel(file_path, sheet_name=sheet_name)
+                df = xls.parse(sheet_name)
                 sheet_schema = self._analyze_sheet_schema(df, sheet_name)
                 schema.sheets.append(sheet_schema)
                 schema.total_rows += sheet_schema.row_count
@@ -145,7 +143,7 @@ class DataAnalyzer:
             # 发现表间关系
             schema.relations = self._discover_relations(all_sheets_data)
 
-        except Exception as e:
+        except Exception:
             # pandas 失败时用 openpyxl 降级
             schema = self._analyze_with_openpyxl(file_path)
 
@@ -164,7 +162,7 @@ class DataAnalyzer:
             profile.total_sheets = len(xls.sheet_names)
 
             for sheet_name in xls.sheet_names:
-                df = pd.read_excel(file_path, sheet_name=sheet_name)
+                df = xls.parse(sheet_name)
                 sheet_info = self._analyze_sheet_to_info(df, sheet_name)
                 profile.sheets.append(sheet_info)
                 profile.total_rows += sheet_info.row_count
@@ -239,7 +237,7 @@ class DataAnalyzer:
 
         # 数值统计
         if col.data_type == "number":
-            numeric = pd.to_numeric(series, errors="coerce")
+            numeric = self._to_numeric_series(series)
             if not numeric.isna().all():
                 col.min_value = float(numeric.min())
                 col.max_value = float(numeric.max())
@@ -257,8 +255,11 @@ class DataAnalyzer:
                 pass
 
         # 样本值
-        sample = series.dropna().head(5).tolist()
+        non_null = series.dropna()
+        sample = non_null.head(5).tolist()
         col.sample_values = [str(v) for v in sample]
+        unique = non_null.drop_duplicates().head(20).tolist()
+        col.unique_values = [v.item() if hasattr(v, "item") else v for v in unique]
 
         # 生成描述（在统计之后）
         col.description = self._describe_column(col)
@@ -268,6 +269,26 @@ class DataAnalyzer:
     # ==========================================
     # 类型推断
     # ==========================================
+
+    @staticmethod
+    def _to_numeric_series(series: pd.Series) -> pd.Series:
+        """转换数值列；带百分号的字符串按实际比例值换算。"""
+        def convert(value):
+            if pd.isna(value) or isinstance(value, bool):
+                return None
+            if isinstance(value, (int, float)):
+                return value
+            text = str(value).replace(",", "").strip()
+            is_percent = text.endswith("%")
+            if is_percent:
+                text = text[:-1].strip()
+            try:
+                number = float(text)
+            except (TypeError, ValueError):
+                return None
+            return number / 100.0 if is_percent else number
+
+        return pd.to_numeric(series.map(convert), errors="coerce")
 
     def _infer_data_type(self, series: pd.Series, col_name: str = "") -> str:
         """推断基础数据类型"""
@@ -286,7 +307,7 @@ class DataAnalyzer:
                 return "text"
 
             # 尝试数值
-            numeric = pd.to_numeric(non_null, errors="coerce")
+            numeric = self._to_numeric_series(non_null)
             if numeric.notna().sum() / len(non_null) > 0.8:
                 return "number"
 
@@ -326,7 +347,7 @@ class DataAnalyzer:
         if data_type == "number":
             # ID：整数、唯一率高、列名含编号特征
             if unique_ratio > 0.95 and all(
-                pd.to_numeric(series, errors="coerce").dropna().apply(
+                self._to_numeric_series(series).dropna().apply(
                     lambda x: float(x).is_integer()
                 )
             ):
@@ -334,7 +355,7 @@ class DataAnalyzer:
                     return "id"
 
             # 金额：数值大、通常有小数
-            numeric = pd.to_numeric(series, errors="coerce").dropna()
+            numeric = self._to_numeric_series(series).dropna()
             if len(numeric) > 0:
                 avg_val = numeric.mean()
                 if avg_val > 100 and any(kw in name_lower for kw in ["额", "价", "金", "费"]):
@@ -583,7 +604,11 @@ class DataAnalyzer:
         wb = self.service.open(file_path).wb
 
         for ws in wb.worksheets:
-            info = SheetInfo(name=ws.title, row_count=ws.max_row, col_count=ws.max_column)
+            info = SheetInfo(
+                name=ws.title,
+                row_count=max(0, ws.max_row - 1),
+                col_count=ws.max_column,
+            )
             headers = []
             for col in range(1, ws.max_column + 1):
                 val = ws.cell(row=1, column=col).value
@@ -600,6 +625,7 @@ class DataAnalyzer:
                 col_info.null_count = ws.max_row - 1 - len(values)
                 col_info.unique_count = len(set(str(v) for v in values))
                 col_info.sample_values = [str(v) for v in values[:5]]
+                col_info.unique_values = list(dict.fromkeys(values))[:20]
 
                 numeric_count = sum(1 for v in values if isinstance(v, (int, float)))
                 if numeric_count > len(values) * 0.8:
@@ -638,7 +664,11 @@ class DataAnalyzer:
         wb = self.service.open(file_path).wb
 
         for ws in wb.worksheets:
-            sheet = SheetSchema(name=ws.title, row_count=ws.max_row, col_count=ws.max_column)
+            sheet = SheetSchema(
+                name=ws.title,
+                row_count=max(0, ws.max_row - 1),
+                col_count=ws.max_column,
+            )
 
             for col in range(1, ws.max_column + 1):
                 header_val = ws.cell(row=1, column=col).value
@@ -654,6 +684,7 @@ class DataAnalyzer:
                 col_info.null_count = ws.max_row - 1 - len(values)
                 col_info.unique_count = len(set(str(v) for v in values))
                 col_info.sample_values = [str(v) for v in values[:5]]
+                col_info.unique_values = list(dict.fromkeys(values))[:20]
 
                 numeric_count = sum(1 for v in values if isinstance(v, (int, float)))
                 if numeric_count > len(values) * 0.8:

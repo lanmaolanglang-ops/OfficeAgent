@@ -25,8 +25,7 @@ Vision Gateway - 多模态视觉理解网关
     result = gateway.ocr("scan.jpg")
     print(result.text)
 """
-import json
-import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional, List, Dict, Any, Union
 
 from .vision_models import (
@@ -226,7 +225,8 @@ class VisionGateway:
                          task: Union[str, VisionTaskType] = "doc",
                          model_key: Optional[str] = None,
                          max_pages: int = 30,
-                         dpi: Optional[int] = None) -> DocumentVisionResult:
+                         dpi: Optional[int] = None,
+                         max_concurrency: int = 4) -> DocumentVisionResult:
         """
         分析文档（PDF/PPT/图片）
 
@@ -240,7 +240,6 @@ class VisionGateway:
             max_pages: 最大页数
             dpi: 渲染 DPI
         """
-        start = time.time()
         result = DocumentVisionResult(
             file_path=file_path,
             file_type=file_path.rsplit(".", 1)[-1].lower(),
@@ -265,14 +264,14 @@ class VisionGateway:
 
         task_type = self._parse_task(task)
 
-        # 逐页分析
+        # 限并发逐页分析。结果最终仍按页码排序，避免并发完成顺序污染文档顺序。
         all_texts = []
         all_tables = []
         all_charts = []
 
-        for page in pages:
+        def analyze_page(page: DocumentPage) -> VisionResponse:
             if not page.image:
-                continue
+                return VisionResponse(success=False, error="页面没有可分析的图像")
 
             # 构建提示（包含页面文字提示）
             page_prompt = prompt
@@ -286,14 +285,45 @@ class VisionGateway:
                 require_structured=True,
             )
 
-            resp = self.analyze(request, model_key)
+            try:
+                return self.analyze(request, model_key)
+            except Exception as exc:
+                return VisionResponse(success=False, error=f"页面分析失败: {exc}")
+
+        try:
+            worker_count = max(1, min(int(max_concurrency), 8, len(pages)))
+        except (TypeError, ValueError):
+            worker_count = min(4, len(pages))
+
+        by_page = {}
+        with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="vision-page") as executor:
+            futures = {executor.submit(analyze_page, page): page for page in pages}
+            for future in as_completed(futures):
+                page = futures[future]
+                try:
+                    by_page[page.page_number] = future.result()
+                except Exception as exc:
+                    by_page[page.page_number] = VisionResponse(
+                        success=False, error=f"页面分析失败: {exc}"
+                    )
+
+        for page in pages:
+            resp = by_page[page.page_number]
             result.responses.append(resp)
 
             if resp.success:
+                result.successful_pages += 1
                 all_texts.append(f"--- 第 {page.page_number} 页 ---\n{resp.content}")
                 if resp.structured:
                     all_tables.extend(resp.structured.tables)
                     all_charts.extend(resp.structured.charts)
+            else:
+                result.failed_pages += 1
+                result.failed_page_numbers.append(page.page_number)
+
+        result.partial = result.successful_pages > 0 and result.failed_pages > 0
+        if result.successful_pages == 0:
+            result.error = f"全部 {result.failed_pages} 页分析失败"
 
         # 合并结果
         result.combined_text = "\n\n".join(all_texts)

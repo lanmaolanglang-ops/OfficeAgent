@@ -290,6 +290,18 @@ export async function quitApp(): Promise<void> {
   if (core) { try { await core.invoke('quit_app'); return; } catch {} }
 }
 
+// ========== 窗口行为设置 ==========
+// 同步"关闭时最小化到托盘"到 Rust 侧（CloseRequested 时 Rust 读取该状态）
+export async function setMinimizeToTray(enabled: boolean): Promise<void> {
+  const core = await getTauriCore();
+  if (!core) return;
+  try {
+    await core.invoke('set_minimize_to_tray', { enabled });
+  } catch {
+    // 浏览器环境或旧版本后端：忽略
+  }
+}
+
 // ========== 拖拽事件 ==========
 export async function onTauriDragDrop(
   handler: (paths: string[]) => void
@@ -297,8 +309,13 @@ export async function onTauriDragDrop(
   const eventMod = await getTauriEvent();
   if (!eventMod) return null;
   try {
-    return await eventMod.listen<string[]>('tauri://drag-drop', (event) => {
-      handler(event.payload);
+    // Rust 侧过滤扩展名后以 office-agent://drag-drop 转发（数组 payload）。
+    // 不监听核心的 tauri://drag-drop：它与 Rust 转发的是同一次拖拽，
+    // 两个都听会导致一次拖拽上传两遍。
+    return await eventMod.listen<string[]>('office-agent://drag-drop', (event) => {
+      const payload = event.payload as { paths?: string[] } | string[];
+      const paths = Array.isArray(payload) ? payload : (payload.paths ?? []);
+      handler(paths);
     });
   } catch { return null; }
 }

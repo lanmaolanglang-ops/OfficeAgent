@@ -40,11 +40,8 @@ class DocumentParser:
     # 文件扩展名到类型的映射
     EXT_MAP = {
         ".docx": "word",
-        ".doc": "word",
         ".pptx": "ppt",
-        ".ppt": "ppt",
         ".xlsx": "excel",
-        ".xls": "excel",
         ".csv": "excel",
         ".txt": "text",
         ".md": "markdown",

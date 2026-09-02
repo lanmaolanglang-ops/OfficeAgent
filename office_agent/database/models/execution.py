@@ -1,11 +1,11 @@
 """执行日志模型"""
 import uuid
 from datetime import datetime
-from sqlalchemy import String, Text, Integer, BigInteger, ForeignKey, DateTime, Float, Boolean
+from sqlalchemy import String, Text, Integer, ForeignKey, DateTime, Float
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from sqlalchemy.sql import func
 
 from ..base import Base, TimestampMixin
+from ..time import utc_now
 
 
 def _log_uuid():
@@ -31,7 +31,7 @@ class ExecutionLog(Base, TimestampMixin):
     # 关联
     request_id: Mapped[str] = mapped_column(String(64), nullable=True, index=True)
     task_id: Mapped[str] = mapped_column(
-        String(32), ForeignKey("task.id"), nullable=True, index=True
+        String(32), ForeignKey("task.id", ondelete="CASCADE"), nullable=True, index=True
     )
     trace_id: Mapped[str] = mapped_column(String(64), nullable=True, index=True)
     span_id: Mapped[str] = mapped_column(String(32), nullable=True)
@@ -54,8 +54,10 @@ class ExecutionLog(Base, TimestampMixin):
     duration_ms: Mapped[int] = mapped_column(Integer, default=0)
 
     # 时间
-    start_time: Mapped[datetime] = mapped_column(DateTime, default=func.now())
-    end_time: Mapped[datetime] = mapped_column(DateTime, nullable=True)
+    start_time: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now
+    )
+    end_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # 状态
     status: Mapped[str] = mapped_column(String(32), default="success", index=True)
@@ -82,7 +84,9 @@ class ModelCallLog(Base, TimestampMixin):
 
     # 关联
     request_id: Mapped[str] = mapped_column(String(64), nullable=True, index=True)
-    task_id: Mapped[str] = mapped_column(String(32), nullable=True, index=True)
+    task_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("task.id", ondelete="CASCADE"), nullable=True, index=True
+    )
     trace_id: Mapped[str] = mapped_column(String(64), nullable=True, index=True)
 
     # 模型信息
@@ -125,7 +129,9 @@ class ErrorLog(Base, TimestampMixin):
 
     # 关联
     request_id: Mapped[str] = mapped_column(String(64), nullable=True, index=True)
-    task_id: Mapped[str] = mapped_column(String(32), nullable=True, index=True)
+    task_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("task.id", ondelete="CASCADE"), nullable=True, index=True
+    )
     trace_id: Mapped[str] = mapped_column(String(64), nullable=True, index=True)
 
     # 错误信息
@@ -147,4 +153,5 @@ class ErrorLog(Base, TimestampMixin):
     extra_json: Mapped[str] = mapped_column(Text, nullable=True)
 
     def __repr__(self):
-        return f"<ErrorLog {self.error_type}: {self.error_message[:50]}>"
+        message = self.error_message or ""
+        return f"<ErrorLog {self.error_type}: {message[:50]}>"

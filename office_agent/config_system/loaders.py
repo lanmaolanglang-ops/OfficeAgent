@@ -97,7 +97,10 @@ class YamlLoader:
     def __init__(self, config_dir: str = None):
         self.config_dir = Path(config_dir or os.environ.get(
             "CONFIG_DIR",
-            os.path.expanduser("~/.office_agent/config")
+            os.path.join(
+                os.environ.get("OFFICE_AGENT_DATA_DIR") or os.path.expanduser("~/.office_agent"),
+                "config",
+            )
         ))
 
     def load(self, filename: str = "config.yaml") -> Dict[str, Any]:
