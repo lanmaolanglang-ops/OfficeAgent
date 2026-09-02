@@ -7,6 +7,7 @@ from __future__ import annotations
 import os
 import re
 import mimetypes
+import tempfile
 import zipfile
 from dataclasses import dataclass, field
 from enum import Enum
@@ -386,7 +387,6 @@ class FileScanner:
 
     def scan_bytes(self, data: bytes, filename: str) -> ScanResult:
         """扫描字节数据"""
-        import tempfile
         ext = Path(filename).suffix.lower()
         with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as f:
             f.write(data)
@@ -401,6 +401,58 @@ class FileScanner:
                 # failed cleanup must not turn a blocked scan into success.
                 pass
         return result
+
+    def scan_fileobj(self, fileobj, filename: str) -> ScanResult:
+        """流式扫描可 seek 文件对象，避免把整份上传复制到内存。"""
+        ext = Path(filename).suffix.lower()
+        try:
+            position = fileobj.tell()
+            fileobj.seek(0)
+        except (AttributeError, OSError):
+            return ScanResult(
+                filename=filename,
+                file_size=0,
+                threat_level=ThreatLevel.BLOCKED,
+                is_allowed=False,
+                detected_threats=["上传流不可读取"],
+                mime_type=mimetypes.guess_type(filename)[0] or "application/octet-stream",
+                extension=ext,
+            )
+
+        tmp_path = ""
+        try:
+            with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as target:
+                tmp_path = target.name
+                copied = 0
+                while True:
+                    chunk = fileobj.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    target.write(chunk)
+                    copied += len(chunk)
+                    if copied > self.max_file_size:
+                        break
+            return self.scan_file(tmp_path, filename)
+        except OSError:
+            return ScanResult(
+                filename=filename,
+                file_size=0,
+                threat_level=ThreatLevel.BLOCKED,
+                is_allowed=False,
+                detected_threats=["文件安全扫描失败"],
+                mime_type=mimetypes.guess_type(filename)[0] or "application/octet-stream",
+                extension=ext,
+            )
+        finally:
+            try:
+                fileobj.seek(position)
+            except (AttributeError, OSError):
+                pass
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
 
     def is_filename_safe(self, filename: str) -> bool:
         """检查文件名是否安全（防止路径遍历）"""

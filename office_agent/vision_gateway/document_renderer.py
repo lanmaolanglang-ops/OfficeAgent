@@ -38,6 +38,7 @@ class DocumentRenderer:
         """
         self.dpi = dpi
         self.max_pages = max_pages
+        self.last_total_pages = 0
         self._owns_output_dir = output_dir is None
         self.output_dir = output_dir or tempfile.mkdtemp(prefix="vision_")
         os.makedirs(self.output_dir, exist_ok=True)
@@ -82,6 +83,7 @@ class DocumentRenderer:
 
     def _render_image(self, file_path: str) -> List[DocumentPage]:
         """单张图片"""
+        self.last_total_pages = 1
         img = ImageInput.from_file(file_path, page_number=1, label=Path(file_path).name)
         return [DocumentPage(
             page_number=1,
@@ -96,14 +98,18 @@ class DocumentRenderer:
         pages = []
         doc = pymupdf.open(file_path)
         try:
+            self.last_total_pages = len(doc)
             zoom = self.dpi / 72  # 72 是 PDF 默认 DPI
             matrix = pymupdf.Matrix(zoom, zoom)
             total = min(len(doc), self.max_pages)
+            render_id = uuid.uuid4().hex[:12]
 
             for i in range(total):
                 page = doc[i]
                 pix = page.get_pixmap(matrix=matrix, alpha=False)
-                img_path = os.path.join(self.output_dir, f"page_{i+1:04d}.png")
+                img_path = os.path.join(
+                    self.output_dir, f"{render_id}-page_{i+1:04d}.png"
+                )
                 pix.save(img_path)
                 text = page.get_text().strip()[:500]
                 img = ImageInput.from_file(img_path, page_number=i+1)
@@ -199,6 +205,7 @@ class DocumentRenderer:
 
         prs = Presentation(file_path)
         pages = []
+        self.last_total_pages = len(prs.slides)
 
         for i, slide in enumerate(prs.slides):
             if i >= self.max_pages:
@@ -258,7 +265,9 @@ class DocumentRenderer:
             if y > height - 40:
                 break
 
-        img_path = os.path.join(self.output_dir, f"slide_{page_num:04d}.png")
+        img_path = os.path.join(
+            self.output_dir, f"{uuid.uuid4().hex[:12]}-slide_{page_num:04d}.png"
+        )
         img.save(img_path)
         return img_path
 

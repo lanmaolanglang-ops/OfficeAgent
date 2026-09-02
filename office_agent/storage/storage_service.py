@@ -156,16 +156,31 @@ class StorageService:
     def __init__(self, config: StorageConfig = None, backend: StorageBackend = None):
         self.config = config or StorageConfig.from_env()
         self.backend = backend or create_storage_backend(self.config)
-        self._version_locks: Dict[str, threading.RLock] = {}
+        self._version_locks: Dict[str, tuple[threading.RLock, int]] = {}
         self._version_locks_guard = threading.Lock()
         logger.info(f"StorageService 初始化: type={self.config.storage_type}")
 
     @contextmanager
     def _version_lock(self, file_id: str):
         with self._version_locks_guard:
-            lock = self._version_locks.setdefault(file_id, threading.RLock())
-        with lock:
-            yield
+            entry = self._version_locks.get(file_id)
+            if entry is None:
+                lock = threading.RLock()
+                self._version_locks[file_id] = (lock, 1)
+            else:
+                lock, users = entry
+                self._version_locks[file_id] = (lock, users + 1)
+        try:
+            with lock:
+                yield
+        finally:
+            with self._version_locks_guard:
+                current = self._version_locks.get(file_id)
+                if current and current[0] is lock:
+                    if current[1] == 1:
+                        del self._version_locks[file_id]
+                    else:
+                        self._version_locks[file_id] = (lock, current[1] - 1)
 
     def _get_session(self):
         """获取数据库 session"""

@@ -11,7 +11,7 @@ def test_security_config_from_env_uses_default_without_attribute_error(monkeypat
     from office_agent.security.config import DEFAULT_JWT_SECRET, SecurityConfig
 
     monkeypatch.delenv("OFFICE_AGENT_JWT_SECRET", raising=False)
-    assert SecurityConfig.from_env().jwt_secret_key == DEFAULT_JWT_SECRET
+    assert SecurityConfig.from_env().jwt_secret_key is DEFAULT_JWT_SECRET
 
 
 def test_missing_development_storage_path_is_an_info(tmp_path):

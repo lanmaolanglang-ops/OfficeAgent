@@ -10,14 +10,13 @@ import logging
 import tempfile
 import threading
 from functools import wraps
+from pathlib import Path
 from typing import Optional, List, Dict, Any
-from datetime import datetime
 
 from .models import (
-    KnowledgeDocument, KnowledgeChunk, SearchResult,
-    KnowledgeContext, DocumentType,
+    KnowledgeDocument, KnowledgeChunk, KnowledgeContext,
 )
-from .document_parser import DocumentParser, ParsedDocument
+from .document_parser import DocumentParser
 from .text_chunker import TextChunker, ChunkConfig
 from .embeddings import TfidfEmbedder, BaseEmbedder
 from .vector_store import VectorStore
@@ -124,7 +123,7 @@ class OfficeKnowledgeBase:
         doc = KnowledgeDocument(
             title=title,
             doc_type=parsed.doc_type or doc_type or "general",
-            source_path=file_path,
+            source_path=Path(file_path).name,
             content=parsed.full_text,
             tags=tags or [],
         )
@@ -136,7 +135,7 @@ class OfficeKnowledgeBase:
         for chunk in chunks:
             chunk.metadata["doc_type"] = doc.doc_type
             chunk.metadata["tags"] = tags or []
-            chunk.metadata["source"] = file_path
+            chunk.metadata["source"] = Path(file_path).name
 
         doc.chunks = chunks
         doc.chunk_count = len(chunks)

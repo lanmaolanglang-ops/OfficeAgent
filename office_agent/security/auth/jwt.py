@@ -96,6 +96,7 @@ class JWTManager:
         self.secret_key = resolved_secret.encode("utf-8")
         self.access_token_expire = access_token_expire
         self.refresh_token_expire = refresh_token_expire
+        self._revocation_signature: tuple[int, int] | None = None
         self._revoked: dict[str, float] = self._load_revocations()
 
     def _ensure_state_dir(self) -> None:
@@ -132,6 +133,11 @@ class JWTManager:
     def _load_revocations(self) -> dict[str, float]:
         with self._state_lock:
             try:
+                stat = self._revocation_path.stat()
+                self._revocation_signature = (stat.st_mtime_ns, stat.st_size)
+            except OSError:
+                self._revocation_signature = None
+            try:
                 raw = json.loads(self._revocation_path.read_text(encoding="utf-8"))
             except (FileNotFoundError, json.JSONDecodeError, OSError):
                 return {}
@@ -152,11 +158,20 @@ class JWTManager:
             self._revocation_path,
             json.dumps(self._revoked, ensure_ascii=False, sort_keys=True),
         )
+        stat = self._revocation_path.stat()
+        self._revocation_signature = (stat.st_mtime_ns, stat.st_size)
 
     def _is_revoked(self, jti: str) -> bool:
         with self._state_lock:
-            # Reload so separate worker processes observe revocations promptly.
-            self._revoked.update(self._load_revocations())
+            # A cheap metadata check keeps workers coherent while avoiding a
+            # synchronous read + JSON parse on every authenticated request.
+            try:
+                stat = self._revocation_path.stat()
+                signature = (stat.st_mtime_ns, stat.st_size)
+            except OSError:
+                signature = None
+            if signature != self._revocation_signature:
+                self._revoked.update(self._load_revocations())
             return self._revoked.get(jti, 0) > time.time()
 
     def _sign(self, header_b64: str, payload_b64: str) -> str:
@@ -250,13 +265,29 @@ class JWTManager:
             raise ValueError(f"Token无效: {e}")
 
     def refresh_access_token(self, refresh_token: str) -> str:
-        """使用Refresh Token获取新的Access Token"""
-        payload = self.decode(refresh_token, expected_type="refresh")
-        return self.create_access_token(
-            user_id=payload.user_id,
-            username=payload.username,
-            role=payload.role,
-        )
+        """兼容入口：刷新 access，并撤销已消费的 refresh token。"""
+        access, _refresh = self.rotate_refresh_token(refresh_token)
+        return access
+
+    def rotate_refresh_token(self, refresh_token: str) -> tuple[str, str]:
+        """原子消费旧 refresh token，并签发一对新令牌。"""
+        with self._state_lock:
+            # Holding the lock across decode and persistence prevents two
+            # concurrent refreshes from successfully consuming the same JTI.
+            payload = self.decode(refresh_token, expected_type="refresh")
+            new_access = self.create_access_token(
+                user_id=payload.user_id,
+                username=payload.username,
+                role=payload.role,
+            )
+            new_refresh = self.create_refresh_token(
+                user_id=payload.user_id,
+                username=payload.username,
+                role=payload.role,
+            )
+            self._revoked[payload.jti] = payload.exp
+            self._persist_revocations()
+        return new_access, new_refresh
 
     def revoke(self, token: str) -> bool:
         """撤销Token（登出）"""

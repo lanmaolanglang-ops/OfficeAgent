@@ -2,7 +2,7 @@
 Vision Gateway 数据模型
 """
 from dataclasses import dataclass, field
-from typing import Optional, List, Dict, Any, Union
+from typing import Optional, List, Dict, Any
 from enum import Enum
 from pathlib import Path
 import base64
@@ -217,6 +217,8 @@ class DocumentVisionResult:
     file_path: str = ""
     file_type: str = ""          # pdf, pptx, ppt, image
     page_count: int = 0
+    source_page_count: int = 0
+    truncated: bool = False
     pages: List[DocumentPage] = field(default_factory=list)
     responses: List[VisionResponse] = field(default_factory=list)
     combined_text: str = ""

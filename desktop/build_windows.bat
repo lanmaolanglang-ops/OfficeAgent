@@ -1,7 +1,7 @@
 @echo off
 chcp 65001 >nul
 echo ==========================================
-echo   OfficeAgent v0.50.0 - Windows Build
+echo   OfficeAgent v0.51.1 - Windows Build
 echo ==========================================
 echo.
 

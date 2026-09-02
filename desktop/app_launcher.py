@@ -5,12 +5,12 @@ OfficeAgent Desktop Launcher
 """
 import os
 import sys
-import time
 import signal
 import logging
 import argparse
-import threading
 from pathlib import Path
+
+APP_VERSION = "0.51.1"
 
 # ============================================================
 # PyInstaller GUI 模式兼容：sys.stdout / sys.stderr 可能为 None
@@ -76,7 +76,7 @@ def run_uvicorn_direct(host: str, port: int, data_dir: Path):
     os.environ["AUTH_MODE"] = "local"
     os.environ["OFFICE_AGENT_DATA_DIR"] = str(data_dir)
     os.environ["OFFICE_AGENT_LOG_DIR"] = str(data_dir / "logs")
-    os.environ["OFFICE_AGENT_VERSION"] = "0.50.0"
+    os.environ["OFFICE_AGENT_VERSION"] = APP_VERSION
 
     # 直接导入app对象（frozen模式下字符串导入不可靠）
     logger.info("Importing office_agent.api.main...")
@@ -113,7 +113,7 @@ def main():
 
     setup_logging(data_dir / "logs")
     logger = logging.getLogger("office_agent.launcher")
-    logger.info(f"Starting OfficeAgent v0.50.0 (frozen={FROZEN})")
+    logger.info(f"Starting OfficeAgent v{APP_VERSION} (frozen={FROZEN})")
     logger.info(f"Data dir: {data_dir}")
     logger.info(f"App dir: {APP_DIR}")
     logger.info(f"Python: {sys.executable}")

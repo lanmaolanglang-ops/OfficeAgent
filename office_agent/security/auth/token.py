@@ -76,8 +76,9 @@ class TokenManager:
                 "token_type": "bearer", "expires_in": self.jwt.access_token_expire}
 
     def refresh(self, refresh_token: str) -> dict:
-        new_access = self.jwt.refresh_access_token(refresh_token)
-        return {"access_token": new_access, "token_type": "bearer",
+        new_access, new_refresh = self.jwt.rotate_refresh_token(refresh_token)
+        return {"access_token": new_access, "refresh_token": new_refresh,
+                "token_type": "bearer",
                 "expires_in": self.jwt.access_token_expire}
 
     def logout(self, token: str) -> bool:

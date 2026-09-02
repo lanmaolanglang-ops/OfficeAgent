@@ -16,7 +16,7 @@ class TestConfigSystem:
         """测试安全配置"""
         from office_agent.security import SecurityConfig
         config = SecurityConfig()
-        assert config.jwt_secret_key is not None
+        assert config.jwt_secret_key is None
         assert config.access_token_expire > 0
         assert config.max_file_size > 0
 

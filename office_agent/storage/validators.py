@@ -148,7 +148,7 @@ _OFFICE_REQUIRED_PREFIX = {
 
 
 def _validate_zip_office(ext: str, stream: BinaryIO) -> None:
-    """Validate OOXML as a ZIP package with the expected application tree."""
+    """Validate OOXML package identity without decompressing every member."""
     position = stream.tell()
     try:
         stream.seek(0)
@@ -159,9 +159,6 @@ def _validate_zip_office(ext: str, stream: BinaryIO) -> None:
             prefix = _OFFICE_REQUIRED_PREFIX[ext]
             if not any(name.startswith(prefix) for name in names):
                 raise FileValidationError(f"文件内容与扩展名 {ext} 不匹配")
-            bad_member = archive.testzip()
-            if bad_member:
-                raise FileValidationError("Office 文件压缩包已损坏")
     except (zipfile.BadZipFile, OSError) as exc:
         raise FileValidationError(f"文件内容与扩展名 {ext} 不匹配") from exc
     finally:
@@ -213,6 +210,20 @@ def validate_fileobj(filename: str, fileobj: BinaryIO,
     fileobj.seek(0)
     if size == 0:
         raise FileValidationError("文件内容为空")
+
+    # The security scanner validates archive metadata before any member is
+    # decompressed, including traversal, encryption, member/total size and
+    # compression-ratio limits. This is the authoritative upload safety gate.
+    from ..security.file_security.file_scanner import FileScanner
+
+    scan = FileScanner(
+        max_file_size=max_size,
+        allowed_extensions=set(ALLOWED_EXTENSIONS),
+    ).scan_fileobj(fileobj, filename)
+    if not scan.is_allowed:
+        fileobj.seek(0)
+        reason = "；".join(scan.detected_threats) or "文件安全扫描未通过"
+        raise FileValidationError(reason)
 
     if ext in _OFFICE_REQUIRED_PREFIX:
         _validate_zip_office(ext, fileobj)

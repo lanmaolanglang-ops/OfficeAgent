@@ -42,6 +42,10 @@ def reset_db():
     """重置数据库"""
     from office_agent.database.connection import init_db, DATABASE_URL
     print(f"正在重置数据库: {DATABASE_URL}")
+    confirm = input("确认删除所有数据并重建数据库？(yes/no): ")
+    if confirm.lower() != "yes":
+        print("已取消")
+        return
     init_db(drop_all=True)
     init_db(drop_all=False)
     print("✅ 数据库已重置")
@@ -52,7 +56,7 @@ def seed():
     """填充初始数据"""
     from office_agent.database.session import session_scope
     from office_agent.database.repository import (
-        AgentRepository, SkillRepository, TemplateRepository,
+        AgentRepository, SkillRepository,
     )
 
     print("正在填充初始数据...")
@@ -60,7 +64,6 @@ def seed():
     with session_scope() as session:
         agent_repo = AgentRepository(session)
         skill_repo = SkillRepository(session)
-        tpl_repo = TemplateRepository(session)
 
         # 内置 Agent
         builtin_agents = [
@@ -134,7 +137,6 @@ def status():
     """查看数据库状态"""
     from office_agent.database.connection import DATABASE_URL, engine
     from office_agent.database.session import session_scope
-    from office_agent.database import models
     from office_agent.database.repository import (
         UserRepository, FileRepository, TaskRepository, AgentRepository,
         SkillRepository, TemplateRepository, KnowledgeRepository,

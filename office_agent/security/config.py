@@ -8,15 +8,15 @@ from dataclasses import dataclass, field
 from ..runtime_config import ALLOWED_UPLOAD_EXTENSIONS
 
 
-DEFAULT_JWT_SECRET = "office-agent-default-secret-change-in-production"
+DEFAULT_JWT_SECRET = None
 
 
 @dataclass
 class SecurityConfig:
     """安全配置"""
     # JWT配置
-    jwt_secret_key: str = field(default_factory=lambda: os.environ.get(
-        "OFFICE_AGENT_JWT_SECRET", DEFAULT_JWT_SECRET))
+    jwt_secret_key: str | None = field(default_factory=lambda: os.environ.get(
+        "OFFICE_AGENT_JWT_SECRET"))
     access_token_expire: int = 3600  # 1小时
     refresh_token_expire: int = 86400 * 7  # 7天
 
@@ -66,7 +66,7 @@ class SecurityConfig:
     def from_env(cls) -> "SecurityConfig":
         """从环境变量加载配置"""
         return cls(
-            jwt_secret_key=os.environ.get("OFFICE_AGENT_JWT_SECRET") or DEFAULT_JWT_SECRET,
+            jwt_secret_key=os.environ.get("OFFICE_AGENT_JWT_SECRET"),
             access_token_expire=int(os.environ.get("ACCESS_TOKEN_EXPIRE", "3600")),
             refresh_token_expire=int(os.environ.get("REFRESH_TOKEN_EXPIRE", "604800")),
             max_file_size=int(os.environ.get("MAX_FILE_SIZE", str(100 * 1024 * 1024))),

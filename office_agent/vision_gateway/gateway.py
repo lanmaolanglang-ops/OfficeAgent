@@ -26,12 +26,13 @@ Vision Gateway - 多模态视觉理解网关
     print(result.text)
 """
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Optional, List, Dict, Any, Union
+import threading
+from typing import Optional, List, Dict, Union
 
 from .vision_models import (
     VisionRequest, VisionResponse, StructuredVisionResult,
     ImageInput, DocumentPage, DocumentVisionResult,
-    VisionTaskType, VisionProvider,
+    VisionTaskType,
     TableData, ChartData,
 )
 from .clients.base import BaseVisionClient
@@ -57,6 +58,7 @@ class VisionGateway:
         self.client_order: List[str] = []
         self.default_model = default_model
         self.renderer = DocumentRenderer(dpi=dpi, output_dir=output_dir)
+        self._renderer_lock = threading.RLock()
 
     # === 模型管理 ===
 
@@ -246,16 +248,35 @@ class VisionGateway:
         )
 
         try:
-            # 渲染
-            if dpi:
-                self.renderer.dpi = dpi
-            self.renderer.max_pages = max_pages
-            pages = self.renderer.render(file_path)
+            # DocumentRenderer carries mutable dpi/max_pages. Serialize
+            # rendering and restore its configuration; rendered filenames are
+            # request-unique, so later requests cannot overwrite these pages.
+            renderer_lock = getattr(self, "_renderer_lock", None)
+            if renderer_lock is None:
+                renderer_lock = threading.RLock()
+                self._renderer_lock = renderer_lock
+            with renderer_lock:
+                previous_dpi = self.renderer.dpi
+                previous_max_pages = self.renderer.max_pages
+                try:
+                    if dpi:
+                        self.renderer.dpi = dpi
+                    self.renderer.max_pages = max(1, int(max_pages))
+                    pages = self.renderer.render(file_path)
+                    source_page_count = max(
+                        len(pages),
+                        int(getattr(self.renderer, "last_total_pages", len(pages))),
+                    )
+                finally:
+                    self.renderer.dpi = previous_dpi
+                    self.renderer.max_pages = previous_max_pages
         except Exception as e:
             result.error = f"文档渲染失败: {e}"
             return result
 
         result.page_count = len(pages)
+        result.source_page_count = source_page_count
+        result.truncated = source_page_count > len(pages)
         result.pages = pages
 
         if not pages:

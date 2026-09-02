@@ -3,10 +3,20 @@ import json
 import logging
 import os
 from pathlib import Path
+from urllib.parse import urlparse
 
 from ...security.error_sanitizer import sanitize_error
 
 logger = logging.getLogger("office_agent.tasks.rag")
+
+
+def _public_source(source: str | None, file_path: str) -> str:
+    """Keep useful provenance without persisting a local absolute path."""
+    candidate = source or file_path
+    parsed = urlparse(candidate)
+    if parsed.scheme in {"http", "https"}:
+        return candidate
+    return Path(candidate).name
 
 
 def _progress(progress, value: int, message: str) -> None:
@@ -99,7 +109,7 @@ def index_document(file_path: str, title: str = None,
         result["title"] = resolved_title
         _progress(progress, 55, "生成向量")
         result["chunks"] = _store_chunks(
-            chunks, resolved_title, category, source or file_path
+            chunks, resolved_title, category, _public_source(source, file_path)
         )
         _progress(progress, 100, f"索引完成，共 {result['chunks']} 个片段")
         logger.info("文档索引 %s 完成: %s, %s chunks",
