@@ -71,7 +71,7 @@ def upgrade() -> None:
         batch_op.add_column(sa.Column("input_summary", sa.Text(), nullable=True))
         batch_op.add_column(sa.Column("output_summary", sa.Text(), nullable=True))
         batch_op.add_column(sa.Column("duration_ms", sa.Integer(), nullable=True, server_default="0"))
-        batch_op.add_column(sa.Column("start_time", sa.DateTime(timezone=True), nullable=True, server_default=sa.func.now()))
+        batch_op.add_column(sa.Column("start_time", sa.DateTime(timezone=True), nullable=True))
         batch_op.add_column(sa.Column("end_time", sa.DateTime(timezone=True), nullable=True))
         batch_op.create_index("ix_execution_log_request_id", ["request_id"])
         batch_op.create_index("ix_execution_log_trace_id", ["trace_id"])

@@ -37,6 +37,23 @@ class TestMigration004AwareColumns:
             )
             assert aware, f"004 未为 {column} 声明 DateTime(timezone=True)"
 
+    def test_business_time_columns_single_writer(self):
+        """业务时间列（execution_log.start_time）应用层单写：
+
+        ORM 模型 default=utc_now，迁移不得再带 server_default 形成
+        应用/DB 双写入口（清单 2.3 func.now 并存收口）。
+        """
+        src = (VERSIONS / "004_reconcile_runtime_schema.py").read_text(encoding="utf-8")
+        start_time_decl = re.search(r'sa\.Column\("start_time"[^)]*\)', src).group(0)
+        assert "server_default" not in start_time_decl
+        # 审计列（TimestampMixin created_at/updated_at）DB 单写，不属本条
+        from office_agent.database.base import Base
+        from office_agent.database import models  # noqa: F401
+
+        col = Base.metadata.tables["execution_log"].columns["start_time"]
+        assert col.server_default is None
+        assert col.default is not None  # 应用层 utc_now
+
     def test_orm_models_match_aware_declaration(self):
         from office_agent.database.base import Base
         from office_agent.database import models  # noqa: F401
