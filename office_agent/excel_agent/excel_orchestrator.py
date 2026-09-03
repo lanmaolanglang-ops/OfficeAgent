@@ -86,8 +86,9 @@ class ExcelOrchestrator:
 
             # 2.1 往返保留警示：openpyxl 对部分对象（透视图表、迷你图、
             # Power Query 连接等）不能完整读写。检测到时明确告知用户，
-            # 避免输出"看似正常但少了东西"。
-            fragile = self._detect_fragile_elements(file_path)
+            # 避免输出"看似正常但少了东西"。检测复用 service 已加载的工作簿，
+            # 不再为检测单独整本解析一次文件。
+            fragile = self._detect_fragile_elements(file_path, wb=self.service.wb)
 
             # 3. 根据任务执行操作
             changes = []
@@ -183,12 +184,18 @@ class ExcelOrchestrator:
             )
 
     @staticmethod
-    def _detect_fragile_elements(file_path: str) -> str:
-        """检测 openpyxl 往返可能不完整的元素类型（best-effort）。"""
+    def _detect_fragile_elements(file_path: str, wb=None) -> str:
+        """检测 openpyxl 往返可能不完整的元素类型（best-effort）。
+
+        传入已加载的 ``wb`` 时直接复用，避免为检测再整本解析一次文件；
+        未传入时按旧行为自行打开（供外部/测试调用）。
+        """
         kinds = []
         try:
-            from openpyxl import load_workbook
-            wb = load_workbook(file_path, read_only=False, data_only=False)
+            owns_wb = wb is None
+            if owns_wb:
+                from openpyxl import load_workbook
+                wb = load_workbook(file_path, read_only=False, data_only=False)
             try:
                 for ws in wb.worksheets:
                     if getattr(ws, "_charts", None):
@@ -203,7 +210,8 @@ class ExcelOrchestrator:
                         kinds.append("数据透视表")
                         break
             finally:
-                wb.close()
+                if owns_wb:
+                    wb.close()
         except Exception:
             return ""
         seen = []

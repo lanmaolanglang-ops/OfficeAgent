@@ -295,6 +295,47 @@ class TestQualityChecker:
         issues = checker._check_charts(ws)
         assert any("1 个图表" in i.message for i in issues)
 
+    def test_fragile_detection_reuses_loaded_workbook(self, temp_dir, monkeypatch):
+        """传入已加载工作簿时不得再整本 load_workbook（重复磁盘解析）。"""
+        from openpyxl.chart import BarChart, Reference
+        src = temp_dir / "reuse.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(["月", "值"])
+        ws.append(["a", 1])
+        ch = BarChart()
+        ch.add_data(Reference(ws, min_col=2, min_row=1, max_row=2), titles_from_data=True)
+        ws.add_chart(ch, "E2")
+        wb.save(str(src))
+
+        loaded = openpyxl.load_workbook(str(src))
+
+        def _boom(*_args, **_kwargs):
+            raise AssertionError("不应再次 load_workbook")
+
+        monkeypatch.setattr(openpyxl, "load_workbook", _boom)
+        try:
+            result = ExcelOrchestrator._detect_fragile_elements(str(src), wb=loaded)
+        finally:
+            loaded.close()
+        assert "图表" in result
+
+    def test_fragile_detection_falls_back_to_loading(self, temp_dir):
+        """不传工作簿时保持旧行为：自行打开文件检测。"""
+        from openpyxl.chart import BarChart, Reference
+        src = temp_dir / "fallback.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(["月", "值"])
+        ws.append(["a", 1])
+        ch = BarChart()
+        ch.add_data(Reference(ws, min_col=2, min_row=1, max_row=2), titles_from_data=True)
+        ws.add_chart(ch, "E2")
+        wb.save(str(src))
+
+        result = ExcelOrchestrator._detect_fragile_elements(str(src))
+        assert "图表" in result
+
 
 class TestRemainingExcelCorrectness:
     def test_orchestrator_processes_every_sheet_and_every_numeric_column(self, temp_dir):
