@@ -28,7 +28,7 @@ from openpyxl.chart import (
 from openpyxl.chart.label import DataLabelList
 from openpyxl.chart.layout import Layout, ManualLayout
 from openpyxl.chart.series import DataPoint
-from openpyxl.utils import get_column_letter, quote_sheetname
+from openpyxl.utils import quote_sheetname
 
 from .models import ChartSpec, DataProfile, SheetInfo, ColumnInfo
 
@@ -204,7 +204,7 @@ class ChartGenerator:
 
         # 查找类别列
         cat_col = self._find_category_column(sheet)
-        cat_letter = self._col_letter(cat_col.index + 1) if cat_col else "A"
+        cat_letter = self._col_letter(cat_col.index) if cat_col else "A"
 
         end_row = sheet.row_count + 1  # 包含表头
 
@@ -228,7 +228,7 @@ class ChartGenerator:
             # 饼图：data_range 只含数值列，类别由 categories_range 提供
             # （原实现把类别列也当数据系列，饼图必然画错/为空）
             col = target_cols[0]
-            col_letter = self._col_letter(col.index + 1)
+            col_letter = self._col_letter(col.index)
             charts.append(ChartSpec(
                 chart_type=chart_type,
                 title=self._make_title(text, col.name),
@@ -241,7 +241,7 @@ class ChartGenerator:
         elif chart_type == "radar":
             # 雷达图
             for col in target_cols[:4]:
-                col_letter = self._col_letter(col.index + 1)
+                col_letter = self._col_letter(col.index)
                 charts.append(ChartSpec(
                     chart_type="radar",
                     title=self._make_title(text, col.name),
@@ -253,7 +253,7 @@ class ChartGenerator:
         else:
             # 柱状/条形/折线/面积
             for col in target_cols[:4]:
-                col_letter = self._col_letter(col.index + 1)
+                col_letter = self._col_letter(col.index)
                 charts.append(ChartSpec(
                     chart_type=chart_type,
                     title=self._make_title(text, col.name),
@@ -286,7 +286,7 @@ class ChartGenerator:
         if not num_cols or not cat_col:
             return charts
 
-        cat_letter = self._col_letter(cat_col.index + 1)
+        cat_letter = self._col_letter(cat_col.index)
         end_row = sheet.row_count + 1
         n_categories = sheet.row_count
 
@@ -296,7 +296,7 @@ class ChartGenerator:
         # 1. 时间序列 → 折线图
         if is_time_series:
             for col in num_cols[:2]:
-                col_letter = self._col_letter(col.index + 1)
+                col_letter = self._col_letter(col.index)
                 charts.append(ChartSpec(
                     chart_type="line",
                     title=f"{col.name}趋势",
@@ -321,7 +321,7 @@ class ChartGenerator:
         if n_categories <= 12:
             # ≤12类 → 柱状图
             for col in num_cols[:2]:
-                col_letter = self._col_letter(col.index + 1)
+                col_letter = self._col_letter(col.index)
                 charts.append(ChartSpec(
                     chart_type="column",
                     title=f"{col.name}对比",
@@ -335,7 +335,7 @@ class ChartGenerator:
         else:
             # >12类 → 条形图
             col = num_cols[0]
-            col_letter = self._col_letter(col.index + 1)
+            col_letter = self._col_letter(col.index)
             charts.append(ChartSpec(
                 chart_type="bar",
                 title=f"{col.name}排名",
@@ -350,7 +350,7 @@ class ChartGenerator:
         # 3. 占比构成 → 饼图（类别少时）
         if n_categories <= 8 and not is_time_series:
             col = num_cols[0]
-            col_letter = self._col_letter(col.index + 1)
+            col_letter = self._col_letter(col.index)
             charts.append(ChartSpec(
                 chart_type="pie",
                 title=f"{col.name}占比",
@@ -362,8 +362,8 @@ class ChartGenerator:
 
         # 4. 多数值列 → 堆积柱状图（如果有2个以上可加性指标）
         if len(num_cols) >= 2 and not is_time_series and n_categories <= 10:
-            first_letter = self._col_letter(num_cols[0].index + 1)
-            last_letter = self._col_letter(num_cols[-1].index + 1)
+            first_letter = self._col_letter(num_cols[0].index)
+            last_letter = self._col_letter(num_cols[-1].index)
             charts.append(ChartSpec(
                 chart_type="column",
                 title="各指标构成",
@@ -656,9 +656,9 @@ class ChartGenerator:
         if len(target_cols) < 2 or sheet.row_count <= 0:
             return None
 
-        cat_letter = self._col_letter(cat_col.index + 1)
-        first_letter = self._col_letter(target_cols[0].index + 1)
-        last_letter = self._col_letter(target_cols[1].index + 1)
+        cat_letter = self._col_letter(cat_col.index)
+        first_letter = self._col_letter(target_cols[0].index)
+        last_letter = self._col_letter(target_cols[1].index)
         end_row = sheet.row_count + 1
 
         title = self._make_title(text, "")
@@ -685,8 +685,8 @@ class ChartGenerator:
         if len(target_cols) < 2 or sheet.row_count <= 0:
             return None
 
-        first_letter = self._col_letter(target_cols[0].index + 1)
-        last_letter = self._col_letter(target_cols[1].index + 1)
+        first_letter = self._col_letter(target_cols[0].index)
+        last_letter = self._col_letter(target_cols[1].index)
         end_row = sheet.row_count + 1
 
         return ChartSpec(
@@ -760,7 +760,9 @@ class ChartGenerator:
 
     @staticmethod
     def _col_letter(index: int) -> str:
-        return get_column_letter(index)
+        """0-based 列索引转 Excel 列字母（统一入口在 models.col_letter）"""
+        from .models import col_letter
+        return col_letter(index)
 
     @staticmethod
     def _next_chart_position(index: int) -> str:

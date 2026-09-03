@@ -6,6 +6,23 @@ from typing import Optional, List, Any
 from enum import Enum
 
 
+def col_letter(index: int) -> str:
+    """0-based 列索引转 Excel 列字母（0→A、25→Z、26→AA）。
+
+    ColumnInfo.index 约定为 0-based；全包唯一的列字母换算入口。
+    调用方禁止再自行 +1/-1——chart_generator 曾按 1-based 实现同名
+    方法而 formula_generator 按 0-based 实现，跨类口径漂移由此产生。
+    """
+    if not isinstance(index, int) or index < 0:
+        raise ValueError(f"列索引必须是非负整数: {index!r}")
+    n = index + 1
+    letters = ""
+    while n:
+        n, rem = divmod(n - 1, 26)
+        letters = chr(65 + rem) + letters
+    return letters
+
+
 class TaskType(Enum):
     """Excel 任务类型"""
     READ = "read"               # 读取/查看数据

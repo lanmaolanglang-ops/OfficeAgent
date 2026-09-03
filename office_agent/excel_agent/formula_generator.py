@@ -1032,9 +1032,9 @@ class FormulaGenerator:
 
     @staticmethod
     def _col_letter(index: int) -> str:
-        """0-based 列索引转 Excel 列字母"""
-        from openpyxl.utils import get_column_letter
-        return get_column_letter(index + 1)
+        """0-based 列索引转 Excel 列字母（统一入口在 models.col_letter）"""
+        from .models import col_letter
+        return col_letter(index)
 
 
 # ==========================================
