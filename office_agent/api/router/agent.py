@@ -60,6 +60,9 @@ def _get_db_session():
         from ...database.session import SessionLocal
         return SessionLocal()
     except Exception:
+        # 降级读取内置清单前必须留下结构化日志：
+        # 此前静默 return None，数据库故障在监控上完全不可见。
+        logger.exception("创建数据库会话失败，Agent 接口将降级到内置清单")
         return None
 
 
