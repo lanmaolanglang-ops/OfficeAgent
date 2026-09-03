@@ -49,8 +49,8 @@ def upgrade() -> None:
         batch_op.add_column(sa.Column("change_description", sa.Text(), nullable=True))
         batch_op.add_column(sa.Column("is_public", sa.Boolean(), nullable=True, server_default=sa.false()))
         batch_op.add_column(sa.Column("access_count", sa.Integer(), nullable=True, server_default="0"))
-        batch_op.add_column(sa.Column("last_accessed_at", sa.DateTime(), nullable=True))
-        batch_op.add_column(sa.Column("expires_at", sa.DateTime(), nullable=True))
+        batch_op.add_column(sa.Column("last_accessed_at", sa.DateTime(timezone=True), nullable=True))
+        batch_op.add_column(sa.Column("expires_at", sa.DateTime(timezone=True), nullable=True))
 
     op.execute(sa.text(
         "UPDATE file SET storage_path = file_path WHERE storage_path IS NULL"
@@ -71,8 +71,8 @@ def upgrade() -> None:
         batch_op.add_column(sa.Column("input_summary", sa.Text(), nullable=True))
         batch_op.add_column(sa.Column("output_summary", sa.Text(), nullable=True))
         batch_op.add_column(sa.Column("duration_ms", sa.Integer(), nullable=True, server_default="0"))
-        batch_op.add_column(sa.Column("start_time", sa.DateTime(), nullable=True, server_default=sa.func.now()))
-        batch_op.add_column(sa.Column("end_time", sa.DateTime(), nullable=True))
+        batch_op.add_column(sa.Column("start_time", sa.DateTime(timezone=True), nullable=True, server_default=sa.func.now()))
+        batch_op.add_column(sa.Column("end_time", sa.DateTime(timezone=True), nullable=True))
         batch_op.create_index("ix_execution_log_request_id", ["request_id"])
         batch_op.create_index("ix_execution_log_trace_id", ["trace_id"])
 

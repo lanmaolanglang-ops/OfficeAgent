@@ -14,6 +14,16 @@ depends_on = None
 _NAMING = {"fk": "fk_%(table_name)s_%(column_0_name)s_%(referred_table_name)s"}
 
 
+def _column_is_aware(column_info) -> bool:
+    """反射列是否已是 timezone-aware（PG 的 timestamptz）。
+
+    004 修复后全新部署直接创建 aware 列；此时必须跳过
+    ``AT TIME ZONE 'UTC'`` 转换——该表达式作用在 timestamptz 上语义相反，
+    会把已带时区的数据按会话时区二次偏移。
+    """
+    return bool(getattr(column_info.get("type"), "timezone", False))
+
+
 def _drop_fk(batch, table: str, column: str, inspector) -> None:
     for fk in inspector.get_foreign_keys(table):
         if column not in fk.get("constrained_columns", []):
@@ -115,10 +125,10 @@ def upgrade() -> None:
         "security_login_attempts": ("timestamp", "created_at", "updated_at"),
     }
     for table, columns in aware_columns.items():
-        existing = {item["name"] for item in sa.inspect(bind).get_columns(table)}
+        existing = {item["name"]: item for item in sa.inspect(bind).get_columns(table)}
         with op.batch_alter_table(table) as batch:
             for column in columns:
-                if column in existing:
+                if column in existing and not _column_is_aware(existing[column]):
                     batch.alter_column(
                         column, existing_type=sa.DateTime(),
                         type_=sa.DateTime(timezone=True), existing_nullable=True,
@@ -207,10 +217,10 @@ def downgrade() -> None:
         "security_login_attempts": ("timestamp", "created_at", "updated_at"),
     }
     for table, columns in aware_columns.items():
-        existing = {item["name"] for item in sa.inspect(bind).get_columns(table)}
+        existing = {item["name"]: item for item in sa.inspect(bind).get_columns(table)}
         with op.batch_alter_table(table) as batch:
             for column in columns:
-                if column in existing:
+                if column in existing and _column_is_aware(existing[column]):
                     batch.alter_column(
                         column, existing_type=sa.DateTime(timezone=True),
                         type_=sa.DateTime(), existing_nullable=True,
