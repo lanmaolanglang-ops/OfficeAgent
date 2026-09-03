@@ -4,8 +4,29 @@ Model Router - 智能路由器
 """
 from typing import Any, Optional
 
+from office_agent.api.routing import PPT_STRONG, WORD_STRONG
+
 from ..models.model_schemas import AITaskType
 from .model_manager import ModelManager
+
+# 产品词表以 office_agent.api.routing 为单一真相源（WORD_STRONG/PPT_STRONG），
+# 本层只追加"模型选型"特有的能力词；判定顺序保持历史行为：
+# 视觉 → 代码 → 公式 → 文档理解 → PPT 内容 → 写作。
+# "大纲"同时属于文档与 PPT 词表，按此顺序归文档理解（单一裁决点，不再各层分裂）。
+VISION_KEYWORDS = ("图片", "照片", "截图", "模板分析", "视觉", "看图",
+                   "image", "picture", "photo", "ppt模板", "设计风格")
+CODE_KEYWORDS = ("代码", "脚本", "python", "函数", "编程", "开发",
+                 "code", "script", "programming", "写个工具")
+FORMULA_KEYWORDS = ("公式", "函数", "vlookup", "sum", "计算",
+                    "增长率", "占比", "求和", "平均", "excel公式")
+DOCUMENT_KEYWORDS = tuple(dict.fromkeys(WORD_STRONG + (
+    "分析结构", "理解文档", "长文档", "总结报告", "文档结构", "章节", "大纲",
+)))
+PPT_KEYWORDS = tuple(dict.fromkeys(PPT_STRONG + (
+    "演示", "汇报", "大纲", "目录", "封面", "内容页",
+)))
+WRITING_KEYWORDS = ("写", "生成", "创作", "报告", "总结", "文案",
+                    "内容", "润色", "扩写")
 
 
 class ModelRouter:
@@ -99,39 +120,27 @@ class ModelRouter:
         text = text.lower()
         
         # 视觉/图片相关
-        vision_keywords = ["图片", "照片", "截图", "模板分析", "视觉", "看图",
-                          "image", "picture", "photo", "ppt模板", "设计风格"]
-        if any(kw in text for kw in vision_keywords):
+        if any(kw in text for kw in VISION_KEYWORDS):
             return AITaskType.VISION
-        
+
         # 代码生成
-        code_keywords = ["代码", "脚本", "python", "函数", "编程", "开发",
-                        "code", "script", "programming", "写个工具"]
-        if any(kw in text for kw in code_keywords):
+        if any(kw in text for kw in CODE_KEYWORDS):
             return AITaskType.CODE_GENERATION
-        
+
         # Excel 公式
-        formula_keywords = ["公式", "函数", "vlookup", "sum", "计算",
-                          "增长率", "占比", "求和", "平均", "excel公式"]
-        if any(kw in text for kw in formula_keywords):
+        if any(kw in text for kw in FORMULA_KEYWORDS):
             return AITaskType.FORMULA_GENERATION
-        
+
         # 文档理解（长文档/论文分析）
-        doc_keywords = ["论文", "分析结构", "理解文档", "长文档", "总结报告",
-                       "文档结构", "章节", "大纲"]
-        if any(kw in text for kw in doc_keywords) or (has_file and file_type == "docx"):
+        if any(kw in text for kw in DOCUMENT_KEYWORDS) or (has_file and file_type == "docx"):
             return AITaskType.DOCUMENT_UNDERSTANDING
-        
+
         # PPT 内容
-        ppt_keywords = ["ppt", "幻灯片", "演示", "汇报", "课件", "大纲",
-                       "目录", "封面", "内容页"]
-        if any(kw in text for kw in ppt_keywords):
+        if any(kw in text for kw in PPT_KEYWORDS):
             return AITaskType.PPT_CONTENT
-        
+
         # 中文写作
-        writing_keywords = ["写", "生成", "创作", "报告", "总结", "文案",
-                          "内容", "润色", "扩写"]
-        if any(kw in text for kw in writing_keywords):
+        if any(kw in text for kw in WRITING_KEYWORDS):
             return AITaskType.CHINESE_WRITING
         
         # 默认简单文本
