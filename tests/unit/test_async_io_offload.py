@@ -11,8 +11,6 @@ import io
 import time
 import types
 
-import pytest
-
 from office_agent.api.router import health as health_router
 
 
