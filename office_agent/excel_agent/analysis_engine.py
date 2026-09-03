@@ -64,11 +64,24 @@ class AnalysisEngine:
         finally:
             wb_values.close()
 
-        # 2. 分析数据画像
+        # 2. 分析数据画像。全簿读取时复用第 1 步已载入内存的数据，
+        # 不再对同一文件做第二次解析；指定单表时 schema 语义覆盖全簿，
+        # 保留文件级入口（清单：analyze_file 重复加载）。
         try:
             from .data_analyzer import DataAnalyzer
             analyzer = DataAnalyzer()
-            self.schema = analyzer.analyze_schema(file_path)
+            if sheet_name is None:
+                import pandas as pd
+                frames = {
+                    name: pd.DataFrame(
+                        self.raw_data.get(name, []),
+                        columns=self.headers.get(name) or None,
+                    )
+                    for name in requested_sheets
+                }
+                self.schema = analyzer.analyze_schema_frames(file_path, frames)
+            else:
+                self.schema = analyzer.analyze_schema(file_path)
         except Exception:
             self.schema = None
 

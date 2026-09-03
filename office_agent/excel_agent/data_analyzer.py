@@ -157,6 +157,29 @@ class DataAnalyzer:
         schema.summary = self._generate_schema_summary(schema)
         return schema
 
+    def analyze_schema_frames(self, file_path: str,
+                              sheets: Dict[str, "pd.DataFrame"]) -> DataSchema:
+        """从已加载的 DataFrame 生成 DataSchema，不重复读取文件。
+
+        analyze_file 的 openpyxl 读取阶段已把全簿数据载入内存；本入口
+        让 schema 分析复用该数据，消除对同一文件的第二次解析（清单：
+        analyze_file 重复加载）。
+        """
+        schema = DataSchema(
+            file_path=file_path,
+            file_name=Path(file_path).name,
+            total_sheets=len(sheets),
+        )
+        all_sheets_data = {}
+        for sheet_name, df in sheets.items():
+            sheet_schema = self._analyze_sheet_schema(df, sheet_name)
+            schema.sheets.append(sheet_schema)
+            schema.total_rows += sheet_schema.row_count
+            all_sheets_data[sheet_name] = df
+        schema.relations = self._discover_relations(all_sheets_data)
+        schema.summary = self._generate_schema_summary(schema)
+        return schema
+
     def analyze(self, file_path: str) -> DataProfile:
         """兼容旧接口：返回 DataProfile"""
         if not Path(file_path).exists():
