@@ -24,6 +24,13 @@ from .worker import get_worker, LocalWorker
 from .tasks import TASK_REGISTRY, TASK_TYPE_TO_QUEUE, queue_name_for_task_type
 from .._version import __version__
 
+# 优先级口径：队列 API 统一使用字符串（"high"/"normal"/"low"）；
+# 数据库 Task.priority 列为整数，跨层转换必须走这个唯一映射，
+# 禁止在调用方散落字面量（曾出现一处传 1、一处传 "normal" 的漂移）。
+DEFAULT_PRIORITY = "normal"
+VALID_PRIORITIES = ("high", "normal", "low")
+PRIORITY_TO_INT = {"high": 2, "normal": 1, "low": 0}
+
 def submit_task(task_name: str, args: tuple = (), kwargs: dict = None,
                 priority: str = "normal", task_id: str = None,
                 task_type: str = None, instruction: str = None,

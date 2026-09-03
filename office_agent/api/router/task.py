@@ -98,14 +98,16 @@ async def create_task(req: TaskCreateRequest, request: Request = None):
     """
     from ...database.session import session_scope
     from ...database.repository import TaskRepository, FileRepository
-    from ...task_queue import TASK_TYPE_TO_QUEUE
+    from ...task_queue import (
+        TASK_TYPE_TO_QUEUE, DEFAULT_PRIORITY, VALID_PRIORITIES, PRIORITY_TO_INT,
+    )
 
     if req.task_type not in TASK_TYPE_TO_QUEUE:
         raise HTTPException(status_code=422, detail=f"不支持的任务类型: {req.task_type}")
 
-    priority = (req.priority or "normal") if hasattr(req, "priority") else "normal"
-    if priority not in ("high", "normal", "low"):
-        priority = "normal"
+    priority = (req.priority or DEFAULT_PRIORITY) if hasattr(req, "priority") else DEFAULT_PRIORITY
+    if priority not in VALID_PRIORITIES:
+        priority = DEFAULT_PRIORITY
 
     # 1. 创建数据库记录
     task_id = None
@@ -142,7 +144,7 @@ async def create_task(req: TaskCreateRequest, request: Request = None):
                 "options": task_options,
                 "input_paths": input_paths,
             }, ensure_ascii=False),
-            priority={"high": 2, "normal": 1, "low": 0}.get(priority, 1),
+            priority=PRIORITY_TO_INT.get(priority, PRIORITY_TO_INT[DEFAULT_PRIORITY]),
         )
         task_id = db_task.id
 

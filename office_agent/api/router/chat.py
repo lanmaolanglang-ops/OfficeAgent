@@ -286,6 +286,7 @@ async def chat(req: ChatRequest, request: Request):
             }
             history = (previous_history + [prior_turn] + history)[-10:]
 
+        from ...task_queue import DEFAULT_PRIORITY, PRIORITY_TO_INT
         db_task = task_repo.create_task(
             task_type=task_type,
             instruction=req.message,
@@ -306,7 +307,7 @@ async def chat(req: ChatRequest, request: Request):
                 "revision_number": revision_number,
                 "_owner_id": user_id,
             }, ensure_ascii=False),
-            priority=1,
+            priority=PRIORITY_TO_INT[DEFAULT_PRIORITY],
             parent_task_id=parent_task_id,
             revision_number=revision_number,
         )
@@ -339,7 +340,7 @@ async def chat(req: ChatRequest, request: Request):
                     "_owner_id": user_id,
                 },
             },
-            priority="normal",
+            priority=DEFAULT_PRIORITY,
             task_id=task_id,
             task_type=task_type,
             instruction=req.message,
