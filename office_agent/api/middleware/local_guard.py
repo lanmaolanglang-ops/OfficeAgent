@@ -13,7 +13,6 @@ http://127.0.0.1:8765 发起跨站请求（form / no-cors fetch，CORS 拦不住
 import logging
 from urllib.parse import urlsplit
 
-from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from ..core.config import settings
@@ -35,32 +34,50 @@ def _hostname(host_header: str) -> str:
         return ""
 
 
-class LocalGuardMiddleware(BaseHTTPMiddleware):
-    """拦截跨站浏览器请求与 DNS rebinding。"""
+class LocalGuardMiddleware:
+    """拦截跨站浏览器请求与 DNS rebinding。
 
-    async def dispatch(self, request: Request, call_next):
+    纯 ASGI 实现（原为 BaseHTTPMiddleware）：校验只依赖请求头，
+    命中拒绝时零缓冲直接返回，不为每个请求启动下游任务。
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        request = Request(scope)
         host_header = request.headers.get("host") or ""
         host = _hostname(host_header)
         if not host_header or not host:
-            return JSONResponse(status_code=403, content={
+            response = JSONResponse(status_code=403, content={
                 "success": False,
                 "error_code": "FORBIDDEN_HOST",
                 "message": "拒绝访问：非法 Host",
             })
+            await response(scope, receive, send)
+            return
         if host and host not in ALLOWED_HOSTS:
-            return JSONResponse(status_code=403, content={
+            response = JSONResponse(status_code=403, content={
                 "success": False,
                 "error_code": "FORBIDDEN_HOST",
                 "message": "拒绝访问：非法 Host",
             })
+            await response(scope, receive, send)
+            return
 
         origin = request.headers.get("origin")
         if origin:
             if origin not in ALLOWED_ORIGINS:
                 logger.warning("Blocked cross-site origin: %s %s", origin, request.url.path)
-                return JSONResponse(status_code=403, content={
+                response = JSONResponse(status_code=403, content={
                     "success": False,
                     "error_code": "FORBIDDEN_ORIGIN",
                     "message": "拒绝访问：非法来源",
                 })
-        return await call_next(request)
+                await response(scope, receive, send)
+                return
+        await self.app(scope, receive, send)

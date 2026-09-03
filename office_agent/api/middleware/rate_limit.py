@@ -1,12 +1,27 @@
 import ipaddress
-from starlette.middleware.base import BaseHTTPMiddleware
+
+from starlette.datastructures import MutableHeaders
 from starlette.requests import Request
 from starlette.responses import JSONResponse
+
 from ...rate_limiter import get_rate_limiter
 
 
-class RateLimitMiddleware(BaseHTTPMiddleware):
-    """Protect API endpoints with a process-local sliding-window limit."""
+class RateLimitMiddleware:
+    """Protect API endpoints with a process-local sliding-window limit.
+
+    纯 ASGI 实现（原为 BaseHTTPMiddleware）：不为每个请求额外启动下游
+    任务与消息队列，被拒请求零缓冲直接返回；通过包装 send 在
+    http.response.start 上注入限流响应头，行为与原实现一致。
+    """
+
+    _SKIP_PATHS = frozenset({
+        "/", "/health", "/api/health", "/live", "/ready",
+        "/docs", "/redoc", "/openapi.json",
+    })
+
+    def __init__(self, app):
+        self.app = app
 
     @staticmethod
     def _policies(request: Request) -> tuple[str, ...]:
@@ -18,9 +33,16 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             policies.append("model")
         return tuple(policies)
 
-    async def dispatch(self, request: Request, call_next):
-        if request.url.path in {"/", "/health", "/api/health", "/live", "/ready", "/docs", "/redoc", "/openapi.json"}:
-            return await call_next(request)
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        request = Request(scope)
+        if request.url.path in self._SKIP_PATHS:
+            await self.app(scope, receive, send)
+            return
+
         identity = self._identity(request)
         checked = []
         limiter = get_rate_limiter()
@@ -35,13 +57,24 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 })
                 response.headers["Retry-After"] = str(max(1, int(result.retry_after)))
                 response.headers["X-RateLimit-Policy"] = policy
-                return response
-        response = await call_next(request)
+                await response(scope, receive, send)
+                return
+
         policy, result = checked[-1]
-        response.headers["X-RateLimit-Remaining"] = str(result.remaining)
-        response.headers["X-RateLimit-Reset"] = str(int(result.reset_at))
-        response.headers["X-RateLimit-Policy"] = policy
-        return response
+        rate_headers = {
+            "X-RateLimit-Remaining": str(result.remaining),
+            "X-RateLimit-Reset": str(int(result.reset_at)),
+            "X-RateLimit-Policy": policy,
+        }
+
+        async def send_with_rate_headers(message):
+            if message["type"] == "http.response.start":
+                headers = MutableHeaders(raw=message.setdefault("headers", []))
+                for name, value in rate_headers.items():
+                    headers[name] = value
+            await send(message)
+
+        await self.app(scope, receive, send_with_rate_headers)
 
     @staticmethod
     def _identity(request: Request) -> str:
