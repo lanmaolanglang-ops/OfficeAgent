@@ -5,10 +5,10 @@
    意图不符。现 route_intent 按文本中"最后一次明确点名"的位置裁决。
 2. 老 Office 格式（.doc/.ppt/.xls）此前不被 route_by_file_path 识别，
    导致上传老格式文件时回退到文本关键词猜测。现已纳入扩展名映射。
-   PDF/TXT 因下游 Agent（WordService 基于 python-docx）尚不能直接消费，
-   仍返回 None，属已知剩余项（清单 273 标 [~]）。
+3. resolve_route 是 chat 层与 worker 层共享的唯一权威裁决：
+   文件类型优先，消息关键词仅在同 Agent 内细化子任务。
 """
-from office_agent.api.routing import route_by_file_path, route_intent
+from office_agent.api.routing import resolve_route, route_by_file_path, route_intent
 
 
 class TestMultiProductTieBreak:
@@ -74,3 +74,35 @@ class TestFalsePositiveGuards:
 
     def test_plain_text_falls_back_to_orchestrator(self):
         assert route_intent("总结一下这份材料")[0] == "orchestrator"
+
+
+class TestResolveRouteSingleAuthority:
+    """清单 2.1：chat 层与 worker 层共享 resolve_route，同一输入不得分歧。"""
+
+    def test_file_type_is_authoritative_over_conflicting_keywords(self):
+        # "排版这个PPT"：Agent 必须取文件类型（ppt），而不是 Word 弱关键词"排版"
+        agent, _, _ = resolve_route("排版这个PPT", "a.pptx")
+        assert agent == "ppt_agent"
+
+    def test_message_refines_subtask_within_same_agent(self):
+        # docx + "排版成公文"：同 Agent 内由消息细化出 word_format
+        agent, task_type, _ = resolve_route("排版成公文", "a.docx")
+        assert (agent, task_type) == ("word_agent", "word_format")
+
+    def test_no_file_degrades_to_intent(self):
+        assert resolve_route("做个PPT") == route_intent("做个PPT")
+        assert resolve_route("随便聊聊") == ("orchestrator", "general", "general")
+
+    def test_chat_layer_and_worker_layer_cannot_diverge(self):
+        """两层都必须调 resolve_route（源码接线守卫）。"""
+        import inspect
+
+        from office_agent.api.router import chat
+        from office_agent.task_queue import tasks
+
+        chat_src = inspect.getsource(chat)
+        tasks_src = inspect.getsource(tasks.process_general)
+        assert "resolve_route(req.message, input_paths[0])" in chat_src
+        assert "resolve_route(instruction, input_path)" in tasks_src
+        # worker 层不再保留自己的"文件优先"拼装逻辑
+        assert "route_by_file_path" not in tasks_src

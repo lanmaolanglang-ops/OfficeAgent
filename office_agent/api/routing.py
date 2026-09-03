@@ -49,3 +49,22 @@ def route_by_file_path(path: str):
     if ext in (".xlsx", ".xls", ".csv", ".ods"):
         return "excel_agent", "excel_analyze", "file_type"
     return None
+
+
+def resolve_route(message: str, input_path: str = None) -> tuple:
+    """单一权威路由裁决：chat 层与 worker 层必须调用本函数，禁止各自拼装。
+
+    优先级（两层历史行为已一致，此处固化为唯一实现）：
+    1. 附带文件的类型是权威路由——避免“排版这个PPT”被关键词“排版”
+       误派给 Word 去打开 pptx；
+    2. 消息关键词仅在同 Agent 内细化子任务
+       （docx + “排版成公文” → word_format 而非 word_process）；
+    3. 无文件时退化为纯消息意图路由。
+    """
+    routed = route_by_file_path(input_path) if input_path else None
+    if not routed:
+        return route_intent(message)
+    msg_agent, msg_task_type, msg_intent = route_intent(message)
+    if msg_agent == routed[0]:
+        return msg_agent, msg_task_type, msg_intent
+    return routed

@@ -9,7 +9,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from ..schemas.request import ChatRequest
 from ..schemas.response import ChatResponse, BaseResponse
-from ..routing import route_intent, route_by_file_path
+from ..routing import resolve_route, route_intent
 from ..core.config import settings
 from ..core.file_resolution import resolve_input_files
 
@@ -243,19 +243,10 @@ async def chat(req: ChatRequest, request: Request):
         if file_ids:
             _require_owned_files(file_ids, file_repo, user_id, user_role)
             input_paths = resolve_input_files(file_ids, file_repo)
-            # The attached file's type is the authoritative route; message
-            # keywords only refine the sub-task within the same agent
-            # (docx + "排版成公文" → word_format)，避免“排版这个PPT”
-            # 被关键词“排版”误派给 Word 去打开 pptx。
+            # 路由裁决统一走 api.routing.resolve_route（文件类型权威、
+            # 消息关键词仅在同 Agent 内细化子任务），与 worker 层同一实现。
             if (not agent_hint or agent_hint == "auto") and input_paths:
-                routed = route_by_file_path(input_paths[0])
-                if routed:
-                    file_agent, _, _ = routed
-                    msg_agent, msg_task_type, msg_intent = route_intent(req.message)
-                    if msg_agent == file_agent:
-                        agent, task_type, intent = msg_agent, msg_task_type, msg_intent
-                    else:
-                        agent, task_type, intent = routed
+                agent, task_type, intent = resolve_route(req.message, input_paths[0])
 
         # 跨 Agent 的新任务不接入旧修订链（父任务/revision 只属于同一产物）
         continuation = bool(recovered) and not cross_agent_new_task

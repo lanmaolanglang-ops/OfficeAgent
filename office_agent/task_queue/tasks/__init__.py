@@ -9,7 +9,7 @@
 任务不直接操作数据库，通过 Service 层调用 Agent。
 """
 import logging
-from ...api.routing import route_by_file_path, route_intent
+from ...api.routing import resolve_route
 from .word_tasks import process_word, format_document
 from .ppt_tasks import generate_ppt, design_ppt
 from .excel_tasks import analyze_excel, generate_chart
@@ -38,8 +38,8 @@ def process_general(instruction: str = "", input_path: str = None,
         if progress:
             progress.update(5, "理解任务需求")
 
-        routed = route_by_file_path(input_path) if input_path else None
-        agent, _, _ = routed or route_intent(instruction)
+        # 与 chat 层同一权威路由裁决（resolve_route 内部：文件类型优先）
+        agent, _, _ = resolve_route(instruction, input_path)
 
         if agent == "ppt_agent":
             if progress:
