@@ -103,20 +103,12 @@ class JWTManager:
         self._state_dir.mkdir(parents=True, exist_ok=True)
 
     def _atomic_write(self, path: Path, content: str) -> None:
+        # 统一原子写工具：临时文件 + fsync + replace，失败不留半截内容。
+        # 撤销清单与密钥材料属于敏感数据，替换前收紧为 0o600。
+        from ...persistence import atomic_write_text
+
         self._ensure_state_dir()
-        temp_path = path.with_suffix(path.suffix + f".{secrets.token_hex(6)}.tmp")
-        try:
-            with temp_path.open("w", encoding="utf-8") as handle:
-                handle.write(content)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temp_path, path)
-            try:
-                path.chmod(0o600)
-            except OSError:
-                pass
-        finally:
-            temp_path.unlink(missing_ok=True)
+        atomic_write_text(path, content, mode=0o600)
 
     def _load_or_create_secret(self) -> str:
         with self._state_lock:

@@ -4,7 +4,6 @@
 import os
 import json
 import logging
-import tempfile
 import threading
 from typing import Dict
 from datetime import datetime, timezone
@@ -100,21 +99,10 @@ class FileManager:
                 item = info.to_dict()
                 item["stored_path"] = info.stored_path
                 payload.append(item)
-            fd, temp_path = tempfile.mkstemp(
-                prefix="file_metadata_", suffix=".tmp", dir=self.upload_dir
-            )
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                    json.dump(payload, handle, ensure_ascii=False, indent=2)
-                    handle.flush()
-                    os.fsync(handle.fileno())
-                os.replace(temp_path, self._metadata_path)
-            except Exception:
-                try:
-                    os.unlink(temp_path)
-                except OSError:
-                    pass
-                raise
+            # 统一原子写工具：同目录临时文件 + fsync + replace
+            from ...persistence import atomic_write_json
+
+            atomic_write_json(self._metadata_path, payload, indent=2)
 
     def register(self, info: FileInfo) -> FileInfo:
         """注册文件并可靠落盘。"""

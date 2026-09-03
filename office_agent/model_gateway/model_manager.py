@@ -8,7 +8,6 @@ import os
 import base64
 import hashlib
 import shutil
-import tempfile
 import threading
 from contextlib import contextmanager
 from dataclasses import replace
@@ -170,22 +169,10 @@ class ApiKeyCrypto:
             return key
 
         key = Fernet.generate_key()
-        fd, temp_name = tempfile.mkstemp(
-            prefix=".master.key.", suffix=".tmp", dir=str(self._master_key_file.parent)
-        )
-        try:
-            with os.fdopen(fd, "wb") as handle:
-                handle.write(key)
-                handle.flush()
-                os.fsync(handle.fileno())
-            try:
-                os.chmod(temp_name, 0o600)
-            except OSError:
-                logger.warning("无法收紧模型主密钥文件权限: %s", temp_name)
-            os.replace(temp_name, self._master_key_file)
-        finally:
-            if os.path.exists(temp_name):
-                os.unlink(temp_name)
+        # 主密钥属敏感材料：统一原子写入并收紧为 0o600，避免半截文件损坏全部模型密钥。
+        from ..persistence import atomic_write_bytes
+
+        atomic_write_bytes(self._master_key_file, key, mode=0o600)
         return key
 
     def _build_legacy_fernet(self):
@@ -393,28 +380,17 @@ class ModelManager:
             for task_type, model_ids in DEFAULT_ROUTING.items():
                 data["routing"][task_type.value] = model_ids
         
-        temp_path = None
         try:
             with self._config_lock, _advisory_file_lock(self._config_lock_file):
-                fd, temp_path = tempfile.mkstemp(
-                    prefix=f".{self.config_file.name}.", suffix=".tmp",
-                    dir=str(self.config_dir),
-                )
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    json.dump(data, f, indent=2, ensure_ascii=False)
-                    f.flush()
-                    os.fsync(f.fileno())
-                os.replace(temp_path, self.config_file)
-                temp_path = None
+                # 统一原子写工具：同目录临时文件 + fsync + replace，
+                # 与其余关键写入共用同一套持久化语义。
+                from ..persistence import atomic_write_json
+
+                atomic_write_json(self.config_file, data, indent=2,
+                                  ensure_ascii=False)
         except Exception as e:
             logger.error("保存模型配置失败: %s", e)
             raise RuntimeError("模型配置保存失败，内存变更未确认") from e
-        finally:
-            if temp_path:
-                try:
-                    os.unlink(temp_path)
-                except OSError:
-                    pass
     
     def add_model(self, config: ModelConfig) -> bool:
         """添加或更新模型配置"""

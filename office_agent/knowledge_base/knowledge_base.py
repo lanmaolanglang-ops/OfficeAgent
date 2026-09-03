@@ -7,7 +7,6 @@ Office Knowledge Base - 企业级知识库系统
 import os
 import json
 import logging
-import tempfile
 import threading
 from functools import wraps
 from pathlib import Path
@@ -26,22 +25,14 @@ logger = logging.getLogger("office_agent.knowledge_base")
 
 
 def _atomic_json_write(path: str, data: Any, *, indent=None) -> None:
-    """在目标目录内写临时文件并原子替换，避免中断留下半截 JSON。"""
-    directory = os.path.dirname(path) or "."
-    os.makedirs(directory, exist_ok=True)
-    fd, temp_path = tempfile.mkstemp(prefix=f".{os.path.basename(path)}.", suffix=".tmp", dir=directory)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(data, handle, ensure_ascii=False, indent=indent)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temp_path, path)
-    except Exception:
-        try:
-            os.unlink(temp_path)
-        except OSError:
-            pass
-        raise
+    """在目标目录内写临时文件并原子替换，避免中断留下半截 JSON。
+
+    实现统一委托给 :mod:`office_agent.persistence`，避免各模块各自维护一套
+    「临时文件 + fsync + replace」且口径漂移。
+    """
+    from ..persistence import atomic_write_json
+
+    atomic_write_json(path, data, indent=indent, ensure_ascii=False)
 
 
 def _default_kb_storage_dir() -> str:

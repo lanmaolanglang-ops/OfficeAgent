@@ -142,16 +142,23 @@ class YamlLoader:
         return data.get("workflows", [])
 
     def save(self, data: Dict[str, Any], filename: str = "config.yaml"):
-        """保存配置到 YAML 文件"""
+        """保存配置到 YAML 文件（原子写入，中断不会留下半截配置）。"""
         self.config_dir.mkdir(parents=True, exist_ok=True)
         filepath = self.config_dir / filename
         try:
             import yaml
-            with open(filepath, "w", encoding="utf-8") as f:
-                yaml.dump(data, f, allow_unicode=True, default_flow_style=False)
-            logger.info(f"配置已保存到 {filepath}")
         except ImportError:
             logger.error("PyYAML 未安装，无法保存 YAML 配置")
+            return
+        # ImportError 已在上一步单独处理，此处异常就是真实写入失败，
+        # 不能再被笼统地报成“PyYAML 未安装”。
+        from ..persistence import atomic_write
+
+        def _dump(handle):
+            yaml.dump(data, handle, allow_unicode=True, default_flow_style=False)
+
+        atomic_write(filepath, _dump, encoding="utf-8")
+        logger.info(f"配置已保存到 {filepath}")
 
 
 class DatabaseLoader:
