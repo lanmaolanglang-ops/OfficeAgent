@@ -18,7 +18,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from contextlib import suppress
 
-from fastapi import FastAPI, Query
+from fastapi import Depends, FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse, JSONResponse
 
@@ -26,6 +26,7 @@ from fastapi.responses import PlainTextResponse, JSONResponse
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from office_agent.api.core.config import settings
+from office_agent.api.deps import get_db_session
 from office_agent.api.core.handlers import register_exception_handlers
 from office_agent.api.middleware import AuthMiddleware
 from office_agent.api.router import (
@@ -139,100 +140,79 @@ def create_app() -> FastAPI:
     @app.get("/api/logs/executions", summary="查询执行日志", tags=["监控"])
     def get_execution_logs(task_id: str = None, request_id: str = None,
                            agent: str = None,
-                           limit: int = Query(default=100, ge=1, le=1000)):
-        from office_agent.database.session import SessionLocal
+                           limit: int = Query(default=100, ge=1, le=1000),
+                           session=Depends(get_db_session)):
         from office_agent.database.repository import ExecutionLogRepository
-        session = SessionLocal()
-        try:
-            repo = ExecutionLogRepository(session)
-            if task_id:
-                logs = repo.get_by_task(task_id)
-            elif request_id:
-                logs = repo.get_by_request(request_id)
-            elif agent:
-                logs = repo.get_by_agent(agent, limit=limit)
-            else:
-                logs = repo.find(limit=limit, order_by="created_at", descending=True)
-            return JSONResponse(content={
-                "success": True,
-                "data": [_exec_log_to_dict(log) for log in logs[:limit]],
-            })
-        finally:
-            session.close()
+        repo = ExecutionLogRepository(session)
+        if task_id:
+            logs = repo.get_by_task(task_id)
+        elif request_id:
+            logs = repo.get_by_request(request_id)
+        elif agent:
+            logs = repo.get_by_agent(agent, limit=limit)
+        else:
+            logs = repo.find(limit=limit, order_by="created_at", descending=True)
+        return JSONResponse(content={
+            "success": True,
+            "data": [_exec_log_to_dict(log) for log in logs[:limit]],
+        })
 
     @app.get("/api/logs/models", summary="查询模型调用日志", tags=["监控"])
     def get_model_logs(task_id: str = None, model: str = None,
-                       limit: int = Query(default=100, ge=1, le=1000)):
-        from office_agent.database.session import SessionLocal
+                       limit: int = Query(default=100, ge=1, le=1000),
+                       session=Depends(get_db_session)):
         from office_agent.database.repository import ModelCallLogRepository
-        session = SessionLocal()
-        try:
-            repo = ModelCallLogRepository(session)
-            if task_id:
-                logs = repo.get_by_task(task_id)
-            elif model:
-                logs = repo.get_by_model(model, limit=limit)
-            else:
-                logs = repo.find(limit=limit, order_by="created_at", descending=True)
-            return JSONResponse(content={
-                "success": True,
-                "data": [_model_log_to_dict(log) for log in logs[:limit]],
-            })
-        finally:
-            session.close()
+        repo = ModelCallLogRepository(session)
+        if task_id:
+            logs = repo.get_by_task(task_id)
+        elif model:
+            logs = repo.get_by_model(model, limit=limit)
+        else:
+            logs = repo.find(limit=limit, order_by="created_at", descending=True)
+        return JSONResponse(content={
+            "success": True,
+            "data": [_model_log_to_dict(log) for log in logs[:limit]],
+        })
 
     @app.get("/api/logs/errors", summary="查询错误日志", tags=["监控"])
     def get_error_logs(limit: int = Query(default=100, ge=1, le=1000),
-                       resolved: bool = None):
-        from office_agent.database.session import SessionLocal
+                       resolved: bool = None,
+                       session=Depends(get_db_session)):
         from office_agent.database.repository import ErrorLogRepository
-        session = SessionLocal()
-        try:
-            repo = ErrorLogRepository(session)
-            logs = repo.get_recent(limit=limit, resolved=resolved)
-            return JSONResponse(content={
-                "success": True,
-                "data": [_error_log_to_dict(log) for log in logs],
-            })
-        finally:
-            session.close()
+        repo = ErrorLogRepository(session)
+        logs = repo.get_recent(limit=limit, resolved=resolved)
+        return JSONResponse(content={
+            "success": True,
+            "data": [_error_log_to_dict(log) for log in logs],
+        })
 
     @app.get("/api/logs/stats", summary="日志统计", tags=["监控"])
-    def get_log_stats(hours: int = Query(default=24, ge=1, le=24 * 365)):
-        from office_agent.database.session import SessionLocal
+    def get_log_stats(hours: int = Query(default=24, ge=1, le=24 * 365),
+                      session=Depends(get_db_session)):
         from office_agent.database.repository import (
             ExecutionLogRepository, ModelCallLogRepository, ErrorLogRepository,
         )
-        session = SessionLocal()
-        try:
-            return JSONResponse(content={
-                "success": True,
-                "data": {
-                    "executions": ExecutionLogRepository(session).get_stats(hours),
-                    "model_calls": ModelCallLogRepository(session).get_stats(hours),
-                    "errors": ErrorLogRepository(session).get_stats(hours),
-                },
-            })
-        finally:
-            session.close()
+        return JSONResponse(content={
+            "success": True,
+            "data": {
+                "executions": ExecutionLogRepository(session).get_stats(hours),
+                "model_calls": ModelCallLogRepository(session).get_stats(hours),
+                "errors": ErrorLogRepository(session).get_stats(hours),
+            },
+        })
 
     @app.get("/api/trace/{trace_id}", summary="查询调用链", tags=["监控"])
-    def get_trace(trace_id: str):
-        from office_agent.database.session import SessionLocal
+    def get_trace(trace_id: str, session=Depends(get_db_session)):
         from office_agent.database.repository import ExecutionLogRepository
-        session = SessionLocal()
-        try:
-            repo = ExecutionLogRepository(session)
-            spans = repo.get_by_trace(trace_id)
-            return JSONResponse(content={
-                "success": True,
-                "data": {
-                    "trace_id": trace_id,
-                    "spans": [_exec_log_to_dict(s) for s in spans],
-                },
-            })
-        finally:
-            session.close()
+        repo = ExecutionLogRepository(session)
+        spans = repo.get_by_trace(trace_id)
+        return JSONResponse(content={
+            "success": True,
+            "data": {
+                "trace_id": trace_id,
+                "spans": [_exec_log_to_dict(s) for s in spans],
+            },
+        })
 
     async def on_startup():
         # 桌面模式下写 PID 文件：Tauri 端遇到"端口被占但健康检查失败"的
