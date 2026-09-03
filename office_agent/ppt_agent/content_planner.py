@@ -473,40 +473,6 @@ class ContentPlanner:
 
         return outline
 
-    def _enrich_with_ai(self, outline: PPTOutline, theme: str) -> PPTOutline:
-        """使用 AI 丰富内容（可选）"""
-        if not self.model_gateway:
-            return outline
-
-        try:
-            # 为内容页生成更具体的要点
-            for slide in outline.slides:
-                if slide.layout in ("content", "content_list") and slide.title:
-                    if not slide.bullets or all(
-                        str(item).startswith("待补充：") for item in slide.bullets
-                    ):
-                        prompt = (
-                            f"为PPT主题'{theme}'的页面'{slide.title}'"
-                            f"生成3-5个要点，每行一个，不要编号。"
-                        )
-                        result = self.model_gateway.chat(
-                            user_message=prompt,
-                            task_type_str="ppt_content",
-                            temperature=0.7,
-                        )
-                        if result and result.success:
-                            bullets = [
-                                line.strip().lstrip("-•·* ")
-                                for line in result.content.split("\n")
-                                if line.strip() and len(line.strip()) > 3
-                            ]
-                            if bullets:
-                                slide.bullets = bullets[:5]
-        except Exception:
-            pass
-
-        return outline
-
     # ==========================================
     # 新的智能内容生成方法
     # ==========================================

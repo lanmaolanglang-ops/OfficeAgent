@@ -71,15 +71,11 @@ DEFAULT_FONTS = FontScheme()
 
 
 def hex_to_rgb(hex_color: str) -> RGBColor:
-    """十六进制颜色转 RGBColor"""
-    if not isinstance(hex_color, str):
-        raise ValueError("颜色值必须是字符串")
-    h = hex_color.strip().lstrip("#")
-    if len(h) == 3:
-        h = "".join(ch * 2 for ch in h)
-    if len(h) != 6 or any(ch not in "0123456789abcdefABCDEF" for ch in h):
-        raise ValueError(f"无效的十六进制颜色: {hex_color!r}")
-    return RGBColor(int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
+    """十六进制颜色转 RGBColor（解析口径统一在 office_agent.colors）"""
+    from ..colors import parse_hex_color
+
+    r, g, b, _a = parse_hex_color(hex_color)
+    return RGBColor(r, g, b)
 
 
 class PPTService:

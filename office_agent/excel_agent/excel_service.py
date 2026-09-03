@@ -87,19 +87,11 @@ def _sanitize_cell_value(value):
 
 
 def hex_to_color(hex_str: str):
-    """十六进制颜色转 openpyxl Color"""
+    """十六进制颜色转 openpyxl Color（解析口径统一在 office_agent.colors）"""
     from openpyxl.styles import Color
-    if not isinstance(hex_str, str):
-        raise ValueError("颜色值必须是字符串")
-    h = hex_str.strip().lstrip("#")
-    if len(h) == 3:
-        h = "".join(ch * 2 for ch in h)
-    if not re.fullmatch(r"[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?", h):
-        raise ValueError(f"无效的十六进制颜色: {hex_str!r}")
-    # openpyxl 使用 ARGB；六位 RGB 显式补不透明 alpha，避免被解释为透明色。
-    if len(h) == 6:
-        h = f"FF{h}"
-    return Color(rgb=h.upper())
+    from ..colors import parse_hex_argb
+
+    return Color(rgb=parse_hex_argb(hex_str))
 
 
 class ExcelService:

@@ -432,39 +432,6 @@ class PPTOrchestrator:
             )
         return fixed
 
-    def _post_check(self, output_path: str,
-                    expected_slides: int = None) -> PPTGenerationResult:
-        """
-        生成后检查 .pptx 文件质量
-
-        Returns:
-            PPTGenerationResult with quality_score and quality_issues
-        """
-        from .models import PPTGenerationResult
-        result = PPTGenerationResult(success=True, output_path=output_path)
-
-        try:
-            quality = self.quality_checker.check(output_path, expected_slides)
-        except Exception as exc:
-            logger.exception("PPT 已生成，但质量检查失败: %s", output_path)
-            result.message = f"PPT 生成成功，但质量检查未完成：{sanitize_error(exc)}"
-            result.quality_issues = [{
-                "type": "quality_check", "severity": "warning",
-                "message": result.message,
-            }]
-            return result
-        result.quality_score = quality.score
-        result.quality_issues = [i.to_dict() for i in quality.issues]
-        result.slide_count = quality.slide_count
-        result.message = f"PPT 生成成功，共{quality.slide_count}页，质量分{quality.score:.0f}"
-
-        if not quality.passed:
-            result.message += f"，{len(quality.errors())}个错误需关注"
-        elif quality.warnings():
-            result.message += f"，{len(quality.warnings())}个警告"
-
-        return result
-
     def _attach_quality(self, result: PPTGenerationResult, output_path: str,
                         expected_slides: int = None) -> None:
         """附加质量信息；检查器故障不得反向覆盖已成功生成的产物。"""
