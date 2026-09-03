@@ -93,11 +93,15 @@ def create_app() -> FastAPI:
     )
     from office_agent.api.middleware.rate_limit import RateLimitMiddleware
     from office_agent.api.middleware.local_guard import LocalGuardMiddleware
+    from office_agent.api.middleware.request_size import RequestSizeLimitMiddleware
     app.add_middleware(ErrorHandlingMiddleware)
     app.add_middleware(RequestLoggingMiddleware)
     app.add_middleware(RateLimitMiddleware)
     app.add_middleware(LocalGuardMiddleware)
     app.add_middleware(AuthMiddleware)
+    # 最外层：上传超限请求在认证与 multipart 解析之前按 Content-Length 拒掉，
+    # 不读请求体，避免大请求体占用任何下游资源
+    app.add_middleware(RequestSizeLimitMiddleware)
 
     # 注册异常处理器
     register_exception_handlers(app)
