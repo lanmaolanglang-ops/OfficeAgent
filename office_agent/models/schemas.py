@@ -41,13 +41,25 @@ class PPTTaskType(Enum):
 
 
 class ExcelTaskType(Enum):
-    """Excel 任务子类型"""
+    """Excel 任务子类型（全仓唯一定义，清单 503）。
+
+    取原 schemas.ExcelTaskType 与 excel_agent.models.TaskType 的并集；
+    excel_agent 侧保留 `TaskType = ExcelTaskType` 兼容别名，
+    旧桌面端/集成方的 import 路径与既有取值全部不变。
+    """
+    READ = "read"               # 读取/查看数据
     CALCULATE = "calculate"     # 数据计算
     ANALYZE = "analyze"         # 数据分析
     FORMULA = "formula"         # 自动生成公式
+    FORMAT = "format"           # 格式化
+    CHART = "chart"             # 图表生成
+    PIVOT = "pivot"             # 数据透视
+    FILTER = "filter"           # 筛选/排序
+    MERGE = "merge"             # 合并/汇总
     CREATE = "create"           # 表格创建
     CLEAN = "clean"             # 数据整理
-    CHART = "chart"             # 图表生成
+    TEMPLATE = "template"       # 应用模板
+    UNKNOWN = "unknown"
 
 
 class Alignment(Enum):

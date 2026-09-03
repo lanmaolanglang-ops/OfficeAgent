@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 from typing import Optional, List, Any
 from enum import Enum
 
+from ..models.schemas import ExcelTaskType
+
 
 def col_letter(index: int) -> str:
     """0-based 列索引转 Excel 列字母（0→A、25→Z、26→AA）。
@@ -22,20 +24,10 @@ def col_letter(index: int) -> str:
         letters = chr(65 + rem) + letters
     return letters
 
-
-class TaskType(Enum):
-    """Excel 任务类型"""
-    READ = "read"               # 读取/查看数据
-    CALCULATE = "calculate"     # 计算/公式
-    ANALYZE = "analyze"         # 数据分析
-    FORMAT = "format"           # 格式化
-    CHART = "chart"             # 生成图表
-    PIVOT = "pivot"             # 数据透视
-    FILTER = "filter"           # 筛选/排序
-    MERGE = "merge"             # 合并/汇总
-    CREATE = "create"           # 创建新表
-    TEMPLATE = "template"       # 应用模板
-    UNKNOWN = "unknown"
+# 兼容别名（清单 503）：Excel 任务子类型的唯一定义在
+# office_agent.models.schemas.ExcelTaskType；旧桌面端/集成方可能
+# import excel_agent.models.TaskType，路径与取值保持不变。
+TaskType = ExcelTaskType
 
 
 class ChartType(Enum):
