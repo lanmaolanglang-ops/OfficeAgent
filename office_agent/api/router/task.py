@@ -32,6 +32,16 @@ logger = logging.getLogger("office_agent.api.task")
 _resolve_input_files = resolve_input_files
 
 
+def _agent_name_for_task_type(task_type: str | None) -> str | None:
+    """从任务类型推导所属 Agent；无法推导时统一返回 None。
+
+    单一"无值"口径：内部/落库一律用 None，响应层在序列化时显式 `or ""`。
+    """
+    if not task_type or "_" not in task_type:
+        return None
+    return task_type.split("_")[0] + "_agent"
+
+
 def _request_identity(request: Request | None) -> tuple[str | None, str]:
     if not settings.auth_enabled:
         return None, ""
@@ -136,7 +146,7 @@ async def create_task(req: TaskCreateRequest, request: Request = None):
         db_task = task_repo.create_task(
             task_type=req.task_type,
             instruction=req.instruction,
-            agent_name=req.task_type.split("_")[0] + "_agent" if "_" in req.task_type else None,
+            agent_name=_agent_name_for_task_type(req.task_type),
             user_id=user_id,
             input_file_ids=json.dumps(input_files) if input_files else None,
             options_json=json.dumps({
@@ -187,7 +197,7 @@ async def create_task(req: TaskCreateRequest, request: Request = None):
     return BaseResponse(data=TaskInfo(
         task_id=task_id,
         task_type=req.task_type,
-        agent=req.task_type.split("_")[0] + "_agent" if "_" in req.task_type else "",
+        agent=_agent_name_for_task_type(req.task_type) or "",
         status=status,
         progress=0,
         instruction=req.instruction,

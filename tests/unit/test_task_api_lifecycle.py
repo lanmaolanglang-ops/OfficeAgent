@@ -263,3 +263,22 @@ def test_unknown_task_type_rejected_before_database_write():
     with pytest.raises(HTTPException) as exc:
         asyncio.run(create_task(request))
     assert exc.value.status_code == 422
+
+
+def test_agent_name_derivation_has_single_none_sentinel():
+    """清单 303：Agent 推导只有 None 一种"无值"口径，响应层显式 or ""。"""
+    import inspect
+    from office_agent.api.router import task as task_module
+
+    derive = task_module._agent_name_for_task_type
+    assert derive("word_format") == "word_agent"
+    assert derive("ppt_generate") == "ppt_agent"
+    assert derive("excel_analyze") == "excel_agent"
+    assert derive("general") is None
+    assert derive(None) is None
+    assert derive("") is None
+
+    # 源码级守卫：create_task 内不再出现内联三元推导的两份拷贝
+    src = inspect.getsource(task_module.create_task)
+    assert src.count('_agent_name_for_task_type(req.task_type)') == 2
+    assert 'split("_")[0]' not in src
