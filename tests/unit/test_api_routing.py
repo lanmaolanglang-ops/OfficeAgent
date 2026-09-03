@@ -62,3 +62,14 @@ class TestFilePathRouting:
         若后续接入转换管线，本测试应同步更新为明确路由断言。"""
         assert route_by_file_path("a.pdf") is None
         assert route_by_file_path("a.txt") is None
+
+
+class TestFalsePositiveGuards:
+    """清单 2.1：普通文本不得被关键词子串误路由。"""
+
+    def test_doctor_does_not_hit_word_route(self):
+        # 旧 process_general 用裸 "doc" 子串匹配，"doctor" 会被误派给 Word
+        assert route_intent("doctor 说这个治疗方案")[0] == "orchestrator"
+
+    def test_plain_text_falls_back_to_orchestrator(self):
+        assert route_intent("总结一下这份材料")[0] == "orchestrator"
