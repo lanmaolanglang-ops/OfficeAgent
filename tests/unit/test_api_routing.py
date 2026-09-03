@@ -57,11 +57,12 @@ class TestFilePathRouting:
         assert route_by_file_path("报告.DOC")[0] == "word_agent"
         assert route_by_file_path("数据.XLS")[0] == "excel_agent"
 
-    def test_pdf_and_txt_remain_unrouted(self):
-        """PDF/TXT 下游 Agent 尚不能直接消费，保持 None 回退到文本意图。
-        若后续接入转换管线，本测试应同步更新为明确路由断言。"""
-        assert route_by_file_path("a.pdf") is None
-        assert route_by_file_path("a.txt") is None
+    def test_pdf_and_txt_route_to_word_agent(self):
+        """PDF/TXT/MD 经 services.input_conversion 转换链由 word_agent 消费。"""
+        for path in ("a.pdf", "a.txt", "a.md"):
+            agent, task_type, source = route_by_file_path(path)
+            assert (agent, task_type, source) == (
+                "word_agent", "word_process", "file_type"), path
 
 
 class TestFalsePositiveGuards:

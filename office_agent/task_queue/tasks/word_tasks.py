@@ -129,6 +129,10 @@ def process_word(input_path: str, output_path: str = None,
         if not os.path.exists(input_path):
             raise FileNotFoundError(f"文件不存在: {input_path}")
 
+        # 1.1 文本类输入（txt/md/pdf）统一转换为 docx，全仓唯一转换接缝
+        from ...services.input_conversion import ensure_docx_input
+        input_path = ensure_docx_input(input_path)
+
         if not output_path:
             output_path = _safe_output()
 

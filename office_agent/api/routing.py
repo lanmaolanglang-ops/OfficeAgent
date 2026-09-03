@@ -41,7 +41,8 @@ def route_intent(message: str) -> tuple:
 
 def route_by_file_path(path: str):
     ext = os.path.splitext(path or "")[1].lower()
-    if ext in (".docx", ".doc", ".rtf", ".odt"):
+    # 文本类扩展名经 services.input_conversion 转换为 docx 后由 word_agent 消费
+    if ext in (".docx", ".doc", ".rtf", ".odt", ".txt", ".md", ".pdf"):
         return "word_agent", "word_process", "file_type"
     if ext in (".pptx", ".ppt", ".odp"):
         return "ppt_agent", "ppt_generate", "file_type"
