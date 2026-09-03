@@ -55,7 +55,9 @@ class TestRouteIntent:
         assert route_by_file_path("C:/tmp/a.pptx")[0] == "ppt_agent"
         assert route_by_file_path("C:/tmp/b.docx")[0] == "word_agent"
         assert route_by_file_path("C:/tmp/c.csv")[0] == "excel_agent"
-        assert route_by_file_path("C:/tmp/d.pdf") is None
+        # pdf/txt/md 经 input_conversion 转换链由 word_agent 消费（清单 273 已关闭）
+        assert route_by_file_path("C:/tmp/d.pdf")[0] == "word_agent"
+        assert route_by_file_path("C:/tmp/e.bin") is None
 
     def test_agent_hint_is_normalized_and_validated(self):
         from pydantic import ValidationError
