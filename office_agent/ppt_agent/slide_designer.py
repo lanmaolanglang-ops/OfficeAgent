@@ -219,18 +219,19 @@ class SlideDesigner:
 
 
 class StylePresets:
-    """预设风格快速切换"""
+    """预设风格快速切换。
+
+    配色唯一定义在 ppt_service.THEME_COLORS（清单 502），本类只补充
+    各风格的字体方案，不再复制颜色值——此前 StylePresets 与
+    THEME_COLORS 各存一份相同色值（business 即 professional），
+    改主题色需要同步两处，必然漂移。
+    """
 
     @staticmethod
     def business() -> tuple:
-        """商务风格"""
+        """商务风格（沿用 professional 主题配色）"""
         return (
-            ColorScheme(
-                primary="#1F4E79", secondary="#2E75B6", accent="#FFC000",
-                bg="#FFFFFF", bg_dark="#1F4E79",
-                text="#333333", text_light="#FFFFFF", text_muted="#666666",
-                line="#D9D9D9",
-            ),
+            THEME_COLORS["professional"],
             FontScheme(title_cn="微软雅黑", body_cn="微软雅黑", title_size=28, body_size=18),
         )
 
@@ -238,12 +239,7 @@ class StylePresets:
     def minimal() -> tuple:
         """简约风格"""
         return (
-            ColorScheme(
-                primary="#000000", secondary="#595959", accent="#C00000",
-                bg="#FFFFFF", bg_dark="#000000",
-                text="#000000", text_light="#FFFFFF", text_muted="#808080",
-                line="#E0E0E0",
-            ),
+            THEME_COLORS["minimal"],
             FontScheme(title_cn="思源黑体", body_cn="思源黑体", title_size=26, body_size=16),
         )
 
@@ -251,12 +247,7 @@ class StylePresets:
     def tech() -> tuple:
         """科技风格"""
         return (
-            ColorScheme(
-                primary="#0066CC", secondary="#00B0F0", accent="#00FF88",
-                bg="#0A1628", bg_dark="#0066CC",
-                text="#E0E0E0", text_light="#FFFFFF", text_muted="#999999",
-                line="#1A3050",
-            ),
+            THEME_COLORS["tech"],
             FontScheme(title_cn="微软雅黑", body_cn="微软雅黑", title_size=28, body_size=18),
         )
 
@@ -264,12 +255,7 @@ class StylePresets:
     def creative() -> tuple:
         """创意风格"""
         return (
-            ColorScheme(
-                primary="#ED7D31", secondary="#FFC000", accent="#70AD47",
-                bg="#FFFFFF", bg_dark="#ED7D31",
-                text="#333333", text_light="#FFFFFF", text_muted="#666666",
-                line="#F0D5B8",
-            ),
+            THEME_COLORS["creative"],
             FontScheme(title_cn="微软雅黑", body_cn="微软雅黑", title_size=30, body_size=18),
         )
 
@@ -277,11 +263,6 @@ class StylePresets:
     def academic() -> tuple:
         """学术风格"""
         return (
-            ColorScheme(
-                primary="#2E4057", secondary="#048A81", accent="#D1495B",
-                bg="#FFFFFF", bg_dark="#2E4057",
-                text="#2E4057", text_light="#FFFFFF", text_muted="#6B7B8C",
-                line="#D0D5DD",
-            ),
+            THEME_COLORS["academic"],
             FontScheme(title_cn="黑体", body_cn="宋体", title_size=24, body_size=18),
         )
