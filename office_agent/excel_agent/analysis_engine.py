@@ -23,6 +23,12 @@ from .models import (
     DataProfile, DataSchema,
 )
 
+# 趋势阈值（此前一处 0.03、一处 0.05 硬编码且口径不明）：
+# - 方向判定：平均环比绝对值超过 3% 才认为存在方向性趋势，避免噪声被命名为涨/跌
+# - 重要发现：平均环比绝对值超过 5% 才升级为“重要”发现推送，低于该值只标记趋势
+TREND_DIRECTION_THRESHOLD = 0.03
+TREND_FINDING_THRESHOLD = 0.05
+
 
 class AnalysisEngine:
     """
@@ -491,9 +497,9 @@ class AnalysisEngine:
             ta.growth_rate = (values[-1] - values[0]) / abs(values[0])
 
         # 趋势判断
-        if ta.avg_growth_rate > 0.03:
+        if ta.avg_growth_rate > TREND_DIRECTION_THRESHOLD:
             ta.trend = "up"
-        elif ta.avg_growth_rate < -0.03:
+        elif ta.avg_growth_rate < -TREND_DIRECTION_THRESHOLD:
             ta.trend = "down"
         elif len(growth_rates) > 2 and max(growth_rates) - min(growth_rates) > 0.2:
             ta.trend = "fluctuating"
@@ -625,7 +631,7 @@ class AnalysisEngine:
 
         # 2. 趋势发现
         for ta in report.trend_analyses:
-            if ta.trend == "up" and ta.avg_growth_rate > 0.05:
+            if ta.trend == "up" and ta.avg_growth_rate > TREND_FINDING_THRESHOLD:
                 findings.append(AnalysisFinding(
                     finding_type=FindingType.TREND_UP.value,
                     severity=FindingSeverity.IMPORTANT.value,
@@ -636,7 +642,7 @@ class AnalysisEngine:
                     column_name=ta.column_name,
                     change_rate=ta.avg_growth_rate,
                 ))
-            elif ta.trend == "down" and ta.avg_growth_rate < -0.05:
+            elif ta.trend == "down" and ta.avg_growth_rate < -TREND_FINDING_THRESHOLD:
                 findings.append(AnalysisFinding(
                     finding_type=FindingType.TREND_DOWN.value,
                     severity=FindingSeverity.IMPORTANT.value,

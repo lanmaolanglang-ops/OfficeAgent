@@ -443,6 +443,49 @@ class TestRemainingExcelCorrectness:
         assert any("'其他'!A99" in message for message in messages)
         assert any("A88" in message for message in messages)
 
+    def test_trend_thresholds_share_named_constants(self):
+        """趋势方向（3%）与重要发现（5%）阈值收敛为同一组命名常量。"""
+        from office_agent.excel_agent import analysis_engine as ae
+
+        engine = AnalysisEngine()
+        # 平均环比 4%：超过方向阈值 → up；但未达重要发现阈值
+        rows = [["p1", 100], ["p2", 104], ["p3", 108.16]]
+        ta = engine._analyze_trend(rows, ["期间", "金额"], 1, 0)
+        assert ta.trend == "up"
+        assert abs(ta.avg_growth_rate - 0.04) < 1e-9
+        assert (ae.TREND_DIRECTION_THRESHOLD
+                < ta.avg_growth_rate
+                < ae.TREND_FINDING_THRESHOLD)
+
+        # 低于方向阈值的噪声（2%）不应被命名为上涨
+        rows = [["p1", 100], ["p2", 102], ["p3", 104.04]]
+        ta = engine._analyze_trend(rows, ["期间", "金额"], 1, 0)
+        assert ta.trend != "up"
+
+    def test_analyzer_fallback_logs_reason(self, temp_dir, caplog, monkeypatch):
+        """pandas 解析失败降级 openpyxl 时必须留下结构化日志，不能静默。"""
+        import logging
+
+        import pandas as pd
+
+        src = temp_dir / "fallback.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(["名称", "金额"])
+        ws.append(["A", 1])
+        wb.save(src)
+
+        def _boom(*_args, **_kwargs):
+            raise ValueError("forced pandas failure")
+
+        monkeypatch.setattr(pd, "ExcelFile", _boom)
+        with caplog.at_level(
+            logging.WARNING, logger="office_agent.excel_agent.data_analyzer"
+        ):
+            profile = DataAnalyzer().analyze(str(src))
+        assert profile is not None
+        assert any("降级" in record.message for record in caplog.records)
+
     def test_chart_notice_is_workbook_level_and_div_zero_fix_is_blank(self, temp_dir):
         src = temp_dir / "book.xlsx"
         wb = openpyxl.Workbook()

@@ -11,6 +11,7 @@ Data Analyzer - 数据理解器
 from pathlib import Path
 from typing import Optional, List, Dict
 from collections import Counter
+import logging
 import re
 from datetime import datetime
 
@@ -21,6 +22,8 @@ from .models import (
     DataSchema, SheetSchema, DataRelation,
 )
 from .excel_service import ExcelService
+
+logger = logging.getLogger(__name__)
 
 
 # ==========================================
@@ -144,7 +147,11 @@ class DataAnalyzer:
             schema.relations = self._discover_relations(all_sheets_data)
 
         except Exception:
-            # pandas 失败时用 openpyxl 降级
+            # pandas 失败时用 openpyxl 降级；记录原因，避免静默丢弃已分析结果
+            logger.warning(
+                "pandas 解析失败，降级为 openpyxl 分析 schema: %s",
+                file_path, exc_info=True,
+            )
             schema = self._analyze_with_openpyxl(file_path)
 
         schema.summary = self._generate_schema_summary(schema)
@@ -168,6 +175,10 @@ class DataAnalyzer:
                 profile.total_rows += sheet_info.row_count
 
         except Exception:
+            logger.warning(
+                "pandas 解析失败，降级为 openpyxl 分析 profile: %s",
+                file_path, exc_info=True,
+            )
             profile = self._analyze_profile_with_openpyxl(file_path)
 
         profile.summary = self._generate_summary(profile)
