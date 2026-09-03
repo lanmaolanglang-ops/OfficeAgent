@@ -91,11 +91,16 @@ async def upload_file(request: Request, file: UploadFile = File(...)):
             status_code=413,
             detail=f"文件超过 {max_file_size // 1024 // 1024}MB 上限",
         )
+    # StorageService 是同步实现（磁盘写入 + 安全扫描）。在 async 路由里直接
+    # 调用会把整块磁盘 IO 压在事件循环上，阻塞同进程内所有请求；这里显式
+    # 交给工作线程，同时保留流式读取，不把大文件整体读进内存。
+    owner_id = _effective_owner(request)
     try:
-        info = storage.upload_fileobj(
+        info = await asyncio.to_thread(
+            storage.upload_fileobj,
             filename=file.filename or "unknown",
             fileobj=file.file,
-            owner_id=_effective_owner(request),
+            owner_id=owner_id,
             metadata={"content_type": file.content_type},
         )
         return BaseResponse(data=FileUploadResponse(
@@ -151,7 +156,10 @@ async def upload_part(file_id: str, upload_id: str, part_number: int,
     try:
         content = await _read_upload_limited(file, CHUNK_SIZE)
         storage = _get_storage()
-        result = storage.upload_part(file_id, upload_id, part_number, content)
+        # 分片落盘同样是同步 IO，不能直接在事件循环里执行
+        result = await asyncio.to_thread(
+            storage.upload_part, file_id, upload_id, part_number, content
+        )
         return BaseResponse(data=result)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))

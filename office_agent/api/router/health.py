@@ -6,6 +6,7 @@ import os
 import time
 import platform
 import asyncio
+import threading
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
@@ -69,29 +70,69 @@ def _check_workers() -> dict:
         return {"status": "unknown", "message": "任务引擎状态未知"}
 
 
+# ModelGateway() 会构造 ModelManager 并从磁盘读取模型配置与密钥材料。
+# 健康检查是高频探针，每次都重建等于把同一份配置反复读盘，还会重复争抢
+# 配置写入用的 advisory 文件锁。这里按 TTL 复用实例：读多写少，短暂的配置
+# 陈旧对存活探针可接受，TTL 可用环境变量覆盖。
+_MODEL_GATEWAY_TTL_SECONDS = float(
+    os.environ.get("OFFICE_AGENT_HEALTH_GATEWAY_TTL", "30") or 30
+)
+_gateway_lock = threading.Lock()
+_cached_gateway = None
+_cached_gateway_at = 0.0
+
+
+def _get_cached_gateway():
+    """返回带 TTL 的 ModelGateway 实例；TTL 过期后按需重建。"""
+    global _cached_gateway, _cached_gateway_at
+
+    now = time.monotonic()
+    with _gateway_lock:
+        if (_cached_gateway is not None
+                and now - _cached_gateway_at < _MODEL_GATEWAY_TTL_SECONDS):
+            return _cached_gateway
+        # 过期：清空缓存后到锁外重建，避免持锁做磁盘 IO
+        _cached_gateway = None
+        _cached_gateway_at = 0.0
+
+    from office_agent.model_gateway import ModelGateway
+    gateway = ModelGateway()
+    with _gateway_lock:
+        _cached_gateway = gateway
+        _cached_gateway_at = time.monotonic()
+    return gateway
+
+
 def _check_models() -> dict:
     """检查模型配置（以 ModelManager / models.json 实际配置为准）"""
     try:
         from office_agent.model_gateway import ModelGateway
-        gateway = ModelGateway()
-        available = gateway.manager.list_available_models()
-        if available:
-            primary = gateway.manager.get_default_model() or available[0]
-            ordered = [primary, *(m for m in available if m.id != primary.id)]
-            return {
-                "status": "configured",
-                "model": primary.model or primary.id,
-                "provider": primary.provider.value,
-                "fallback_chain": [m.model or m.id for m in ordered],
-            }
-        env_model = os.environ.get("MODEL_PRIMARY_MODEL", "")
-        return {
-            "status": "template",
-            "model": None,
-            "fallback_chain": [env_model] if env_model else [],
-        }
+
+        try:
+            gateway = _get_cached_gateway()
+            available = gateway.manager.list_available_models()
+        except Exception:
+            # 缓存实例可能已失效（配置被外部替换等），退化为一次性新建再判定
+            gateway = ModelGateway()
+            available = gateway.manager.list_available_models()
     except Exception:
         return {"status": "error", "model": None, "message": "模型配置检查失败"}
+
+    if available:
+        primary = gateway.manager.get_default_model() or available[0]
+        ordered = [primary, *(m for m in available if m.id != primary.id)]
+        return {
+            "status": "configured",
+            "model": primary.model or primary.id,
+            "provider": primary.provider.value,
+            "fallback_chain": [m.model or m.id for m in ordered],
+        }
+    env_model = os.environ.get("MODEL_PRIMARY_MODEL", "")
+    return {
+        "status": "template",
+        "model": None,
+        "fallback_chain": [env_model] if env_model else [],
+    }
 
 def _check_system() -> dict:
     """检查系统资源"""
