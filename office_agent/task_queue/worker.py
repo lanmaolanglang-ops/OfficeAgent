@@ -93,10 +93,16 @@ class LocalWorker:
             "normal": ThreadPoolExecutor(max_workers=queues["normal"]["concurrency"], thread_name_prefix="task-normal"),
             "low": ThreadPoolExecutor(max_workers=queues["low"]["concurrency"], thread_name_prefix="task-low"),
         }
+        # 收尾执行器：质量评分会同步重开 Office 文档、修订派发会同步调用 LLM，
+        # 这些耗时工作不再占用优先级任务线程，统一在独立的有界线程上完成。
+        self._finalize_executor = ThreadPoolExecutor(
+            max_workers=2, thread_name_prefix="task-finalize")
         # 任务注册表
         self._tasks: Dict[str, Callable] = {}
         # Future 映射
         self._futures: Dict[str, Future] = {}
+        # 收尾 Future 映射（任务函数已返回、收尾仍在进行的任务）
+        self._finalizing: Dict[str, Future] = {}
         # 取消标记
         self._cancelled: set = set()
         self._cancel_events: Dict[str, threading.Event] = {}
@@ -142,7 +148,12 @@ class LocalWorker:
         # 选择执行器
         executor = self.executors.get(priority, self.executors["normal"])
 
+        # 成功收尾是否已卸载到收尾执行器。决定主 Future 的清理回调是否
+        # 需要把共享状态（取消事件/计时器等）留给收尾完成回调清理。
+        finalize_offloaded = False
+
         def _run():
+            nonlocal finalize_offloaded
             # 排队期间已取消的任务不要设置线程上下文；旧实现会在这里提前
             # return 而跳过 reset，导致同一工作线程的后续日志继承错误 task_id。
             if task_id in self._cancelled:
@@ -213,16 +224,33 @@ class LocalWorker:
                     )
                     registry.gauge("tasks_active").dec(task_type=task_name)
                     return result
-                self._complete(task_id, result, int(duration * 1000))
-                log_task_event(task_id, "completed", "success",
-                              details={"duration_ms": int(duration * 1000)})
-                registry.counter("tasks_total").inc(
-                    task_type=task_name, status="success"
-                )
-                registry.histogram("task_duration_seconds").observe(
-                    duration, task_type=task_name
-                )
-                registry.gauge("tasks_active").dec(task_type=task_name)
+                # 成功收尾（评分→修订派发→success 落库）提交到收尾执行器，
+                # 任务线程立即归还优先级线程池；执行器已关闭（进程退出竞态）
+                # 时内联回退，行为与旧版一致。
+                try:
+                    finalize_future = self._finalize_executor.submit(
+                        self._finalize_success, task_id, task_name,
+                        result, duration)
+                except RuntimeError:
+                    finalize_future = None
+                if finalize_future is None:
+                    self._finalize_success(task_id, task_name, result, duration)
+                else:
+                    finalize_offloaded = True
+                    with self._lock:
+                        self._finalizing[task_id] = finalize_future
+
+                    def _finalize_cleanup(_future):
+                        with self._lock:
+                            self._finalizing.pop(task_id, None)
+                            timer = self._timers.pop(task_id, None)
+                            self._cancelled.discard(task_id)
+                            self._timed_out.discard(task_id)
+                            self._cancel_events.pop(task_id, None)
+                        if timer:
+                            timer.cancel()
+
+                    finalize_future.add_done_callback(_finalize_cleanup)
                 return result
             except TaskCancelledError:
                 registry.gauge("tasks_active").dec(task_type=task_name)
@@ -259,8 +287,13 @@ class LocalWorker:
         # Future 可能在 submit 返回后、写入映射前就已完成。done callback 在
         # 已完成 Future 上会立即执行，因此无论快任务、取消还是超时都能清理。
         def _cleanup(_future):
+            timer = None
             with self._lock:
                 self._futures.pop(task_id, None)
+                if finalize_offloaded:
+                    # 收尾仍在收尾执行器上进行：取消事件等共享状态由
+                    # 收尾完成回调清理，否则修订派发读不到取消信号。
+                    return
                 timer = self._timers.pop(task_id, None)
                 self._cancelled.discard(task_id)
                 self._timed_out.discard(task_id)
@@ -273,9 +306,11 @@ class LocalWorker:
         return task_id
 
     def get_active_count(self) -> int:
-        """返回仍在排队或执行的本地任务数。"""
+        """返回仍在排队、执行或收尾中的本地任务数。"""
         with self._lock:
-            return sum(1 for future in self._futures.values() if not future.done())
+            running = sum(1 for future in self._futures.values() if not future.done())
+            finalizing = sum(1 for future in self._finalizing.values() if not future.done())
+            return running + finalizing
 
     # 终态集合：一旦写入，不允许被软超时/取消等回调改写
     _TERMINAL_STATUSES = ("success", "failed", "cancelled")
@@ -358,6 +393,34 @@ class LocalWorker:
             else:
                 skipped.append(item)
         return valid, skipped
+
+    def _finalize_success(self, task_id: str, task_name: str,
+                          result: Any, duration: float):
+        """成功收尾：质量评分 → 修订派发 → success 落库 → 日志/指标。
+
+        在独立的收尾执行器线程上运行（执行器已关闭时由内联回退调用）。
+        收尾会同步重开 Office 文档、可能同步调用 LLM，绝不能占用优先级
+        任务线程。异常语义与旧内联实现一致：收尾自身失败时走失败落库
+        （终态守卫保证已写入的 success 不被覆盖），tasks_active 一定归还。
+        """
+        from ..logging_system.logger import log_task_event
+        from ..logging_system.metrics import registry
+        try:
+            self._complete(task_id, result, int(duration * 1000))
+            log_task_event(task_id, "completed", "success",
+                           details={"duration_ms": int(duration * 1000)})
+            registry.counter("tasks_total").inc(
+                task_type=task_name, status="success"
+            )
+            registry.histogram("task_duration_seconds").observe(
+                duration, task_type=task_name
+            )
+        except Exception as e:
+            from ..security.error_sanitizer import sanitize_error
+            logger.exception("任务 %s 成功收尾失败", task_id)
+            self._fail(task_id, sanitize_error(e), int(duration * 1000))
+        finally:
+            registry.gauge("tasks_active").dec(task_type=task_name)
 
     def _complete(self, task_id: str, result: Any, duration_ms: int = None):
         """任务完成"""
@@ -534,18 +597,25 @@ class LocalWorker:
         """取消任务"""
         with self._lock:
             future = self._futures.get(task_id)
-            if future and not future.done():
+            finalize_future = self._finalizing.get(task_id)
+            running = future is not None and not future.done()
+            finalizing = finalize_future is not None and not finalize_future.done()
+            if running or finalizing:
+                # 收尾阶段取消同样要置取消事件：修订派发在收尾线程上检查
+                # 该事件，置位后不再创建质量修订子任务。
                 self._cancelled.add(task_id)
                 cancel_event = self._cancel_events.get(task_id)
                 if cancel_event:
                     cancel_event.set()
-                future.cancel()
+                if future is not None:
+                    future.cancel()
         self._update_status(task_id, "cancelled")
 
     def shutdown(self, wait: bool = True):
         """关闭所有线程池"""
         for executor in self.executors.values():
             executor.shutdown(wait=wait)
+        self._finalize_executor.shutdown(wait=wait)
         logger.info("LocalWorker 已关闭")
 
 
