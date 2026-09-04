@@ -8,6 +8,7 @@ Word Quality Scorer - Word文档质量评分引擎
 """
 import os
 import re
+from collections import Counter
 from typing import Dict, List, Any
 from dataclasses import dataclass, field
 
@@ -172,12 +173,23 @@ class WordQualityScorer:
 
         return paragraphs
 
+    # 手动标题（无标题样式、加粗加大）判定所用的相对字号倍率：
+    # 候选项需达到正文字号的 1.25 倍，达到 1.5 倍视为一级标题。
+    _MANUAL_HEADING_RATIO = 1.25
+    _MANUAL_HEADING_LEVEL1_RATIO = 1.5
+
     def _analyze_headings(self, doc: Document,
                          paragraphs: List[Dict]) -> Dict[str, Any]:
         """分析标题"""
         headings = []
         heading_styles_found = set()
         title_found = False
+
+        # 文档内相对字号基准：出现次数最多的字号视为正文字号，
+        # 手动标题按相对倍率判断，替代硬编码的 16/18pt 阈值。
+        size_counts = Counter(p["main_size"] for p in paragraphs
+                              if p["main_size"])
+        body_size = size_counts.most_common(1)[0][0] if size_counts else None
 
         for p in paragraphs:
             style = p["style_name"]
@@ -197,10 +209,12 @@ class WordQualityScorer:
                     heading_level = int(level_match.group(1)) if level_match else 1
                 except ValueError:
                     heading_level = 1
-            elif p["main_bold"] and p["main_size"] and p["main_size"] >= 16:
-                # 加粗且字号大，可能是手动设置的标题
+            elif (p["main_bold"] and p["main_size"] and body_size
+                  and p["main_size"] >= body_size * self._MANUAL_HEADING_RATIO):
+                # 加粗且相对正文字号明显更大，可能是手动设置的标题
                 is_heading = True
-                heading_level = 1 if p["main_size"] >= 18 else 2
+                heading_level = (1 if p["main_size"] >= body_size * self._MANUAL_HEADING_LEVEL1_RATIO
+                                 else 2)
 
             if is_heading:
                 headings.append({
