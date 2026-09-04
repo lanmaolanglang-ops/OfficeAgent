@@ -8,13 +8,14 @@ FastAPI 中间件
 """
 import time
 import re
+from datetime import datetime, timezone
 from typing import Callable
 
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from .context import (
-    set_request_id, set_trace_id, get_request_id, generate_request_id, generate_trace_id,
+    set_request_id, set_trace_id, generate_request_id, generate_trace_id,
 )
 from .logger import get_logger
 from .metrics import registry
@@ -143,7 +144,19 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
 
 
 class ErrorHandlingMiddleware(BaseHTTPMiddleware):
-    """全局错误捕获中间件"""
+    """全局错误捕获中间件。
+
+    职责边界（与 ``api/core/handlers.py`` 的 exception handlers 互补，不重叠）：
+
+    - exception handlers 注册在最内层，负责**路由与业务异常**的契约化响应
+      （APIError / 参数校验 / HTTPException / 路由内未捕获 Exception）；
+    - 本中间件注册在除 RequestSizeLimit 之外的最外层（见 main.py），负责
+      **中间件层（Auth / Logging / RateLimit / LocalGuard / CORS）抛出、
+      exception handlers 够不到**的异常——否则这些异常会落到 Starlette
+      ServerErrorMiddleware，返回裸文本 500，破坏 API JSON 契约。
+
+    两处产出的 500 响应形状保持同一契约（error_code=INTERNAL_ERROR）。
+    """
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         try:
@@ -163,14 +176,15 @@ class ErrorHandlingMiddleware(BaseHTTPMiddleware):
                 error_type=type(e).__name__
             )
 
+            from ..security.error_sanitizer import sanitize_error
+            from ..api.core.config import settings
             return JSONResponse(
                 status_code=500,
                 content={
                     "success": False,
-                    "error": {
-                        "type": "INTERNAL_SERVER_ERROR",
-                        "message": "服务器内部错误",
-                        "request_id": get_request_id(),
-                    },
+                    "error_code": "INTERNAL_ERROR",
+                    "message": "服务器内部错误",
+                    "details": sanitize_error(e) if settings.debug else None,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
                 },
             )

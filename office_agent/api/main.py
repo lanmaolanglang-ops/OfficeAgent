@@ -90,21 +90,23 @@ def create_app() -> FastAPI:
 
     # Starlette 中间件语义：后添加的更靠外层、先执行。
     # 下方注册顺序（内 → 外）即实际执行顺序的倒序：
-    #   CORS(最内) ← ErrorHandling ← RequestLogging ← Auth
-    #   ← RateLimit ← LocalGuard ← RequestSizeLimit(最外)
-    # 意图：请求体大小守卫最先廉价拒绝；随后 LocalGuard 拦非法 Host/Origin；
-    # 限流在认证（JWT 校验等开销）之前挡量；日志/错误处理包裹业务路由。
+    #   CORS(最内) ← RequestLogging ← Auth ← RateLimit ← LocalGuard
+    #   ← ErrorHandling ← RequestSizeLimit(最外)
+    # 意图：请求体大小守卫最先廉价拒绝；ErrorHandling 覆盖其内侧所有
+    # 中间件层（路由异常由更内层的 exception handlers 按契约处理，
+    # 二者职责互补）；限流在认证（JWT 校验等开销）之前挡量；
+    # 日志包裹业务路由与 CORS。
     from office_agent.logging_system import (
         RequestLoggingMiddleware, ErrorHandlingMiddleware,
     )
     from office_agent.api.middleware.rate_limit import RateLimitMiddleware
     from office_agent.api.middleware.local_guard import LocalGuardMiddleware
     from office_agent.api.middleware.request_size import RequestSizeLimitMiddleware
-    app.add_middleware(ErrorHandlingMiddleware)
     app.add_middleware(RequestLoggingMiddleware)
     app.add_middleware(AuthMiddleware)
     app.add_middleware(RateLimitMiddleware)
     app.add_middleware(LocalGuardMiddleware)
+    app.add_middleware(ErrorHandlingMiddleware)
     # 最外层：上传超限请求在认证与 multipart 解析之前按 Content-Length 拒掉，
     # 不读请求体，避免大请求体占用任何下游资源
     app.add_middleware(RequestSizeLimitMiddleware)
