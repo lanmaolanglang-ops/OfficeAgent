@@ -346,6 +346,11 @@ def create_app() -> FastAPI:
                 get_worker().shutdown(wait=False)
             except Exception:
                 logger.warning("任务 Worker 关闭失败", exc_info=True)
+        try:
+            from office_agent.database import dispose_default_engine
+            dispose_default_engine()
+        except Exception:
+            logger.warning("数据库引擎关闭失败", exc_info=True)
         pid_file = getattr(app.state, "_pid_file", None)
         if pid_file:
             try:

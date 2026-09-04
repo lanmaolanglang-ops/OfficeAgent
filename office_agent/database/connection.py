@@ -5,6 +5,7 @@
     postgresql://user:password@localhost/office_agent
 """
 import os
+import threading
 from sqlalchemy import create_engine, Engine, event, inspect, text
 from ..runtime_config import get_data_root
 
@@ -100,8 +101,46 @@ def get_engine(url: str = None) -> Engine:
     return engine_obj
 
 
-# 全局引擎
-engine = get_engine()
+# 进程级默认引擎：惰性单例。import 本模块不再创建目录或 engine，
+# 初始化收敛到显式生命周期（首次访问 / init_db / dispose_default_engine）。
+_default_engine: Engine = None
+_default_engine_lock = threading.Lock()
+
+
+def default_engine() -> Engine:
+    """返回进程级默认引擎（首次调用时才创建目录与 engine）。"""
+    global _default_engine
+    if _default_engine is None:
+        with _default_engine_lock:
+            if _default_engine is None:
+                _default_engine = get_engine()
+    return _default_engine
+
+
+def dispose_default_engine():
+    """显式关闭默认引擎（shutdown 生命周期钩子 / 测试隔离用）。
+
+    之后再次访问会重建引擎；惰性 Session 工厂同步解除旧绑定。
+    """
+    global _default_engine
+    with _default_engine_lock:
+        engine_obj, _default_engine = _default_engine, None
+    if engine_obj is not None:
+        engine_obj.dispose()
+    # 延迟 import 避免循环依赖；session 模块未加载时无需处理
+    try:
+        from . import session as _session_module
+    except ImportError:
+        return
+    _session_module.reset_session_factory()
+
+
+def __getattr__(name: str):
+    # 兼容旧调用方 ``from .connection import engine`` / ``connection.engine``：
+    # 属性在首次被访问时才创建，import 阶段不再产生副作用。
+    if name == "engine":
+        return default_engine()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def init_db(drop_all: bool = False):
@@ -110,17 +149,18 @@ def init_db(drop_all: bool = False):
     # 导入所有模型以注册到 Base.metadata
     from . import models  # noqa: F401
 
+    engine_obj = default_engine()
     if drop_all:
-        Base.metadata.drop_all(bind=engine)
-    Base.metadata.create_all(bind=engine)
+        Base.metadata.drop_all(bind=engine_obj)
+    Base.metadata.create_all(bind=engine_obj)
 
     # ``create_all`` does not alter an existing table.  The desktop build can
     # therefore open a database created by an earlier release and still fail
     # as soon as a repository selects a newly-added ORM column.  Keep the
     # lightweight SQLite migration here as a startup safety net; Alembic can
     # still be used for full production migrations.
-    if engine.dialect.name == "sqlite":
-        inspector = inspect(engine)
+    if engine_obj.dialect.name == "sqlite":
+        inspector = inspect(engine_obj)
         task_columns = {column["name"] for column in inspector.get_columns("task")}
         missing_task_columns = {
             "parent_task_id": "VARCHAR(32)",
@@ -135,7 +175,7 @@ def init_db(drop_all: bool = False):
             "locked_until": "DATETIME",
             "extra": "JSON",
         }
-        with engine.begin() as connection:
+        with engine_obj.begin() as connection:
             for column_name, column_definition in missing_task_columns.items():
                 if column_name not in task_columns:
                     connection.execute(text(
@@ -151,4 +191,4 @@ def init_db(drop_all: bool = False):
             connection.execute(text(
                 "CREATE INDEX IF NOT EXISTS ix_file_deleted_at ON file (deleted_at)"
             ))
-    return engine
+    return engine_obj
