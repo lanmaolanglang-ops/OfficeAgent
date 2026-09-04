@@ -19,6 +19,7 @@ from concurrent.futures import ThreadPoolExecutor, Future
 from typing import Any, Callable, Dict
 
 from .config import config
+from .lease_executor import LeaseThreadPool
 
 logger = logging.getLogger("office_agent.queue")
 
@@ -85,13 +86,16 @@ class LocalWorker:
     """
 
     def __init__(self, max_workers: int = None):
-        # 三个优先级的线程池，并发数取自 TASK_QUEUES 配置（默认 high=2/normal=4/low=2）
+        # 三个优先级的线程池，并发数取自 TASK_QUEUES 配置（默认 high=2/normal=4/low=2）。
+        # 使用 LeaseThreadPool：任务线程进入 failover 正常退避等可中断长等待时
+        # 通过租约 park 让出并发额度（有界替补线程接管排队任务），唤醒后额度回落；
+        # 取消/重试/冷却/备用模型语义不变。
         queues = config.TASK_QUEUES
         self.max_workers = sum(queue["concurrency"] for queue in queues.values())
         self.executors = {
-            "high": ThreadPoolExecutor(max_workers=queues["high"]["concurrency"], thread_name_prefix="task-high"),
-            "normal": ThreadPoolExecutor(max_workers=queues["normal"]["concurrency"], thread_name_prefix="task-normal"),
-            "low": ThreadPoolExecutor(max_workers=queues["low"]["concurrency"], thread_name_prefix="task-low"),
+            "high": LeaseThreadPool(max_workers=queues["high"]["concurrency"], thread_name_prefix="task-high"),
+            "normal": LeaseThreadPool(max_workers=queues["normal"]["concurrency"], thread_name_prefix="task-normal"),
+            "low": LeaseThreadPool(max_workers=queues["low"]["concurrency"], thread_name_prefix="task-low"),
         }
         # 收尾执行器：质量评分会同步重开 Office 文档、修订派发会同步调用 LLM，
         # 这些耗时工作不再占用优先级任务线程，统一在独立的有界线程上完成。

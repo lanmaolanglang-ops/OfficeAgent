@@ -140,9 +140,19 @@ class FailoverManager:
         return bool(cancel_event is not None and cancel_event.is_set())
 
     def _wait_for_retry(self, cancel_event) -> bool:
-        """Wait between retries, returning immediately when cancellation wins."""
+        """Wait between retries, returning immediately when cancellation wins.
+
+        在携带租约的 worker 线程上（LeaseThreadPool），正常退避通过
+        ``lease.park`` 让出并发额度：排队任务可立即获得线程，本线程
+        唤醒后继续原重试流程。取消事件仍会立即打断等待；重试次数、
+        冷却统计、备用模型切换顺序均不受影响。
+        """
         if self.retry_delay <= 0:
             return self._is_cancelled(cancel_event)
+        from ..thread_lease import current_lease
+        lease = current_lease()
+        if lease is not None:
+            return bool(lease.park(self.retry_delay, cancel_event))
         if cancel_event is not None:
             return bool(cancel_event.wait(self.retry_delay))
         time.sleep(self.retry_delay)
