@@ -1,5 +1,3 @@
-import ipaddress
-
 from starlette.datastructures import MutableHeaders
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -81,17 +79,6 @@ class RateLimitMiddleware:
         authenticated_user = getattr(request.state, "user_id", "")
         if authenticated_user not in ("", "anonymous"):
             return authenticated_user
-        peer = request.client.host if request.client else ""
-        try:
-            peer_ip = ipaddress.ip_address(peer)
-        except ValueError:
-            peer_ip = None
-        # 仅信任回环反向代理写入的 X-Forwarded-For，避免公网客户端伪造。
-        forwarded = request.headers.get("x-forwarded-for", "")
-        if peer_ip and peer_ip.is_loopback and forwarded:
-            candidate = forwarded.split(",", 1)[0].strip()
-            try:
-                return str(ipaddress.ip_address(candidate))
-            except ValueError:
-                pass
-        return peer or "anonymous"
+        # 统一走权威客户端身份解析：仅 trusted proxy 的转发头会被采信
+        from ...security.client_identity import resolve_request_client
+        return resolve_request_client(request)

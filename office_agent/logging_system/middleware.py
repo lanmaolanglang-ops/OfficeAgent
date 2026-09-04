@@ -74,14 +74,15 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         registry.gauge("system_active_requests").inc()
         start = time.time()
 
-        # 记录请求
+        # 记录请求（client 统一走权威身份解析，反代后仍记录真实来源）
+        from ..security.client_identity import resolve_request_client
         logger.info(
             f"→ {request.method} {path}",
             extra={
                 "method": request.method,
                 "path": path,
                 "query": str(request.url.query)[:200] if request.url.query else "",
-                "client": request.client.host if request.client else "",
+                "client": resolve_request_client(request),
                 "user_agent": request.headers.get("user-agent", "")[:200],
             },
         )

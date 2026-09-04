@@ -30,11 +30,12 @@ def _scan_user_prompt(message: str, request: Request):
     result = _prompt_scanner.scan(message, source="user")
     if result.action == PromptAction.REJECT:
         from ...security.audit import get_audit_logger
+        from ...security.client_identity import resolve_request_client
 
         get_audit_logger().log_prompt_injection(
             user_id=getattr(request.state, "user_id", "anonymous"),
             matches=result.matches,
-            ip=request.client.host if request.client else None,
+            ip=resolve_request_client(request),
         )
         raise HTTPException(
             status_code=400,

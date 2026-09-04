@@ -130,10 +130,11 @@ class AuthMiddleware(BaseHTTPMiddleware):
     @staticmethod
     def _audit(request: Request, action: AuditAction, status: str,
                user_id: str | None = None, reason: str = "") -> None:
+        from ...security.client_identity import resolve_request_client
         get_audit_logger().log(
             action, status, user_id=user_id,
             resource=request.url.path,
-            ip_address=request.client.host if request.client else None,
+            ip_address=resolve_request_client(request),
             details={"method": request.method, "reason": reason} if reason else {
                 "method": request.method
             },

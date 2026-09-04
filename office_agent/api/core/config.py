@@ -73,6 +73,17 @@ class APIConfig:
     log_dir: str = field(default_factory=lambda: str(get_log_dir()))
     log_requests: bool = True
 
+    # 可信反向代理（IP 或 CIDR）。只有 TCP peer 命中该列表时才消费
+    # X-Forwarded-For / X-Real-IP 等转发头，其余情况一律使用 peer 地址，
+    # 防止公网客户端伪造身份。
+    # 默认仅回环：桌面本地部署的服务只绑定 127.0.0.1，本机代理
+    # （如本地开发代理 / 同机网关）是唯一可能合法写入转发头的来源；
+    # 该默认值对非本机 peer 完全不生效。暴露到局域网/公网部署时，
+    # 必须通过 OFFICE_AGENT_TRUSTED_PROXIES 显式配置真实代理地址。
+    trusted_proxies: List[str] = field(
+        default_factory=lambda: ["127.0.0.1", "::1"]
+    )
+
     def ensure_dirs(self):
         """确保目录存在"""
         for d in [self.upload_dir, self.output_dir, self.log_dir]:
@@ -103,6 +114,11 @@ class APIConfig:
             auth_enabled=auth_enabled,
             api_keys=api_keys,
             jwt_secret=jwt_secret,
+            # 显式设置时整体替换默认回环值，由部署方完全掌控信任边界
+            trusted_proxies=(
+                _env_list("OFFICE_AGENT_TRUSTED_PROXIES")
+                or ["127.0.0.1", "::1"]
+            ),
         )
 
 
