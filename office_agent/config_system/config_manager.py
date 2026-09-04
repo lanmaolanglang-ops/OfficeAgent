@@ -19,6 +19,9 @@ from .schemas import (
 from .loaders import EnvLoader, YamlLoader, DatabaseLoader, deep_merge
 from .validators import validate_all
 from ..logging_system import get_logger
+from ..models.model_schemas import (
+    default_model_catalog, normalize_model_id, normalize_provider,
+)
 
 logger = get_logger("config.manager")
 
@@ -65,7 +68,7 @@ class ConfigManager:
         from office_agent.config_system import get_config
 
         config = get_config()
-        model = config.get_model("gpt-4o")
+        model = config.get_model("doubao-default")
         prompt = config.get_prompt("word_format")
         agent_cfg = config.get_agent("WordAgent")
     """
@@ -207,8 +210,13 @@ class ConfigManager:
         return passed
 
     def _rebuild_cache(self, models, agents, prompts, skills, workflows):
-        """重建缓存索引"""
-        self._models = {m["model_id"]: m for m in models if m.get("model_id")}
+        """重建缓存索引（历史模型 ID 归一化到权威 ID，后加载的来源覆盖先加载的）"""
+        self._models = {}
+        for m in models:
+            if m.get("model_id"):
+                normalized = dict(m)
+                normalized["model_id"] = normalize_model_id(m["model_id"])
+                self._models[normalized["model_id"]] = normalized
         self._agents = {a["agent_name"]: a for a in agents if a.get("agent_name")}
 
         # Prompts 按 name 分组
@@ -240,8 +248,8 @@ class ConfigManager:
         }
 
     def get_model(self, model_id: str) -> Optional[Dict]:
-        """获取模型配置"""
-        return self._models.get(model_id)
+        """获取模型配置（历史 ID 经兼容层归一化为权威 ID）"""
+        return self._models.get(normalize_model_id(model_id))
 
     def get_enabled_models(self) -> List[Dict]:
         """获取所有启用的模型，按优先级排序"""
@@ -249,8 +257,10 @@ class ConfigManager:
         return sorted(models, key=lambda m: m.get("priority", 0), reverse=True)
 
     def get_models_by_provider(self, provider: str) -> List[Dict]:
+        provider = normalize_provider(provider)
         return [m for m in self._models.values()
-                if m.get("provider") == provider and m.get("enabled", True)]
+                if normalize_provider(m.get("provider")) == provider
+                and m.get("enabled", True)]
 
     def get_agent(self, agent_name: str) -> Optional[Dict]:
         """获取 Agent 配置"""
@@ -313,13 +323,13 @@ class ConfigManager:
         return [w for w in self._workflows.values() if w.get("enabled", True)]
 
     def get_model_for_agent(self, agent_name: str) -> Optional[Dict]:
-        """获取 Agent 应该使用的模型"""
+        """获取 Agent 应该使用的模型（model_priority 中的历史 ID 兼容解析）"""
         agent = self._agents.get(agent_name)
         if not agent:
             return self.get_model(self.global_config.default_model)
 
         for model_id in agent.get("model_priority", []):
-            model = self._models.get(model_id)
+            model = self._models.get(normalize_model_id(model_id))
             if model and model.get("enabled", True):
                 return model
 
@@ -330,7 +340,8 @@ class ConfigManager:
     # ============================================================
 
     def update_model(self, model_id: str, data: Dict) -> Dict:
-        """更新模型配置并持久化"""
+        """更新模型配置并持久化（历史 ID 归一化，避免写入影子记录）"""
+        model_id = normalize_model_id(model_id)
         candidate = {**self._models.get(model_id, {}), **data, "model_id": model_id}
         self._persist_model(model_id, candidate)
         self._models[model_id] = candidate
@@ -675,101 +686,8 @@ def _agent_to_db(data: Dict) -> Dict:
 # ============================================================
 
 def _get_default_models() -> List[Dict]:
-    return [
-        {
-            "model_id": "doubao-pro",
-            "model_name": "豆包 Pro",
-            "provider": "doubao",
-            "api_key_env": "DOUBAO_API_KEY",
-            "temperature": 0.7,
-            "max_tokens": 4096,
-            "context_length": 128000,
-            "supports_streaming": True,
-            "cost_input_per_1k": 0.0008,
-            "cost_output_per_1k": 0.002,
-            "enabled": True,
-            "priority": 100,
-            "tags": ["default", "chinese"],
-            "description": "豆包大模型 Pro 版本，中文优化",
-        },
-        {
-            "model_id": "gpt-4o",
-            "model_name": "GPT-4o",
-            "provider": "openai",
-            "api_key_env": "OPENAI_API_KEY",
-            "temperature": 0.7,
-            "max_tokens": 4096,
-            "context_length": 128000,
-            "supports_vision": True,
-            "supports_streaming": True,
-            "supports_function_calling": True,
-            "cost_input_per_1k": 0.0025,
-            "cost_output_per_1k": 0.01,
-            "enabled": True,
-            "priority": 90,
-            "tags": ["vision", "multimodal"],
-        },
-        {
-            "model_id": "gpt-4o-mini",
-            "model_name": "GPT-4o Mini",
-            "provider": "openai",
-            "api_key_env": "OPENAI_API_KEY",
-            "temperature": 0.7,
-            "max_tokens": 16384,
-            "context_length": 128000,
-            "supports_vision": True,
-            "supports_streaming": True,
-            "cost_input_per_1k": 0.00015,
-            "cost_output_per_1k": 0.0006,
-            "enabled": True,
-            "priority": 80,
-            "tags": ["fast", "cheap"],
-        },
-        {
-            "model_id": "deepseek-chat",
-            "model_name": "DeepSeek Chat",
-            "provider": "deepseek",
-            "api_key_env": "DEEPSEEK_API_KEY",
-            "temperature": 0.7,
-            "max_tokens": 4096,
-            "context_length": 64000,
-            "supports_streaming": True,
-            "cost_input_per_1k": 0.00014,
-            "cost_output_per_1k": 0.00028,
-            "enabled": True,
-            "priority": 70,
-            "tags": ["cheap", "chinese"],
-        },
-        {
-            "model_id": "claude-3-5-sonnet",
-            "model_name": "Claude 3.5 Sonnet",
-            "provider": "anthropic",
-            "api_key_env": "ANTHROPIC_API_KEY",
-            "temperature": 0.7,
-            "max_tokens": 4096,
-            "context_length": 200000,
-            "supports_vision": True,
-            "supports_streaming": True,
-            "cost_input_per_1k": 0.003,
-            "cost_output_per_1k": 0.015,
-            "enabled": True,
-            "priority": 85,
-            "tags": ["long-context", "vision"],
-        },
-        {
-            "model_id": "qwen-max",
-            "model_name": "通义千问 Max",
-            "provider": "qwen",
-            "api_key_env": "DASHSCOPE_API_KEY",
-            "temperature": 0.7,
-            "max_tokens": 8192,
-            "context_length": 32000,
-            "supports_streaming": True,
-            "enabled": True,
-            "priority": 75,
-            "tags": ["chinese"],
-        },
-    ]
+    """默认模型清单：由权威源（models.model_schemas）渲染，不再维护第二份。"""
+    return default_model_catalog()
 
 
 def _get_default_agents() -> List[Dict]:
@@ -787,7 +705,7 @@ def _get_default_agents() -> List[Dict]:
                 "5. 检查和修正格式问题\n\n"
                 "请根据用户需求，精确执行文档处理任务。"
             ),
-            "model_priority": ["doubao-pro", "gpt-4o", "deepseek-chat"],
+            "model_priority": ["doubao-default", "openai-default", "deepseek-default"],
             "available_tools": [
                 {"name": "docx_parser", "enabled": True},
                 {"name": "format_engine", "enabled": True},
@@ -814,7 +732,7 @@ def _get_default_agents() -> List[Dict]:
                 "5. 优化内容结构和视觉效果\n\n"
                 "请确保设计专业、内容清晰、视觉美观。"
             ),
-            "model_priority": ["gpt-4o", "doubao-pro", "claude-3-5-sonnet"],
+            "model_priority": ["openai-default", "doubao-default", "claude-default"],
             "available_tools": [
                 {"name": "ppt_generator", "enabled": True},
                 {"name": "design_engine", "enabled": True},
@@ -841,7 +759,7 @@ def _get_default_agents() -> List[Dict]:
                 "5. 统计分析和预测\n\n"
                 "请确保公式正确、数据准确、分析专业。"
             ),
-            "model_priority": ["doubao-pro", "gpt-4o", "deepseek-chat"],
+            "model_priority": ["doubao-default", "openai-default", "deepseek-default"],
             "available_tools": [
                 {"name": "excel_parser", "enabled": True},
                 {"name": "formula_engine", "enabled": True},

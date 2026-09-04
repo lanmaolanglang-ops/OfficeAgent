@@ -8,9 +8,9 @@ from enum import Enum
 
 from .schemas import (
     GlobalConfig, ModelConfigSchema, AgentConfigSchema,
-    PromptConfigSchema, WorkflowConfigSchema,
 )
 from ..logging_system import get_logger
+from ..models.model_schemas import normalize_model_id
 
 logger = get_logger("config.validator")
 
@@ -99,8 +99,7 @@ class ConfigValidator:
                         models: List[Dict[str, Any]] = None,
                         prompts: List[Dict[str, Any]] = None) -> List[ValidationIssue]:
         """校验 Agent 配置"""
-        model_ids = {m.get("model_id") for m in (models or [])}
-        prompt_names = {p.get("name") for p in (prompts or [])}
+        model_ids = {normalize_model_id(m.get("model_id")) for m in (models or [])}
 
         for a in agents:
             name = a.get("agent_name", "")
@@ -108,9 +107,9 @@ class ConfigValidator:
                 self.add(Severity.ERROR, "agent", "Agent 缺少 agent_name")
                 continue
 
-            # 校验模型引用
+            # 校验模型引用（历史 ID 经兼容层归一化后判定）
             for mid in a.get("model_priority", []):
-                if model_ids and mid not in model_ids:
+                if model_ids and normalize_model_id(mid) not in model_ids:
                     self.add(Severity.WARNING, "agent",
                              f"Agent {name} 引用了不存在的模型: {mid}")
 

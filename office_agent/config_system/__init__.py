@@ -8,7 +8,7 @@
     from office_agent.config_system import get_config
 
     config = get_config()
-    model = config.get_model("doubao-pro")
+    model = config.get_model("doubao-default")  # 历史 ID（如 doubao-pro）自动归一化
     prompt = config.get_prompt("word_format")
     agent_cfg = config.get_agent("WordAgent")
 """

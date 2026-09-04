@@ -8,21 +8,22 @@ from pydantic import BaseModel, Field, field_validator
 from enum import Enum
 from ..runtime_config import get_data_root, get_log_dir
 from .._version import __version__
+# ModelProvider 全项目唯一权威枚举在 models.model_schemas，
+# 历史别名（anthropic/ollama 等）由 normalize_provider 归一化。
+from ..models.model_schemas import ModelProvider, normalize_provider
+
+__all__ = [
+    "ModelProvider", "ModelConfigSchema", "ToolConfig", "RetryConfig",
+    "AgentConfigSchema", "PromptStatus", "PromptConfigSchema",
+    "SkillConfigSchema", "WorkflowStep", "WorkflowConfigSchema",
+    "FileRuleSchema", "StorageConfig", "QueueConfig", "LoggingConfig",
+    "GlobalConfig",
+]
 
 
 # ============================================================
 # 模型配置
 # ============================================================
-
-class ModelProvider(str, Enum):
-    OPENAI = "openai"
-    ANTHROPIC = "anthropic"
-    DOUBAO = "doubao"
-    DEEPSEEK = "deepseek"
-    QWEN = "qwen"
-    OLLAMA = "ollama"
-    CUSTOM = "custom"
-
 
 class ModelConfigSchema(BaseModel):
     """LLM 模型配置"""
@@ -32,6 +33,12 @@ class ModelConfigSchema(BaseModel):
     api_endpoint: Optional[str] = Field(None, description="API 端点")
     api_key_env: Optional[str] = Field(None, description="API Key 环境变量名")
     api_key_reference: Optional[str] = Field(None, description="API Key 引用（不存明文）")
+
+    @field_validator("provider", mode="before")
+    @classmethod
+    def _normalize_provider_alias(cls, v):
+        """历史配置中的 provider 别名（anthropic/ollama）归一化为权威枚举值。"""
+        return normalize_provider(v)
 
     # 生成参数
     temperature: float = Field(0.7, ge=0, le=2)
@@ -278,8 +285,8 @@ class GlobalConfig(BaseModel):
     # 日志
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
 
-    # 默认模型
-    default_model: str = "doubao-pro"
+    # 默认模型（权威 ID，见 models.model_schemas.DEFAULT_MODEL_CONFIGS）
+    default_model: str = "doubao-default"
     default_vision_model: Optional[str] = None
 
     # Agent 默认配置

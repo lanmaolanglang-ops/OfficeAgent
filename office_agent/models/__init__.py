@@ -20,6 +20,12 @@ from .model_schemas import (
     ChatMessage,
     DEFAULT_MODEL_CONFIGS,
     DEFAULT_ROUTING,
+    PROVIDER_API_KEY_ENV,
+    PROVIDER_ALIASES,
+    LEGACY_MODEL_ID_ALIASES,
+    normalize_provider,
+    normalize_model_id,
+    default_model_catalog,
 )
 
 __all__ = [
@@ -42,4 +48,10 @@ __all__ = [
     "ChatMessage",
     "DEFAULT_MODEL_CONFIGS",
     "DEFAULT_ROUTING",
+    "PROVIDER_API_KEY_ENV",
+    "PROVIDER_ALIASES",
+    "LEGACY_MODEL_ID_ALIASES",
+    "normalize_provider",
+    "normalize_model_id",
+    "default_model_catalog",
 ]

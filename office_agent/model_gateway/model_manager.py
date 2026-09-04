@@ -21,7 +21,8 @@ except ImportError:
     HAS_CRYPTO = False
 
 from ..models.model_schemas import (
-    ModelConfig, ModelProvider, DEFAULT_MODEL_CONFIGS, DEFAULT_ROUTING, AITaskType
+    ModelConfig, ModelProvider, DEFAULT_MODEL_CONFIGS, DEFAULT_ROUTING,
+    PROVIDER_API_KEY_ENV, AITaskType, normalize_provider,
 )
 from .clients import (
     BaseModelClient, OpenAIClient, DoubaoClient, ClaudeClient, GeminiClient
@@ -249,18 +250,24 @@ class ModelManager:
         self._load_config()
     
     def _load_env_keys(self):
-        """从环境变量加载 API Key"""
-        env_map = {
-            "OPENAI_API_KEY": (ModelProvider.OPENAI, "openai-default", "OPENAI_BASE_URL", "OPENAI_MODEL"),
-            "DEEPSEEK_API_KEY": (ModelProvider.DEEPSEEK, "deepseek-default", "DEEPSEEK_BASE_URL", "DEEPSEEK_MODEL"),
-            "DOUBAO_API_KEY": (ModelProvider.DOUBAO, "doubao-default", "DOUBAO_BASE_URL", "DOUBAO_MODEL"),
-            "DASHSCOPE_API_KEY": (ModelProvider.QWEN, "qwen-default", None, None),
-            "ANTHROPIC_API_KEY": (ModelProvider.CLAUDE, "claude-default", "ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL"),
-            "GEMINI_API_KEY": (ModelProvider.GEMINI, "gemini-default", None, None),
-            "AGNES_API_KEY": (ModelProvider.AGNES, "agnes-default", "AGNES_BASE_URL", "AGNES_MODEL"),
+        """从环境变量加载 API Key
+
+        环境变量名以权威源 PROVIDER_API_KEY_ENV 为准，这里只补充
+        gateway 特有的 Base URL / 模型名覆盖变量。
+        """
+        env_overrides = {
+            ModelProvider.OPENAI: ("OPENAI_BASE_URL", "OPENAI_MODEL"),
+            ModelProvider.DEEPSEEK: ("DEEPSEEK_BASE_URL", "DEEPSEEK_MODEL"),
+            ModelProvider.DOUBAO: ("DOUBAO_BASE_URL", "DOUBAO_MODEL"),
+            ModelProvider.QWEN: (None, None),
+            ModelProvider.CLAUDE: ("ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL"),
+            ModelProvider.GEMINI: (None, None),
+            ModelProvider.AGNES: ("AGNES_BASE_URL", "AGNES_MODEL"),
         }
-        
-        for env_key, (provider, model_id, base_url_env, model_env) in env_map.items():
+
+        for provider, env_key in PROVIDER_API_KEY_ENV.items():
+            base_url_env, model_env = env_overrides.get(provider, (None, None))
+            model_id = f"{provider.value}-default"
             api_key = os.environ.get(env_key, "")
             if api_key:
                 template = DEFAULT_MODEL_CONFIGS.get(provider)
@@ -290,7 +297,7 @@ class ModelManager:
                     model_id = model_data.get("id")
                     if not model_id:
                         raise ValueError("缺少 id")
-                    provider = ModelProvider(model_data["provider"])
+                    provider = ModelProvider(normalize_provider(model_data["provider"]))
                 
                     # 合并默认配置
                     default = DEFAULT_MODEL_CONFIGS.get(provider)
