@@ -10,11 +10,14 @@ from urllib.error import URLError, HTTPError
 
 from .base import BaseModelClient
 from ...models.model_schemas import ModelConfig, ModelResponse
+from ...vision_gateway.clients.gemini_client import GeminiVisionClient
 
 
 class GeminiClient(BaseModelClient):
     """Google Gemini 客户端"""
-    
+
+    _vision_client_cls = GeminiVisionClient
+
     def __init__(self, config: ModelConfig):
         super().__init__(config)
         # Gemini API URL 格式
@@ -98,66 +101,4 @@ class GeminiClient(BaseModelClient):
         except Exception as e:
             return self._make_error(f"请求失败: {str(e)}", start)
     
-    def analyze_image(self, image_path: str, prompt: str,
-                     system_prompt: Optional[str] = None) -> ModelResponse:
-        """Gemini 图片分析（原生支持多模态）"""
-        import base64
-        from pathlib import Path
-        
-        start = time.time()
-        
-        try:
-            img_data = Path(image_path).read_bytes()
-            img_b64 = base64.b64encode(img_data).decode("utf-8")
-            
-            ext = Path(image_path).suffix.lower()
-            mime_map = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp"}
-            mime = mime_map.get(ext, "image/png")
-            
-            contents = [{
-                "role": "user",
-                "parts": [
-                    {"inline_data": {"mime_type": mime, "data": img_b64}},
-                    {"text": prompt}
-                ]
-            }]
-            
-            payload = {
-                "contents": contents,
-                "generationConfig": {
-                    "temperature": self._get_temperature(None),
-                    "maxOutputTokens": self._get_max_tokens(None),
-                }
-            }
-            
-            if system_prompt:
-                payload["systemInstruction"] = {
-                    "parts": [{"text": system_prompt}]
-                }
-            
-            url = self.api_url
-            headers = {
-                "Content-Type": "application/json",
-                "x-goog-api-key": self.api_key,
-            }
-            data = json.dumps(payload).encode("utf-8")
-            req = Request(url, data=data, headers=headers, method="POST")
-            
-            with urlopen(req, timeout=self.config.timeout) as resp:
-                result = json.loads(resp.read().decode("utf-8"))
-            
-            content = ""
-            candidates = result.get("candidates", [])
-            if candidates:
-                parts = candidates[0].get("content", {}).get("parts", [])
-                for part in parts:
-                    if "text" in part:
-                        content += part["text"]
-            
-            usage = result.get("usageMetadata", {})
-            tokens = usage.get("totalTokenCount", 0)
-            
-            return self._make_response(content, start, tokens, result)
-            
-        except Exception as e:
-            return self._make_error(f"图片分析失败: {str(e)}", start)
+    # analyze_image 由 BaseModelClient 提供，委托 GeminiVisionClient 实现。

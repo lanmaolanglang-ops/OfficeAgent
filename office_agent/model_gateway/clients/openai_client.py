@@ -11,11 +11,14 @@ from urllib.error import URLError, HTTPError
 
 from .base import BaseModelClient
 from ...models.model_schemas import ModelConfig, ModelResponse
+from ...vision_gateway.clients.openai_client import OpenAIVisionClient
 
 
 class OpenAIClient(BaseModelClient):
     """OpenAI 兼容 API 客户端"""
-    
+
+    _vision_client_cls = OpenAIVisionClient
+
     def __init__(self, config: ModelConfig):
         super().__init__(config)
         # 确保 base_url 正确
@@ -117,72 +120,4 @@ class OpenAIClient(BaseModelClient):
         except Exception as e:
             return self._make_error(f"请求失败: {str(e)}", start)
     
-    def analyze_image(self, image_path: str, prompt: str,
-                     system_prompt: Optional[str] = None) -> ModelResponse:
-        """图片分析（使用 base64 编码，支持 GPT-4V 等）"""
-        import base64
-        from pathlib import Path
-        
-        start = time.time()
-        
-        if not self.config.supports_vision:
-            return self._make_error("当前模型不支持视觉分析", start)
-        
-        try:
-            # 读取图片并 base64 编码
-            image = Path(image_path)
-            max_image_bytes = int(self.config.extra_params.get(
-                "max_image_bytes", 20 * 1024 * 1024
-            ))
-            if image.stat().st_size > max_image_bytes:
-                return self._make_error(
-                    f"图片超过请求大小限制（{max_image_bytes} bytes）", start
-                )
-            img_data = image.read_bytes()
-            img_b64 = base64.b64encode(img_data).decode("utf-8")
-            
-            # 判断 MIME 类型
-            ext = Path(image_path).suffix.lower()
-            mime_map = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif"}
-            mime = mime_map.get(ext, "image/png")
-            
-            messages = [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": f"data:{mime};base64,{img_b64}"}
-                        }
-                    ]
-                }
-            ]
-            
-            if system_prompt:
-                messages.insert(0, {"role": "system", "content": system_prompt})
-            
-            payload = {
-                "model": self.model,
-                "messages": messages,
-            }
-            self._apply_generation_params(payload, None, None)
-            
-            headers = {
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.api_key}",
-            }
-            
-            data = json.dumps(payload).encode("utf-8")
-            req = Request(self.chat_url, data=data, headers=headers, method="POST")
-            
-            with urlopen(req, timeout=self.config.timeout) as resp:
-                result = json.loads(resp.read().decode("utf-8"))
-            
-            content = result["choices"][0]["message"]["content"]
-            tokens = result.get("usage", {}).get("total_tokens", 0)
-            
-            return self._make_response(content, start, tokens, result)
-            
-        except Exception as e:
-            return self._make_error(f"图片分析失败: {str(e)}", start)
+    # analyze_image 由 BaseModelClient 提供，委托 OpenAIVisionClient 实现。

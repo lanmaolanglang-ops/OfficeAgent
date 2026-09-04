@@ -12,7 +12,11 @@ from ...models.model_schemas import ModelConfig, ModelResponse, ChatMessage
 
 class BaseModelClient(ABC):
     """模型客户端基类"""
-    
+
+    # 各提供商视觉调用的唯一实现位于 vision_gateway.clients；
+    # 子类在此声明对应的 BaseVisionClient 实现，analyze_image 仅作兼容外观。
+    _vision_client_cls = None
+
     def __init__(self, config: ModelConfig):
         self.config = config
         self.api_key = config.api_key
@@ -90,14 +94,60 @@ class BaseModelClient(ABC):
     
     def analyze_image(self, image_path: str, prompt: str,
                      system_prompt: Optional[str] = None) -> ModelResponse:
+        """图片分析（兼容外观）
+
+        真实实现唯一来源是 vision_gateway.clients 中对应提供商的视觉
+        客户端；本方法只负责参数转换、大小防御和 ModelResponse 适配，
+        保留原有 import path、超时与配置语义。
         """
-        图片分析（多模态）
-        子类需要重写以支持真正的视觉能力
-        """
+        start = time.time()
+
+        if self._vision_client_cls is None or not self.config.supports_vision:
+            return ModelResponse(
+                success=False,
+                error=f"{self.config.display_name} 不支持图片分析",
+                model_used=self.config.id,
+            )
+
+        # 大小防御在读取文件前完成
+        try:
+            max_image_bytes = int(self.config.extra_params.get(
+                "max_image_bytes", 20 * 1024 * 1024
+            ))
+        except (TypeError, ValueError):
+            max_image_bytes = 20 * 1024 * 1024
+        try:
+            image_size = Path(image_path).stat().st_size
+        except OSError as e:
+            return self._make_error(f"图片读取失败: {e}", start)
+        if image_size > max_image_bytes:
+            return self._make_error(
+                f"图片超过请求大小限制（{max_image_bytes} bytes）", start
+            )
+
+        from ...vision_gateway.vision_models import ImageInput, VisionRequest
+        client = self._vision_client_cls(
+            self.api_key, self.model, self.base_url, self.config.display_name
+        )
+        client.timeout = self.config.timeout
+        vision_request = VisionRequest(
+            images=[ImageInput.from_file(image_path)],
+            prompt=prompt,
+            system_prompt=system_prompt or "",
+            max_tokens=self.config.max_tokens,
+            temperature=self.config.temperature,
+            require_structured=False,
+        )
+        resp = client.analyze(vision_request)
         return ModelResponse(
-            success=False,
-            error=f"{self.config.display_name} 不支持图片分析",
+            success=resp.success,
+            content=resp.content,
             model_used=self.config.id,
+            provider=resp.provider,
+            tokens_used=resp.tokens_used,
+            latency_ms=resp.latency_ms,
+            error=resp.error,
+            raw_response=resp.raw_response,
         )
     
     def test_connection(self) -> ModelResponse:

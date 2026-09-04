@@ -10,11 +10,14 @@ from urllib.error import URLError, HTTPError
 
 from .base import BaseModelClient
 from ...models.model_schemas import ModelConfig, ModelResponse
+from ...vision_gateway.clients.claude_client import ClaudeVisionClient
 
 
 class ClaudeClient(BaseModelClient):
     """Anthropic Claude 客户端"""
-    
+
+    _vision_client_cls = ClaudeVisionClient
+
     def __init__(self, config: ModelConfig):
         super().__init__(config)
         self.api_url = f"{self.base_url}/messages"
@@ -78,7 +81,7 @@ class ClaudeClient(BaseModelClient):
             error_body = ""
             try:
                 error_body = e.read().decode("utf-8")
-            except:
+            except Exception:
                 pass
             return self._make_error(
                 f"HTTP {e.code}: {e.reason} {error_body[:200]}", start
@@ -88,70 +91,4 @@ class ClaudeClient(BaseModelClient):
         except Exception as e:
             return self._make_error(f"请求失败: {str(e)}", start)
     
-    def analyze_image(self, image_path: str, prompt: str,
-                     system_prompt: Optional[str] = None) -> ModelResponse:
-        """Claude 图片分析"""
-        import base64
-        from pathlib import Path
-        
-        start = time.time()
-        
-        try:
-            img_data = Path(image_path).read_bytes()
-            img_b64 = base64.b64encode(img_data).decode("utf-8")
-            
-            ext = Path(image_path).suffix.lower()
-            mime_map = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp"}
-            mime = mime_map.get(ext, "image/png")
-            
-            messages = [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": mime,
-                                "data": img_b64,
-                            }
-                        },
-                        {"type": "text", "text": prompt}
-                    ]
-                }
-            ]
-            
-            payload = {
-                "model": self.model,
-                "messages": messages,
-                "max_tokens": self._get_max_tokens(None),
-                "temperature": self._get_temperature(None),
-            }
-            
-            if system_prompt:
-                payload["system"] = system_prompt
-            
-            headers = {
-                "Content-Type": "application/json",
-                "x-api-key": self.api_key,
-                "anthropic-version": self.api_version,
-            }
-            
-            data = json.dumps(payload).encode("utf-8")
-            req = Request(self.api_url, data=data, headers=headers, method="POST")
-            
-            with urlopen(req, timeout=self.config.timeout) as resp:
-                result = json.loads(resp.read().decode("utf-8"))
-            
-            content = ""
-            for block in result.get("content", []):
-                if block.get("type") == "text":
-                    content += block.get("text", "")
-            
-            usage = result.get("usage", {})
-            tokens = usage.get("input_tokens", 0) + usage.get("output_tokens", 0)
-            
-            return self._make_response(content, start, tokens, result)
-            
-        except Exception as e:
-            return self._make_error(f"图片分析失败: {str(e)}", start)
+    # analyze_image 由 BaseModelClient 提供，委托 ClaudeVisionClient 实现。
