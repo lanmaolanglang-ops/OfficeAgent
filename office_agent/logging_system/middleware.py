@@ -8,7 +8,6 @@ FastAPI 中间件
 """
 import time
 import re
-from datetime import datetime, timezone
 from typing import Callable
 
 from fastapi import Request, Response
@@ -179,13 +178,12 @@ class ErrorHandlingMiddleware(BaseHTTPMiddleware):
 
             from ..security.error_sanitizer import sanitize_error
             from ..api.core.config import settings
+            from ..api.core.error_contract import build_error_envelope
             return JSONResponse(
                 status_code=500,
-                content={
-                    "success": False,
-                    "error_code": "INTERNAL_ERROR",
-                    "message": "服务器内部错误",
-                    "details": sanitize_error(e) if settings.debug else None,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                },
+                content=build_error_envelope(
+                    "INTERNAL_ERROR",
+                    "服务器内部错误",
+                    sanitize_error(e) if settings.debug else None,
+                ),
             )
