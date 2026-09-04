@@ -299,14 +299,33 @@ class TestTaskTransitionAudit:
         session.close()
 
     def test_audit_failure_has_structured_fallback_log(self, tmp_path,
-                                                       monkeypatch, caplog):
+                                                       monkeypatch):
+        """审计写库失败必须留下结构化 fallback 日志（不依赖日志系统配置）。"""
+        from office_agent.security import audit as audit_module
+
         _capture_logger(monkeypatch)
+        calls = []
+
+        class _RecordingLogger:
+            def exception(self, message, *args, **kwargs):
+                calls.append(message)
+
+            def warning(self, *args, **kwargs):
+                pass
+
+            def info(self, *args, **kwargs):
+                pass
+
+            def debug(self, *args, **kwargs):
+                pass
+
+            def error(self, *args, **kwargs):
+                pass
+
+        monkeypatch.setattr(audit_module, "logger", _RecordingLogger())
         worker, task_id, _ = self._worker_and_task(tmp_path)
-        import logging as _logging
-        with caplog.at_level(_logging.ERROR):
-            worker._update_status(task_id, "success")
-        assert any("Audit persistence failed" in record.getMessage()
-                   for record in caplog.records)
+        worker._update_status(task_id, "success")
+        assert "Audit persistence failed" in calls
 
 
 # ---------------------------------------------------------------
