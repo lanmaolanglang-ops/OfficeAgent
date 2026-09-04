@@ -356,18 +356,40 @@ class LocalWorker:
                 data.pop("status", None)
             if data:
                 repo.update(task_id, data)
+            transitioned = False
             if status == "success":
-                repo.complete_task(task_id, duration_ms=duration_ms)
+                transitioned = repo.complete_task(task_id, duration_ms=duration_ms)
             elif status == "failed":
-                repo.fail_task(task_id, error or "未知错误", duration_ms=duration_ms)
+                transitioned = repo.fail_task(task_id, error or "未知错误", duration_ms=duration_ms)
             elif status == "cancelled":
-                repo.cancel_task(task_id)
+                transitioned = repo.cancel_task(task_id)
             session.commit()
+            if transitioned:
+                # 仅当终态真正落库（行级守卫放行）才审计，软超时/取消
+                # 竞争下的重复回调不会产生重复审计事件
+                self._audit_task_transition(
+                    task_id, status, current, error, duration_ms)
         except Exception as e:
             logger.warning("任务 %s 状态更新为 %s 失败: %s", task_id, status, e)
         finally:
             if session is not None:
                 session.close()
+
+    @staticmethod
+    def _audit_task_transition(task_id: str, status: str, task,
+                               error: str = None, duration_ms: int = None):
+        """任务终态安全审计；审计自身失败不得改变业务结果（fail-open）。"""
+        try:
+            from ..security.audit import get_audit_logger
+            get_audit_logger().log_task_transition(
+                task_id, status,
+                user_id=getattr(task, "user_id", None),
+                task_type=getattr(task, "task_type", None),
+                agent=getattr(task, "agent_name", None),
+                duration_ms=duration_ms, error=error,
+            )
+        except Exception:
+            logger.warning("任务 %s 终态审计写入失败", task_id, exc_info=True)
 
     @staticmethod
     def _looks_like_path(value: Any) -> bool:

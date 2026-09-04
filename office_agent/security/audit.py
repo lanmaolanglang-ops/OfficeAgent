@@ -45,6 +45,10 @@ class AuditAction(str, Enum):
     SANDBOX_EXECUTE = "sandbox_execute"
     SANDBOX_BLOCKED = "sandbox_blocked"
     SANDBOX_TIMEOUT = "sandbox_timeout"
+    # 任务生命周期（终态安全审计；进度/步骤细节由 ExecutionLog 承担）
+    TASK_SUCCESS = "task_success"
+    TASK_FAILED = "task_failed"
+    TASK_CANCELLED = "task_cancelled"
     # 工作流
     WORKFLOW_CREATE = "workflow_create"
     WORKFLOW_CANCEL = "workflow_cancel"
@@ -284,6 +288,62 @@ class AuditLogger:
                 "approval_granted": approval_granted,
             },
             risk_level=risk_level,
+        )
+
+    def log_task_transition(self, task_id: str, status: str,
+                            user_id: str | None = None,
+                            task_type: str | None = None,
+                            agent: str | None = None,
+                            duration_ms: int | None = None,
+                            error: str | None = None):
+        """记录任务终态（success/failed/cancelled）安全审计事件。
+
+        只记录安全与可追踪元数据；任务进度、步骤与输入输出摘要仍由
+        ExecutionLog / log_task_event 承担，不在此重复。
+        """
+        actions = {
+            "success": AuditAction.TASK_SUCCESS,
+            "failed": AuditAction.TASK_FAILED,
+            "cancelled": AuditAction.TASK_CANCELLED,
+        }
+        action = actions.get(status)
+        if action is None:
+            raise ValueError(f"未知任务终态: {status}")
+        details = {
+            "task_type": task_type,
+            "agent": agent,
+            "duration_ms": duration_ms,
+        }
+        if error:
+            details["error"] = str(error)[:500]
+        return self.log(
+            action, status,
+            user_id=user_id, resource="task", resource_id=task_id,
+            details={key: value for key, value in details.items()
+                     if value is not None},
+            risk_level="warning" if status == "failed" else "info",
+        )
+
+    def log_model_call(self, status: str, model_id: str | None = None,
+                       provider: str | None = None,
+                       user_id: str | None = None,
+                       details: dict | None = None):
+        """记录一次模型调用的安全审计事件。
+
+        只允许安全元数据（provider、canonical model ID、关联 ID、
+        归一化失败类别、耗时等）；严禁传入 prompt、响应正文、API Key
+        或解密后的模型密钥。
+        """
+        safe_details = dict(details or {})
+        for forbidden in ("prompt", "messages", "response", "content",
+                          "api_key", "secret", "authorization"):
+            safe_details.pop(forbidden, None)
+        return self.log(
+            AuditAction.MODEL_CALL, status,
+            user_id=user_id,
+            resource=f"model:{model_id or 'unknown'}",
+            details=({"provider": provider} if provider else {}) | safe_details,
+            risk_level="info" if status == "success" else "warning",
         )
 
     def get_entries(self, user_id: str | None = None,

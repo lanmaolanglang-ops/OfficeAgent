@@ -325,7 +325,7 @@ async def list_tasks(status: str = None, agent: str = None,
 
 @router.post("/{task_id}/cancel", response_model=BaseResponse,
              summary="取消任务")
-async def cancel_task(task_id: str):
+async def cancel_task(task_id: str, request: Request = None):
     """取消任务"""
     # 尝试从队列取消
     try:
@@ -341,8 +341,18 @@ async def cancel_task(task_id: str):
             from ...database.repository import TaskRepository
             repo = TaskRepository(session)
             if repo.get_by_id(task_id):
-                repo.cancel_task(task_id)
-                session.commit()
+                if repo.cancel_task(task_id):
+                    session.commit()
+                    user_id = getattr(request.state, "user_id", None) if request else None
+                    if user_id == "anonymous":
+                        user_id = None
+                    try:
+                        from ...security.audit import get_audit_logger
+                        get_audit_logger().log_task_transition(
+                            task_id, "cancelled", user_id=user_id)
+                    except Exception:
+                        # 审计失败不改变取消结果（fail-open）
+                        pass
                 return BaseResponse(message="任务已取消")
         finally:
             session.close()

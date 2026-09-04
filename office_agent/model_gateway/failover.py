@@ -2,16 +2,19 @@
 Failover Manager - 故障转移管理器
 当模型调用失败时，自动切换到备用模型
 """
+import logging
 import time
 from typing import Optional, Callable, Any
 
 from ..models.model_schemas import ModelResponse, AITaskType
 from .model_manager import ModelManager
 
+logger = logging.getLogger(__name__)
+
 
 class FailoverManager:
     """故障转移管理器"""
-    
+
     def __init__(self, model_manager: ModelManager,
                  max_retries: int = 3,
                  retry_delay: float = 1.0):
@@ -20,8 +23,92 @@ class FailoverManager:
         self.retry_delay = retry_delay
         self._failure_history: dict[str, list[float]] = {}  # model_id -> 失败时间列表
         self._cooldown_seconds = 300  # 失败后冷却5分钟
-    
+
     def execute_with_failover(self,
+                              task_type: AITaskType,
+                              action: Callable[[Any], ModelResponse],
+                              model_ids: Optional[list[str]] = None,
+                              cancel_event=None,
+                              **kwargs) -> ModelResponse:
+        """执行调用（含安全审计）；重试/切换语义见 _execute_with_failover。"""
+        started = time.time()
+        response = self._execute_with_failover(
+            task_type, action, model_ids=model_ids,
+            cancel_event=cancel_event, **kwargs)
+        self._audit_model_call(task_type, response, started)
+        return response
+
+    def _audit_model_call(self, task_type: AITaskType,
+                          response: ModelResponse, started: float) -> None:
+        """每次逻辑模型调用（含全部重试）记录一条安全审计。
+
+        只记录安全元数据：provider、canonical model ID、task/request
+        关联、归一化失败类别与耗时。审计自身失败不得改变调用结果
+        （fail-open）；prompt、响应正文与密钥绝不进入审计。
+        """
+        try:
+            raw = response.raw_response if isinstance(
+                getattr(response, "raw_response", None), dict) else {}
+            meta = raw.get("_office_agent", {}) if isinstance(raw, dict) else {}
+            cancelled = bool(meta.get("cancelled"))
+            if cancelled:
+                status = "cancelled"
+            elif getattr(response, "success", False):
+                status = "success"
+            else:
+                status = "error"
+            attempted = list(meta.get("attempted_models") or [])
+            model_id = getattr(response, "model_used", "") or (
+                attempted[-1] if attempted else "")
+            from ..logging_system.context import (
+                get_request_id, get_task_id, get_user_id,
+            )
+            from ..security.audit import get_audit_logger
+            details = {
+                "task_type": getattr(task_type, "value", str(task_type)),
+                "attempted_models": attempted or None,
+                "attempts": meta.get("attempts"),
+                "fallback_used": meta.get("fallback_used"),
+                "duration_ms": int((time.time() - started) * 1000),
+                "task_id": get_task_id() or None,
+                "request_id": get_request_id() or None,
+            }
+            if status != "success":
+                details["failure_category"] = self._failure_category(
+                    getattr(response, "error", ""))
+            get_audit_logger().log_model_call(
+                status,
+                model_id=model_id or None,
+                provider=getattr(response, "provider", "") or None,
+                user_id=get_user_id() or None,
+                details={key: value for key, value in details.items()
+                         if value is not None},
+            )
+        except Exception:
+            logger.warning("模型调用审计写入失败", exc_info=True)
+
+    @staticmethod
+    def _failure_category(error: str) -> str:
+        """把失败原因归一化为稳定类别，避免原文（可能含内部细节）进审计。"""
+        text = (error or "").lower()
+        if not text:
+            return "unknown"
+        if "取消" in text or "cancel" in text:
+            return "cancelled"
+        if any(marker in text for marker in ("timeout", "timed out", "超时")):
+            return "timeout"
+        if any(marker in text for marker in
+               ("401", "403", "api key", "authentication", "鉴权", "认证")):
+            return "auth"
+        if any(marker in text for marker in ("429", "rate limit", "限流")):
+            return "rate_limit"
+        if any(marker in text for marker in ("冷却", "没有可用的模型", "检查 api key")):
+            return "unavailable"
+        if any(marker in text for marker in ("connection", "连接")):
+            return "connection"
+        return "error"
+
+    def _execute_with_failover(self,
                               task_type: AITaskType,
                               action: Callable[[Any], ModelResponse],
                               model_ids: Optional[list[str]] = None,

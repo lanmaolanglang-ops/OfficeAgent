@@ -3,6 +3,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from ...rate_limiter import get_rate_limiter
+from ..core.error_contract import build_error_envelope
 
 
 class RateLimitMiddleware:
@@ -18,14 +19,23 @@ class RateLimitMiddleware:
         "/docs", "/redoc", "/openapi.json",
     })
 
+    # upload 桶语义 = “一次文件上传”：普通上传与分片上传的 initiation
+    # 各计一次；分片上传的 chunk/complete 不再重复消费，避免一个文件的
+    # 每个分片都被视为一次完整上传而放大 N 倍计数。chunk 本身仍受
+    # api 桶与请求体大小守卫约束。
+    _UPLOAD_COUNTED_PATHS = frozenset({
+        "/api/file/upload",
+        "/api/file/upload/multipart/init",
+    })
+
     def __init__(self, app):
         self.app = app
 
-    @staticmethod
-    def _policies(request: Request) -> tuple[str, ...]:
+    @classmethod
+    def _policies(cls, request: Request) -> tuple[str, ...]:
         policies = ["api"]
         path = request.url.path
-        if request.method in {"POST", "PUT"} and path.startswith("/api/file/upload"):
+        if request.method in {"POST", "PUT"} and path in cls._UPLOAD_COUNTED_PATHS:
             policies.append("upload")
         if request.method == "POST" and path == "/api/chat":
             policies.append("model")
@@ -48,11 +58,10 @@ class RateLimitMiddleware:
             result = limiter.check(policy, identity)
             checked.append((policy, result))
             if not result.allowed:
-                response = JSONResponse(status_code=429, content={
-                    "success": False, "error_code": "RATE_LIMITED",
-                    "message": "请求过于频繁，请稍后重试",
-                    "policy": policy,
-                })
+                response = JSONResponse(status_code=429, content=build_error_envelope(
+                    "RATE_LIMITED", "请求过于频繁，请稍后重试",
+                    {"policy": policy, "retry_after": max(1, int(result.retry_after))},
+                ))
                 response.headers["Retry-After"] = str(max(1, int(result.retry_after)))
                 response.headers["X-RateLimit-Policy"] = policy
                 await response(scope, receive, send)
