@@ -62,9 +62,8 @@ import sys
 import os
 sys.path.insert(0, r"{app_dir}")
 os.chdir(r"{app_dir}")
-os.environ["OFFICE_AGENT_LOCAL"] = "1"
-os.environ["AUTH_MODE"] = "local"
-os.environ["OFFICE_AGENT_DATA_DIR"] = r"{service_data_dir}"
+from office_agent.runtime_config import apply_desktop_runtime_env
+apply_desktop_runtime_env(r"{service_data_dir}")
 import servicemanager
 import win32event
 import win32service

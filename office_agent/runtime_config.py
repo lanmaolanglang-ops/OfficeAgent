@@ -47,3 +47,31 @@ def get_upload_dir() -> Path:
     """Return the shared upload directory without creating it."""
     configured = os.environ.get("OFFICE_AGENT_UPLOAD_DIR")
     return Path(configured).expanduser() if configured else get_data_root() / "uploads"
+
+
+def desktop_runtime_env(data_dir, log_dir=None, app_version=None) -> dict:
+    """Return the authoritative desktop runtime environment mapping.
+
+    Single source for the variables every desktop entry point must provide
+    (local mode flags, data/log directories, version). Pure function: does
+    not touch os.environ, so callers decide between subprocess env
+    (runtime manager) and in-process application (frozen launcher,
+    service wrapper).
+    """
+    data_dir = Path(data_dir)
+    env = {
+        "OFFICE_AGENT_LOCAL": "1",
+        "AUTH_MODE": "local",
+        "OFFICE_AGENT_DATA_DIR": str(data_dir),
+        "OFFICE_AGENT_LOG_DIR": str(Path(log_dir) if log_dir else data_dir / "logs"),
+    }
+    if app_version:
+        env["OFFICE_AGENT_VERSION"] = str(app_version)
+    return env
+
+
+def apply_desktop_runtime_env(data_dir, log_dir=None, app_version=None) -> dict:
+    """Apply desktop_runtime_env() to os.environ and return the applied mapping."""
+    env = desktop_runtime_env(data_dir, log_dir=log_dir, app_version=app_version)
+    os.environ.update(env)
+    return env

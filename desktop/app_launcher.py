@@ -3,7 +3,6 @@ OfficeAgent Desktop Launcher
 桌面应用入口点 - 启动Runtime Manager并保持运行
 支持PyInstaller打包后直接运行
 """
-import os
 import sys
 import signal
 import logging
@@ -43,7 +42,9 @@ else:
     sys.path.insert(0, str(APP_DIR))
 
 from office_agent._version import __version__ as APP_VERSION  # noqa: E402
-from office_agent.runtime_config import get_desktop_data_root  # noqa: E402
+from office_agent.runtime_config import (  # noqa: E402
+    apply_desktop_runtime_env, get_desktop_data_root,
+)
 
 
 def setup_logging(log_dir: Path):
@@ -72,12 +73,9 @@ def run_uvicorn_direct(host: str, port: int, data_dir: Path):
     logger.info("Importing uvicorn...")
     import uvicorn
 
-    # 设置环境变量
-    os.environ["OFFICE_AGENT_LOCAL"] = "1"
-    os.environ["AUTH_MODE"] = "local"
-    os.environ["OFFICE_AGENT_DATA_DIR"] = str(data_dir)
-    os.environ["OFFICE_AGENT_LOG_DIR"] = str(data_dir / "logs")
-    os.environ["OFFICE_AGENT_VERSION"] = APP_VERSION
+    # 设置环境变量（唯一来源：runtime_config.apply_desktop_runtime_env）
+    apply_desktop_runtime_env(data_dir, log_dir=data_dir / "logs",
+                              app_version=APP_VERSION)
 
     # 直接导入app对象（frozen模式下字符串导入不可靠）
     logger.info("Importing office_agent.api.main...")

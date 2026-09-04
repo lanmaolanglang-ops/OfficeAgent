@@ -18,7 +18,7 @@ import urllib.request
 import urllib.error
 
 from ._version import __version__
-from .runtime_config import get_desktop_data_root
+from .runtime_config import desktop_runtime_env, get_desktop_data_root
 
 logger = logging.getLogger("office_agent.runtime_manager")
 
@@ -174,11 +174,11 @@ class ApplicationRuntimeManager:
     def _get_env(self) -> dict:
         """获取子进程环境变量"""
         env = os.environ.copy()
-        env["OFFICE_AGENT_LOCAL"] = "1"
-        env["AUTH_MODE"] = "local"
-        env["OFFICE_AGENT_DATA_DIR"] = str(self.config.data_dir)
-        env["OFFICE_AGENT_LOG_DIR"] = str(self.config.log_dir)
-        env["OFFICE_AGENT_VERSION"] = self.config.app_version
+        env.update(desktop_runtime_env(
+            self.config.data_dir,
+            log_dir=self.config.log_dir,
+            app_version=self.config.app_version,
+        ))
         # Python路径
         backend_dir = str(self.config.backend_dir)
         if backend_dir not in env.get("PYTHONPATH", ""):
