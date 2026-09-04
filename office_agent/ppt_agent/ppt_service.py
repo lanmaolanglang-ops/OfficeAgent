@@ -140,13 +140,9 @@ class PPTService:
             if (base_path and Path(base_path).exists()
                     and Path(base_path).resolve() != Path(output_path).resolve()):
                 try:
-                    from pptx.oxml.ns import qn as _qn
+                    from .template_analyzer import clear_slides
                     base_prs = Presentation(base_path)
-                    slide_ids = base_prs.slides._sldIdLst
-                    for sld_id in list(slide_ids):
-                        rel_id = sld_id.get(_qn('r:id'))
-                        base_prs.part.drop_rel(rel_id)
-                        slide_ids.remove(sld_id)
+                    clear_slides(base_prs)
                     self.prs = base_prs
                     self._base_deck = True
                     # 页面尺寸以模板实际值为准（渲染缩放因子基于它计算）

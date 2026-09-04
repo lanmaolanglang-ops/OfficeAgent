@@ -15,19 +15,45 @@ Template Analyzer - PPT 模板解析器
 - 每个版式的占位符（类型、位置、大小）
 - 背景色/背景填充
 """
-import copy
 from pathlib import Path
-from typing import Optional, List, Dict, Tuple
+from typing import Optional, List, Tuple
 from dataclasses import dataclass, field, asdict
 from collections import Counter
 
 from pptx import Presentation
-from pptx.util import Inches, Pt, Emu
-from pptx.dml.color import RGBColor
-from pptx.enum.text import PP_ALIGN
+from pptx.oxml.ns import qn
 from lxml import etree
 
 from .models import ColorScheme, FontScheme
+
+
+def clear_slides(prs: Presentation) -> None:
+    """清空所有幻灯片（保留母版/版式/主题），且不留下孤儿 slide 部件。
+
+    python-pptx 的 ``XmlPart.drop_rel`` 带引用计数守卫：rId 在所属部件
+    XML 中出现 2 次及以上时拒绝移除关系。模板若含自定义放映
+    （``p:custShowLst``），slide 的 rId 会被其二次引用，朴素习语
+    （先 drop_rel 再移除 sldId）会静默失败——保存后 slide 部件仍留在
+    package 中却不在 sldIdLst 里（孤儿部件），可能触发 PowerPoint
+    修复警告。
+
+    因此顺序必须是：先移除 custShowLst（清空 slide 后自定义放映本身
+    已无意义），再移除 sldId 的 XML 引用，最后 drop_rel（此时引用计数
+    归零，守卫放行）。slide 独占的图片/图表/嵌入 workbook/备注页会在
+    保存时随关系图遍历自动剔除；仍被母版/版式/其它页引用的共享部件
+    不受影响。
+    """
+    pres_element = prs.part._element
+    for cust_show_lst in pres_element.findall(qn("p:custShowLst")):
+        pres_element.remove(cust_show_lst)
+    sld_id_lst = prs.slides._sldIdLst
+    for sld_id in list(sld_id_lst):
+        rel_id = sld_id.get(qn("r:id"))
+        sld_id_lst.remove(sld_id)
+        try:
+            prs.part.drop_rel(rel_id)
+        except KeyError:
+            pass
 
 # 命名空间
 nsmap = {
@@ -214,19 +240,19 @@ class TemplateConfig:
             "fonts": self.fonts.to_dict(),
             "layouts": [
                 {
-                    "index": l.index,
-                    "name": l.name,
-                    "layout_type": l.layout_type,
-                    "has_title": l.has_title,
-                    "has_content": l.has_content,
-                    "has_picture": l.has_picture,
-                    "title_pos": {"left": l.title_left, "top": l.title_top,
-                                  "width": l.title_width, "height": l.title_height},
-                    "content_pos": {"left": l.content_left, "top": l.content_top,
-                                    "width": l.content_width, "height": l.content_height},
-                    "placeholders": [p.to_dict() for p in l.placeholders],
+                    "index": layout.index,
+                    "name": layout.name,
+                    "layout_type": layout.layout_type,
+                    "has_title": layout.has_title,
+                    "has_content": layout.has_content,
+                    "has_picture": layout.has_picture,
+                    "title_pos": {"left": layout.title_left, "top": layout.title_top,
+                                  "width": layout.title_width, "height": layout.title_height},
+                    "content_pos": {"left": layout.content_left, "top": layout.content_top,
+                                    "width": layout.content_width, "height": layout.content_height},
+                    "placeholders": [p.to_dict() for p in layout.placeholders],
                 }
-                for l in self.layouts
+                for layout in self.layouts
             ],
             "masters": [m.to_dict() for m in self.masters],
             "slide_count": self.slide_count,
@@ -778,14 +804,8 @@ class TemplateAnalyzer:
 
     @staticmethod
     def _clear_slides(prs: Presentation):
-        """清空所有幻灯片（保留母版和版式）"""
-        while len(prs.slides) > 0:
-            try:
-                rId = prs.slides._sldIdLst[0].rId
-                prs.part.drop_rel(rId)
-                del prs.slides._sldIdLst[0]
-            except Exception:
-                break
+        """清空所有幻灯片（保留母版和版式），委托给模块级共享实现"""
+        clear_slides(prs)
 
     def _fill_placeholders(self, slide, slide_data: dict):
         """填充幻灯片占位符"""
