@@ -175,6 +175,10 @@ class PPTService:
                 self.colors = outline.color_scheme
             elif outline.theme in THEME_COLORS:
                 self.colors = THEME_COLORS[outline.theme]
+            elif outline.theme:
+                # 未知主题不再静默忽略：显式记录并回退默认主题
+                logger.warning("未知主题 %r，回退默认配色", outline.theme)
+                self.changes.append(f"未知主题 {outline.theme} 已回退默认配色")
 
             # 字体（模板配置优先）
             if self.template_config:
@@ -266,7 +270,12 @@ class PPTService:
             "blank": self._render_blank,
         }
 
-        renderer = renderers.get(layout, self._render_content)
+        renderer = renderers.get(layout)
+        if renderer is None:
+            # 防御层：构造后赋值可绕过 SlideContent 校验，未知版式不得静默渲染
+            logger.warning("未知版式 %r，回退 content 渲染", layout)
+            self.changes.append(f"第{content.page_number}页: 未知版式 {layout} 已回退为标准内容页")
+            renderer = self._render_content
         renderer(content)
         self.changes.append(f"第{content.page_number}页: {content.title or layout}")
 

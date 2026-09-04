@@ -13,7 +13,7 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from .models import PPTOutline, SlideContent
+from .models import PPTOutline, SlideContent, SlideLayout
 
 logger = logging.getLogger("office_agent.ppt.content_planner")
 
@@ -638,6 +638,11 @@ class ContentPlanner:
             layout = slide_data.get("layout", "content")
             if not isinstance(layout, str):
                 layout = "content"
+            elif not SlideLayout.is_valid(layout):
+                # LLM 输出的不可信版式：显式记录并规范化为标准内容页，
+                # 而不是静默按 content 渲染（构造点 SlideContent 是严格校验的）
+                logger.warning("LLM 返回未知版式 %r，已规范化为 content", layout)
+                layout = SlideLayout.CONTENT.value
             slide = SlideContent(
                 layout=layout,
                 title=self._scalar_text(slide_data.get("title")),

@@ -23,6 +23,15 @@ class SlideLayout(Enum):
     SUMMARY = "summary"       # 总结/致谢
     BLANK = "blank"           # 空白
 
+    @classmethod
+    def values(cls) -> tuple:
+        """全部合法版式值（版式字符串的唯一权威来源）。"""
+        return tuple(member.value for member in cls)
+
+    @classmethod
+    def is_valid(cls, value) -> bool:
+        return value in cls._value2member_map_
+
 
 class PPTTheme(Enum):
     """内置主题"""
@@ -32,6 +41,15 @@ class PPTTheme(Enum):
     TECH = "tech"                   # 科技深色
     ACADEMIC = "academic"           # 学术
     NATURE = "nature"               # 自然绿
+
+    @classmethod
+    def values(cls) -> tuple:
+        """全部合法主题值（主题字符串的唯一权威来源）。"""
+        return tuple(member.value for member in cls)
+
+    @classmethod
+    def is_valid(cls, value) -> bool:
+        return value in cls._value2member_map_
 
 
 @dataclass
@@ -87,6 +105,15 @@ class SlideContent:
     notes: str = ""                 # 备注
     body_font_size: Optional[int] = None  # 内容密度自适应字号
     page_number: int = 0
+
+    def __post_init__(self):
+        # 版式字符串的唯一校验点：内部构造出现拼写错误时快速失败。
+        # 外部不可信输入（LLM JSON）必须在进入构造前完成规范化
+        # （见 content_planner._parse_outline_json），此处不接受未知值。
+        if not SlideLayout.is_valid(self.layout):
+            raise ValueError(
+                f"未知幻灯片版式: {self.layout!r}，合法值: {list(SlideLayout.values())}"
+            )
 
 
 @dataclass
