@@ -1,5 +1,6 @@
 """Single source of truth for API task routing."""
 import os
+import re
 
 # 强关键词：明确点名了目标产品，优先级高于弱关键词。
 # 避免“做一份季度总结报告PPT”因命中“报告”被误派给 Word。
@@ -11,6 +12,58 @@ EXCEL_STRONG = ("excel", "xlsx", "xls", "表格", "电子表格", "csv")
 WORD_WEAK = ("排版", "格式")
 PPT_WEAK = ("演示", "汇报")
 EXCEL_WEAK = ("数据", "分析", "图表", "统计")
+
+# 弱关键词上下文约束（只作用于弱关键词，强关键词不受限）：
+# 1. 口语化“X一下”用法（“演示一下怎么部署”“汇报一下进度”“分析一下报错”）
+#    是随意动词，不构成办公产品意图。仅约束语义可脱离办公场景的动词；
+#    “排版一下”这类本身就是办公诉求的词不受此约束。
+# 2. 技术复合词内部的命中（“数据结构”“数据库”里的“数据”）不是表格信号。
+_WEAK_CASUAL_SUFFIX = "一下"
+_WEAK_CASUAL_VERBS = ("演示", "汇报", "分析", "统计")
+_WEAK_COMPOUND_BLOCK = {
+    "数据": ("数据结构", "数据库"),
+}
+
+
+def _keyword_positions(text: str, keyword: str) -> list:
+    """返回 keyword 在 text（已 lowercase）中的所有命中位置。
+
+    ASCII 关键词按词边界匹配，避免子串误命中：
+    “keyword”不再误中“word”、“excellent”不再误中“excel”。
+    中文关键词无词边界概念，保持子串匹配。
+    """
+    if keyword.isascii():
+        return [
+            m.start()
+            for m in re.finditer(
+                rf"(?<![a-z0-9]){re.escape(keyword)}(?![a-z0-9])", text
+            )
+        ]
+    positions = []
+    start = 0
+    while True:
+        idx = text.find(keyword, start)
+        if idx < 0:
+            return positions
+        positions.append(idx)
+        start = idx + 1
+
+
+def _weak_keyword_hit(text: str, keywords: tuple) -> bool:
+    """弱关键词命中判定：任一命中不被上下文约束排除即为命中。"""
+    for keyword in keywords:
+        for pos in _keyword_positions(text, keyword):
+            if keyword in _WEAK_CASUAL_VERBS and text.startswith(
+                _WEAK_CASUAL_SUFFIX, pos + len(keyword)
+            ):
+                continue
+            if any(
+                text.startswith(compound, pos)
+                for compound in _WEAK_COMPOUND_BLOCK.get(keyword, ())
+            ):
+                continue
+            return True
+    return False
 
 
 def route_intent(message: str) -> tuple:
@@ -24,17 +77,19 @@ def route_intent(message: str) -> tuple:
     # 而不是依赖固定的 PPT→Excel→Word 代码顺序。
     strong_matches = []
     for keywords, route in routes:
-        positions = [text.rfind(keyword) for keyword in keywords if keyword in text]
+        positions = [
+            pos for keyword in keywords for pos in _keyword_positions(text, keyword)
+        ]
         if positions:
             strong_matches.append((max(positions), route))
     if strong_matches:
         return max(strong_matches, key=lambda item: item[0])[1]
-    # 弱关键词兜底
-    if any(k in text for k in WORD_WEAK):
+    # 弱关键词兜底（带上下文约束，见 _weak_keyword_hit）
+    if _weak_keyword_hit(text, WORD_WEAK):
         return "word_agent", "word_format", "format"
-    if any(k in text for k in PPT_WEAK):
+    if _weak_keyword_hit(text, PPT_WEAK):
         return "ppt_agent", "ppt_generate", "generate"
-    if any(k in text for k in EXCEL_WEAK):
+    if _weak_keyword_hit(text, EXCEL_WEAK):
         return "excel_agent", "excel_analyze", "analyze"
     return "orchestrator", "general", "general"
 
