@@ -20,13 +20,12 @@ Chart Generator - Excel 智能图表生成器
 - 多维对比 → 雷达图
 """
 import re
-from typing import Optional, List, Dict, Tuple
+from typing import Optional, List, Tuple
 from openpyxl.chart import (
     BarChart, LineChart, PieChart, AreaChart, ScatterChart,
     DoughnutChart, RadarChart, Reference, Series,
 )
 from openpyxl.chart.label import DataLabelList
-from openpyxl.chart.layout import Layout, ManualLayout
 from openpyxl.chart.series import DataPoint
 from openpyxl.utils import quote_sheetname
 
@@ -280,7 +279,6 @@ class ChartGenerator:
 
         num_cols = [c for c in sheet.columns if c.data_type == "number"]
         date_cols = [c for c in sheet.columns if c.data_type == "date"]
-        text_cols = [c for c in sheet.columns if c.data_type == "text"]
         cat_col = self._find_category_column(sheet)
 
         if not num_cols or not cat_col:
@@ -523,22 +521,48 @@ class ChartGenerator:
         ws.add_chart(chart, anchor)
 
     def _render_combo(self, ws, spec: ChartSpec):
-        """渲染组合图（柱+线，支持次轴）"""
-        from openpyxl.chart.axis import NumericAxis
+        """渲染组合图（柱+线，支持次轴）
 
-        # 解析数据范围
-        # data_range 格式: A1:D13 (类别列+多个数据列)
-        # 第一个系列用柱状，第二个用折线（次轴）
-        parts = spec.data_range.split(":")
-        if len(parts) != 2:
-            return
+        引用建模：优先消费 ``spec.series_ranges``（每系列真实列引用）
+        与 ``spec.categories_range``（显式类别列引用）——类别列可以在
+        任意位置、数据列可以不连续。无 series_ranges 的旧 ChartSpec
+        回退到连续矩形拆分（第一列类别、其余连续数据），行为不变。
+        """
 
-        from openpyxl.utils import column_index_from_string, range_boundaries
-        min_col, min_row, max_col, max_row = range_boundaries(spec.data_range)
+        from openpyxl.utils import range_boundaries
 
-        # 类别列
-        cats = Reference(ws, min_col=min_col, min_row=min_row + 1,
-                        max_col=min_col, max_row=max_row)
+        if spec.series_ranges:
+            # 显式引用路径：类别列与每个系列各自定位
+            sheet_ref = quote_sheetname(ws.title)
+            cat_min_col, cat_min_row, cat_max_col, cat_max_row = range_boundaries(
+                spec.categories_range
+            )
+            cats = Reference(ws, min_col=cat_min_col, min_row=cat_min_row,
+                             max_col=cat_max_col, max_row=cat_max_row)
+            series_refs = [
+                Reference(ws, range_string=f"{sheet_ref}!{rng}")
+                for rng in spec.series_ranges
+            ]
+        else:
+            # 兼容路径：data_range 格式 A1:D13（类别列+连续数据列）
+            parts = spec.data_range.split(":")
+            if len(parts) != 2:
+                return
+
+            min_col, min_row, max_col, max_row = range_boundaries(spec.data_range)
+
+            # 类别列
+            cats = Reference(ws, min_col=min_col, min_row=min_row + 1,
+                            max_col=min_col, max_row=max_row)
+            series_refs = [
+                Reference(ws, min_col=min_col + 1, min_row=min_row,
+                          max_col=min_col + 1, max_row=max_row),
+            ]
+            if max_col > min_col + 1:
+                series_refs.append(
+                    Reference(ws, min_col=min_col + 2, min_row=min_row,
+                              max_col=max_col, max_row=max_row)
+                )
 
         # 创建柱状图（第一个系列）
         bar_chart = BarChart()
@@ -546,19 +570,16 @@ class ChartGenerator:
         bar_chart.title = spec.title or ""
         bar_chart.style = spec.style or 10
 
-        data1 = Reference(ws, min_col=min_col + 1, min_row=min_row,
-                         max_col=min_col + 1, max_row=max_row)
-        bar_chart.add_data(data1, titles_from_data=True)
+        bar_chart.add_data(series_refs[0], titles_from_data=True)
         bar_chart.set_categories(cats)
         if spec.y_title:
             bar_chart.y_axis.title = spec.y_title
 
-        # 创建折线图（第二个系列，次轴）；没有第二个数值列时不合并空图
-        if max_col > min_col + 1:
+        # 创建折线图（其余系列，次轴）；没有第二个系列时不合并空图
+        if len(series_refs) > 1:
             line_chart = LineChart()
-            data2 = Reference(ws, min_col=min_col + 2, min_row=min_row,
-                             max_col=max_col, max_row=max_row)
-            line_chart.add_data(data2, titles_from_data=True)
+            for ref in series_refs[1:]:
+                line_chart.add_data(ref, titles_from_data=True)
             line_chart.y_axis.axId = 200
             # openpyxl 次轴配方：crosses 设置在主图 y 轴上
             bar_chart.y_axis.crosses = "max"
@@ -624,7 +645,6 @@ class ChartGenerator:
                       chart_type: str = "", point_count: int = 0):
         """应用配色"""
         from openpyxl.chart.shapes import GraphicalProperties
-        from openpyxl.drawing.fill import PatternFillProperties, ColorChoice
         from openpyxl.drawing.line import LineProperties
 
         for i, series in enumerate(chart.series):
@@ -657,7 +677,6 @@ class ChartGenerator:
             return None
 
         cat_letter = self._col_letter(cat_col.index)
-        first_letter = self._col_letter(target_cols[0].index)
         last_letter = self._col_letter(target_cols[1].index)
         end_row = sheet.row_count + 1
 
@@ -670,6 +689,13 @@ class ChartGenerator:
             title=title,
             data_range=f"{cat_letter}1:{last_letter}{end_row}",
             categories_range=f"{cat_letter}2:{cat_letter}{end_row}",
+            # 每个系列使用自己的真实列引用（含表头行）：类别列可以在
+            # 任意位置、数据列可以不连续，渲染侧优先消费本字段；
+            # data_range 的连续矩形仅为兼容保留。
+            series_ranges=[
+                f"{self._col_letter(col.index)}1:{self._col_letter(col.index)}{end_row}"
+                for col in target_cols[:2]
+            ],
             x_title=cat_col.name,
             y_title=target_cols[0].name,
             position=self._next_chart_position(position_index),
