@@ -265,3 +265,67 @@ class TestTemplateBaseDeck:
             for slide in prs.slides for sh in slide.shapes
         )
         _assert_shapes_within(prs)
+
+
+class TestFixOutlineCompleteness:
+    """清单 684：fixable 问题的每种 fix_action 都必须有真实修复分支。
+
+    历史条目（reduce_font/unify_font 仅 pass）已由 277 关闭；复核发现
+    apply_template_size（模板尺寸不一致，fixable=True）在 fix_outline 中
+    无分支被静默忽略，本批补齐。本类钉住"发出的每种 action 都有分支"。
+    """
+
+    def test_apply_template_size_action_fixes_outline_dimensions(self):
+        from office_agent.ppt_agent.template_analyzer import TemplateConfig
+        from office_agent.ppt_agent.quality_checker import PPTQualityReport, PPTQualityIssue
+
+        checker = PPTQualityChecker()
+        checker.template_config = TemplateConfig(slide_width=10.0, slide_height=7.5)
+        outline = PPTOutline(
+            title="t",
+            slide_width=13.333, slide_height=7.5,
+            slides=[SlideContent(layout="content", title="x")],
+        )
+        report = PPTQualityReport(file_path="x")
+        report.issues.append(PPTQualityIssue(
+            slide_index=-1, issue_type="template", severity="warning",
+            message="页面尺寸与模板不一致",
+            fixable=True, fix_action={"type": "apply_template_size"},
+        ))
+        fixed = checker.fix_outline(outline, report)
+        assert fixed.slide_width == 10.0
+        assert fixed.slide_height == 7.5
+        # copy-on-write：原 outline 不受影响
+        assert outline.slide_width == 13.333
+
+    def test_every_emitted_action_type_has_fix_branch(self):
+        """源码守卫：quality_checker 发出的每种 fix_action type 都必须在
+        fix_outline 中有对应 elif 分支，防止再出现"标记 fixable 却无修复"。"""
+        import ast
+        import inspect
+        import textwrap
+        import office_agent.ppt_agent.quality_checker as qc_module
+
+        src = inspect.getsource(qc_module)
+        tree = ast.parse(src)
+        emitted = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) \
+                    and node.func.id == "PPTQualityIssue":
+                for kw in node.keywords:
+                    if kw.arg == "fix_action" and isinstance(kw.value, ast.Dict):
+                        for k, v in zip(kw.value.keys, kw.value.values):
+                            if isinstance(k, ast.Constant) and k.value == "type" \
+                                    and isinstance(v, ast.Constant):
+                                emitted.add(v.value)
+
+        fixed_src = textwrap.dedent(inspect.getsource(
+            qc_module.PPTQualityChecker.fix_outline))
+        handled = set(re.findall(r'atype == "([a-z_]+)"', fixed_src))
+
+        # add_slides 为刻意不自动修复（检查阶段标 fixable=False），除外
+        assert emitted, "守卫失效：未收集到任何 fix_action"
+        assert emitted <= handled | {"add_slides"}, (
+            f"以下 fix_action 在 fix_outline 中无分支: {emitted - handled}"
+        )
+

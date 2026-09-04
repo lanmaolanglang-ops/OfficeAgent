@@ -496,6 +496,12 @@ class PPTQualityChecker:
                     if not slide.title:
                         slide.title = f"第{slide_idx + 1}页"
 
+            elif atype == "apply_template_size":
+                # 页面尺寸对齐模板：outline 层即可修正，生成时按此尺寸渲染
+                if self.template_config:
+                    fixed.slide_width = self.template_config.slide_width
+                    fixed.slide_height = self.template_config.slide_height
+
         return fixed
 
     @staticmethod
