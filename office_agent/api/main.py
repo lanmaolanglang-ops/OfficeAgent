@@ -26,6 +26,7 @@ from fastapi.responses import PlainTextResponse, JSONResponse
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from office_agent.api.core.config import settings
+from office_agent.api.core.pagination import limit_query
 from office_agent.api.deps import get_db_session
 from office_agent.api.core.handlers import register_exception_handlers
 from office_agent.api.middleware import AuthMiddleware
@@ -142,7 +143,7 @@ def create_app() -> FastAPI:
     @app.get("/api/logs/executions", summary="查询执行日志", tags=["监控"])
     def get_execution_logs(task_id: str = None, request_id: str = None,
                            agent: str = None,
-                           limit: int = Query(default=100, ge=1, le=1000),
+                           limit: int = limit_query(),
                            session=Depends(get_db_session)):
         from office_agent.database.repository import ExecutionLogRepository
         repo = ExecutionLogRepository(session)
@@ -161,7 +162,7 @@ def create_app() -> FastAPI:
 
     @app.get("/api/logs/models", summary="查询模型调用日志", tags=["监控"])
     def get_model_logs(task_id: str = None, model: str = None,
-                       limit: int = Query(default=100, ge=1, le=1000),
+                       limit: int = limit_query(),
                        session=Depends(get_db_session)):
         from office_agent.database.repository import ModelCallLogRepository
         repo = ModelCallLogRepository(session)
@@ -177,7 +178,7 @@ def create_app() -> FastAPI:
         })
 
     @app.get("/api/logs/errors", summary="查询错误日志", tags=["监控"])
-    def get_error_logs(limit: int = Query(default=100, ge=1, le=1000),
+    def get_error_logs(limit: int = limit_query(),
                        resolved: bool = None,
                        session=Depends(get_db_session)):
         from office_agent.database.repository import ErrorLogRepository

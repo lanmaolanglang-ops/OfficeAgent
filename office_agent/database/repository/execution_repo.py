@@ -32,12 +32,14 @@ class ExecutionLogRepository(BaseRepository[ExecutionLog]):
         return list(self.session.execute(stmt).scalars().all())
 
     def get_by_agent(self, agent: str, limit: int = 100) -> List[ExecutionLog]:
+        limit = self._bounded_limit(limit)
         stmt = select(ExecutionLog).where(
             ExecutionLog.agent == agent
         ).order_by(ExecutionLog.created_at.desc()).limit(limit)
         return list(self.session.execute(stmt).scalars().all())
 
     def get_errors(self, limit: int = 100) -> List[ExecutionLog]:
+        limit = self._bounded_limit(limit)
         stmt = select(ExecutionLog).where(
             ExecutionLog.status == "error"
         ).order_by(ExecutionLog.created_at.desc()).limit(limit)
@@ -135,6 +137,7 @@ class ModelCallLogRepository(BaseRepository[ModelCallLog]):
         return list(self.session.execute(stmt).scalars().all())
 
     def get_by_model(self, model_name: str, limit: int = 100) -> List[ModelCallLog]:
+        limit = self._bounded_limit(limit)
         stmt = select(ModelCallLog).where(
             ModelCallLog.model_name == model_name
         ).order_by(ModelCallLog.created_at.desc()).limit(limit)
@@ -223,6 +226,7 @@ class ErrorLogRepository(BaseRepository[ErrorLog]):
         super().__init__(session, ErrorLog)
 
     def get_recent(self, limit: int = 100, resolved: bool = None) -> List[ErrorLog]:
+        limit = self._bounded_limit(limit)
         stmt = select(ErrorLog)
         if resolved is not None:
             stmt = stmt.where(ErrorLog.resolved == resolved)
@@ -230,6 +234,7 @@ class ErrorLogRepository(BaseRepository[ErrorLog]):
         return list(self.session.execute(stmt).scalars().all())
 
     def get_by_type(self, error_type: str, limit: int = 100) -> List[ErrorLog]:
+        limit = self._bounded_limit(limit)
         stmt = select(ErrorLog).where(
             ErrorLog.error_type == error_type
         ).order_by(ErrorLog.created_at.desc()).limit(limit)

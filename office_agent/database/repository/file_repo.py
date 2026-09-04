@@ -18,6 +18,7 @@ class FileRepository(BaseRepository[File]):
         return self.find_one(file_hash=file_hash, status="ready")
 
     def get_by_owner(self, owner_id: str, offset: int = 0, limit: int = 100) -> List[File]:
+        offset, limit = self._page(offset, limit)
         stmt = select(File).where(and_(
             File.owner_id == owner_id,
             File.status.notin_(("deleted", "deleting")),
@@ -25,6 +26,7 @@ class FileRepository(BaseRepository[File]):
         return list(self.session.execute(stmt).scalars().all())
 
     def get_by_type(self, file_type: str, offset: int = 0, limit: int = 100) -> List[File]:
+        offset, limit = self._page(offset, limit)
         stmt = select(File).where(and_(
             File.file_type == file_type,
             File.status.notin_(("deleted", "deleting")),

@@ -15,6 +15,7 @@ from ..schemas.response import (
 )
 from ..schemas.request import MultipartCompleteRequest
 from ..core.config import settings
+from ..core.pagination import page_query, page_size_query
 from ...storage import get_storage_service, FileValidationError
 from ...storage.validators import CHUNK_SIZE
 
@@ -208,8 +209,8 @@ def abort_multipart(file_id: str, upload_id: str):
 
 @router.get("/trash", response_model=BaseResponse, summary="回收站文件列表")
 def list_deleted_files(file_type: str = None, owner_id: str = None,
-                             page: int = Query(default=1, ge=1),
-                             page_size: int = Query(default=50, ge=1, le=200),
+                             page: int = page_query(),
+                             page_size: int = page_size_query(default=50),
                              request: Request = None):
     """列出可恢复的软删除文件，不包含正在永久删除的 tombstone。"""
     storage = _get_storage()
@@ -367,8 +368,8 @@ def delete_file(file_id: str, permanent: bool = Query(default=False)):
 
 @router.get("/", response_model=BaseResponse, summary="文件列表")
 def list_files(file_type: str = None, owner_id: str = None,
-                     page: int = Query(default=1, ge=1),
-                     page_size: int = Query(default=50, ge=1, le=200),
+                     page: int = page_query(),
+                     page_size: int = page_size_query(default=50),
                      request: Request = None):
     """列出文件，支持按类型筛选"""
     storage = _get_storage()

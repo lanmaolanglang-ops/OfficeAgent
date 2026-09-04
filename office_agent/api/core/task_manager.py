@@ -144,6 +144,9 @@ class TaskManager:
 
     def list_tasks(self, status: str = None, agent: str = None,
                    page: int = 1, page_size: int = 20) -> tuple:
+        # 与 API 输入契约（api/core/pagination.py）同语义的防御性校验
+        from .pagination import validate_page
+        validate_page(page, page_size)
         tasks = list(self.tasks.values())
         if status:
             normalized_status = normalize_task_status(status)

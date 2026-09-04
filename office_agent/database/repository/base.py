@@ -7,6 +7,11 @@ from ..base import Base
 
 ModelType = TypeVar("ModelType", bound=Base)
 
+# 分页硬上限：Repository 防御层与 API 输入契约（api/core/pagination.py）
+# 共用同一常量，任何端点声明的业务上限不得超过 MAX_LIMIT。
+MIN_LIMIT = 1
+MAX_LIMIT = 1000
+
 
 class BaseRepository(Generic[ModelType]):
     """通用 Repository 基类"""
@@ -22,9 +27,15 @@ class BaseRepository(Generic[ModelType]):
     def _page(offset: int, limit: int) -> tuple[int, int]:
         if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
             raise ValueError("offset 必须是非负整数")
-        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 1000:
-            raise ValueError("limit 必须在 1 到 1000 之间")
+        if (isinstance(limit, bool) or not isinstance(limit, int)
+                or not MIN_LIMIT <= limit <= MAX_LIMIT):
+            raise ValueError(f"limit 必须在 {MIN_LIMIT} 到 {MAX_LIMIT} 之间")
         return offset, limit
+
+    @classmethod
+    def _bounded_limit(cls, limit: int) -> int:
+        """校验仅带 limit 的查询（无 offset），与 _page 同一规则。"""
+        return cls._page(0, limit)[1]
 
     def _column(self, name: str):
         if not isinstance(name, str) or name not in self.model.__mapper__.attrs:

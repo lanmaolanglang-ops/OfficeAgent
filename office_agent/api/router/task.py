@@ -11,7 +11,7 @@
 """
 import json
 import logging
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Request
 
 from ..schemas.request import TaskCreateRequest, FeedbackRequest
 from ..schemas.response import (
@@ -20,6 +20,7 @@ from ..schemas.response import (
 from ..core.task_manager import normalize_task_status, task_manager
 from ..core.exceptions import APIError, TaskNotFoundError
 from ..core.file_resolution import resolve_input_files
+from ..core.pagination import page_query, page_size_query
 from ...security.error_sanitizer import sanitize_error
 from ..core.config import settings
 
@@ -265,8 +266,8 @@ async def get_task(task_id: str):
 @router.get("/", response_model=BaseResponse[TaskListResponse],
             summary="任务列表")
 async def list_tasks(status: str = None, agent: str = None,
-                     page: int = Query(default=1, ge=1),
-                     page_size: int = Query(default=20, ge=1, le=200),
+                     page: int = page_query(),
+                     page_size: int = page_size_query(),
                      request: Request = None):
     """列出任务，支持按状态/Agent筛选"""
     session = _get_db_session()
