@@ -25,6 +25,8 @@ from pathlib import Path
 from typing import List, Dict, Any
 from dataclasses import dataclass, field, asdict
 
+from ..text_encoding import TextDecodeError, read_text_file
+
 
 # ==========================================
 # 场景模板定义
@@ -961,17 +963,11 @@ class SlidePlanner:
             except Exception as exc:
                 raise RuntimeError(f"Word 文档读取失败: {exc}") from exc
         elif suffix in (".txt", ".md"):
-            errors = []
-            encodings = ["utf-8-sig"]
-            if path.read_bytes().startswith((b"\xff\xfe", b"\xfe\xff")):
-                encodings.append("utf-16")
-            encodings.extend(["gb18030"])
-            for enc in encodings:
-                try:
-                    return path.read_text(encoding=enc)
-                except UnicodeDecodeError as exc:
-                    errors.append(str(exc))
-            raise RuntimeError(f"文本编码无法识别: {path.name}")
+            # 编码探测统一走 text_encoding 共享入口
+            try:
+                return read_text_file(path)
+            except TextDecodeError as exc:
+                raise RuntimeError(f"文本编码无法识别: {path.name}") from exc
         raise ValueError(f"不支持的文档格式: {suffix}")
 
     def _summarize_content(self, content: str) -> str:

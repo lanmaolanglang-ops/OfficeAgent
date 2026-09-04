@@ -27,6 +27,7 @@ from ..models.schemas import (
     TableConfig, Alignment, ProcessResult, PageSetupConfig,
 )
 from ..parsers.document_structure import DocumentStructureAnalyzer, DocumentTree
+from ..text_encoding import read_text_file
 
 logger = logging.getLogger("office_agent.services.word")
 
@@ -129,18 +130,8 @@ class WordService:
 
     def _txt_to_docx(self, txt_path: str) -> Document:
         """将 txt 文件转换为 Document 对象，支持 Markdown 标题和表格"""
-        # 尝试多种编码
-        content = None
-        for encoding in ["utf-8", "gbk", "gb2312", "gb18030", "utf-16"]:
-            try:
-                with open(txt_path, "r", encoding=encoding) as f:
-                    content = f.read()
-                break
-            except (UnicodeDecodeError, UnicodeError):
-                continue
-
-        if content is None:
-            raise ValueError(f"无法识别文件编码: {txt_path}")
+        # 编码探测统一走 text_encoding 共享入口（失败抛 TextDecodeError，属 ValueError）
+        content = read_text_file(txt_path)
 
         doc = Document()
         lines = content.split("\n")

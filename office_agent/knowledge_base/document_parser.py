@@ -6,8 +6,10 @@
 """
 import os
 import re
-from typing import Optional, List, Dict, Tuple, Any
+from typing import List, Dict, Tuple, Any
 from dataclasses import dataclass, field
+
+from ..text_encoding import read_text_file
 
 
 @dataclass
@@ -267,17 +269,8 @@ class DocumentParser:
         return result
 
     def _parse_text(self, file_path: str, doc_type: str) -> ParsedDocument:
-        """解析纯文本/Markdown"""
-        encodings = ["utf-8", "gbk", "gb2312", "gb18030", "latin-1"]
-        content = ""
-
-        for enc in encodings:
-            try:
-                with open(file_path, "r", encoding=enc) as f:
-                    content = f.read()
-                break
-            except (UnicodeDecodeError, UnicodeError):
-                continue
+        """解析纯文本/Markdown（编码探测统一走 text_encoding 共享入口）"""
+        content = read_text_file(file_path)
 
         result = ParsedDocument(
             title=os.path.splitext(os.path.basename(file_path))[0],
