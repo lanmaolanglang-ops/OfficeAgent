@@ -113,9 +113,11 @@ def _store_chunks(chunks, title: str, category: str | None,
     """Persist chunks using a restart-stable vector space."""
     from ...database.repository import KnowledgeRepository
     from ...database.session import session_scope
-    from ...knowledge_base.embeddings import HashingEmbedder
+    from ...knowledge_base.embeddings import create_semantic_embedder
 
     fingerprint = _document_fingerprint(chunks, title, category, source)
+    embedder = create_semantic_embedder()
+    embeddings = embedder.embed([chunk.content for chunk in chunks])
     with session_scope() as session:
         repo = KnowledgeRepository(session)
         existing = _load_filtered(
@@ -132,11 +134,28 @@ def _store_chunks(chunks, title: str, category: str | None,
         if len(matching) == len(chunks) and {
                 item.chunk_index for item in matching
         } == set(range(len(chunks))):
-            logger.info("跳过重复知识索引: %s (%s chunks)", title, len(chunks))
+            # 幂等重新索引：现有行改为当前 semantic model，避免遗留旧
+            # hashing 向量继续留在库里被误当成可比较的 semantic 向量。
+            for item, embedding in zip(
+                    sorted(matching, key=lambda item: item.chunk_index),
+                    embeddings):
+                try:
+                    existing_metadata = json.loads(item.metadata_json or "{}")
+                except (TypeError, json.JSONDecodeError):
+                    existing_metadata = {}
+                item.embedding = json.dumps(embedding)
+                item.embedding_model = embedder.model_id
+                item.metadata_json = json.dumps({
+                    "embedding_model": embedder.model_id,
+                    "embedding_version": embedder.version,
+                    "embedding_dimension": embedder.dimension,
+                    "document_fingerprint": fingerprint,
+                    "section_title": existing_metadata.get("section_title", ""),
+                    "page_number": existing_metadata.get("page_number", 0),
+                }, ensure_ascii=False)
+            logger.info("刷新重复知识索引: %s (%s chunks)", title, len(chunks))
             return len(chunks)
 
-        embedder = HashingEmbedder()
-        embeddings = embedder.embed([chunk.content for chunk in chunks])
         for index, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
             repo.add_knowledge(
                 title=title,
@@ -145,8 +164,11 @@ def _store_chunks(chunks, title: str, category: str | None,
                 source_type="document" if source else "manual",
                 category=category,
                 embedding=json.dumps(embedding),
+                embedding_model=embedder.model_id,
                 metadata_json=json.dumps({
-                    "embedding_model": "hashing-512-v1",
+                    "embedding_model": embedder.model_id,
+                    "embedding_version": embedder.version,
+                    "embedding_dimension": embedder.dimension,
                     "section_title": chunk.section_title,
                     "page_number": chunk.page_number,
                     "document_fingerprint": fingerprint,
@@ -155,6 +177,40 @@ def _store_chunks(chunks, title: str, category: str | None,
                 total_chunks=len(chunks),
             )
     return len(chunks)
+
+
+LEGACY_EMBEDDING_MODEL_IDS = {"hashing-512-v1"}
+
+
+def _item_embedding_metadata(item):
+    try:
+        metadata = json.loads(item.metadata_json or "{}")
+    except (TypeError, json.JSONDecodeError):
+        metadata = {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+    return metadata
+
+
+def _item_embedding_model(item) -> str:
+    metadata = _item_embedding_metadata(item)
+    return (
+        getattr(item, "embedding_model", None)
+        or metadata.get("embedding_model")
+        or "hashing-512-v1"
+    )
+
+
+def _item_embedding_dimension(item) -> int:
+    metadata = _item_embedding_metadata(item)
+    value = metadata.get("embedding_dimension")
+    if isinstance(value, int):
+        return value
+    try:
+        vector = json.loads(item.embedding or "[]")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        vector = []
+    return len(vector) if isinstance(vector, list) else 0
 
 
 def index_document(file_path: str, title: str = None,
@@ -208,7 +264,8 @@ def search_knowledge(query: str, top_k: int = 5,
     """使用持久化向量执行余弦检索，并回退到文本匹配。"""
     result = {
         "status": "success", "results": [], "candidate_count": 0,
-        "candidate_limit": 0, "truncated": False,
+        "candidate_limit": 0, "truncated": False, "rebuild_required": False,
+        "legacy_count": 0, "incompatible_count": 0, "embedding_model": None,
     }
     try:
         if not isinstance(query, str) or not query.strip():
@@ -219,9 +276,13 @@ def search_knowledge(query: str, top_k: int = 5,
         _progress(progress, 20, "准备检索条件")
         from ...database.repository import KnowledgeRepository
         from ...database.session import session_scope
-        from ...knowledge_base.embeddings import HashingEmbedder, cosine_similarity
+        from ...knowledge_base.embeddings import (
+            create_semantic_embedder, cosine_similarity,
+        )
 
-        query_vector = HashingEmbedder().embed_query(query)
+        embedder = create_semantic_embedder()
+        result["embedding_model"] = embedder.model_id
+        query_vector = embedder.embed_query(query)
         scored = []
         with session_scope() as session:
             repo = KnowledgeRepository(session)
@@ -236,13 +297,32 @@ def search_knowledge(query: str, top_k: int = 5,
                     _task_id, category, max_candidates,
                 )
             for item in items:
+                lexical_match = (
+                    query.lower() in (item.content or "").lower()
+                    or query.lower() in (item.title or "").lower()
+                )
                 try:
                     vector = json.loads(item.embedding or "[]")
-                    score = cosine_similarity(query_vector, vector)
                 except (TypeError, ValueError, json.JSONDecodeError):
-                    score = 0.0
-                if query.lower() in item.content.lower() or query.lower() in item.title.lower():
-                    score = max(score, 0.35)
+                    vector = []
+                legacy = _item_embedding_model(item) in LEGACY_EMBEDDING_MODEL_IDS
+                compatible = (
+                    _item_embedding_model(item) == embedder.model_id
+                    and _item_embedding_dimension(item) == embedder.dimension
+                )
+                if legacy or not compatible:
+                    # 旧 hashing 或 model/version/dimension 不一致的向量
+                    # 绝不与当前 semantic query vector 做余弦比较。
+                    score = 0.35 if lexical_match else 0.0
+                    result["rebuild_required"] = True
+                    if legacy:
+                        result["legacy_count"] += 1
+                    else:
+                        result["incompatible_count"] += 1
+                else:
+                    score = cosine_similarity(query_vector, vector)
+                    if lexical_match:
+                        score = max(score, 0.35)
                 scored.append((score, item))
 
             for score, item in sorted(
@@ -269,15 +349,21 @@ def refresh_knowledge_base(progress=None, _task_id: str = None, **kwargs) -> dic
         _progress(progress, 20, "扫描知识库")
         from ...database.repository import KnowledgeRepository
         from ...database.session import session_scope
-        from ...knowledge_base.embeddings import HashingEmbedder
+        from ...knowledge_base.embeddings import create_semantic_embedder
 
         with session_scope() as session:
             repo = KnowledgeRepository(session)
             items = _load_all(repo)
-            vectors = HashingEmbedder().embed([item.content for item in items])
+            embedder = create_semantic_embedder()
+            vectors = embedder.embed([item.content for item in items])
             for item, vector in zip(items, vectors):
                 item.embedding = json.dumps(vector)
-                item.embedding_model = "hashing-512-v1"
+                item.embedding_model = embedder.model_id
+                metadata = _item_embedding_metadata(item)
+                metadata["embedding_model"] = embedder.model_id
+                metadata["embedding_version"] = embedder.version
+                metadata["embedding_dimension"] = embedder.dimension
+                item.metadata_json = json.dumps(metadata, ensure_ascii=False)
             result["total"] = len(items)
             result["refreshed"] = len(items)
         _progress(progress, 100, f"已刷新 {result['refreshed']} 条向量")

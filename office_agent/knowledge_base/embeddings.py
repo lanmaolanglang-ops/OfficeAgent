@@ -4,12 +4,25 @@ Embedding 模块 - 文本向量化
 默认使用纯 Python 实现的 TF-IDF（无需外部依赖），
 同时预留外部 Embedding API 接口（OpenAI/豆包等）。
 """
+import os
 import re
 import math
 import hashlib
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional
 from collections import Counter
 from abc import ABC, abstractmethod
+
+
+class EmbeddingError(RuntimeError):
+    """Base class for embedding backend failures."""
+
+
+class EmbeddingBackendUnavailableError(EmbeddingError):
+    """No semantic backend can be initialized from the current environment."""
+
+
+class InvalidEmbeddingVectorError(EmbeddingError):
+    """An embedding vector is empty, non-finite, or has the wrong dimension."""
 
 
 class BaseEmbedder(ABC):
@@ -31,6 +44,33 @@ class BaseEmbedder(ABC):
         """向量维度"""
         pass
 
+    @property
+    def model_id(self) -> str:
+        return "base-embedder"
+
+    @property
+    def version(self) -> str:
+        return "1"
+
+    @property
+    def semantic(self) -> bool:
+        return False
+
+    def embed_text(self, text: str) -> List[float]:
+        return self.embed_query(text)
+
+    def embed_texts(self, texts: List[str]) -> List[List[float]]:
+        return self.embed(texts)
+
+
+def _is_finite_vector(vector: List[float], dimension: Optional[int] = None) -> bool:
+    if not vector:
+        return False
+    if dimension is not None and len(vector) != dimension:
+        return False
+    return all(isinstance(value, (int, float)) and math.isfinite(float(value))
+               for value in vector)
+
 
 class HashingEmbedder(BaseEmbedder):
     """Stateless, deterministic local embedder for persisted task embeddings.
@@ -43,6 +83,18 @@ class HashingEmbedder(BaseEmbedder):
         if dimensions < 32:
             raise ValueError("dimensions must be at least 32")
         self._dimension = dimensions
+
+    @property
+    def model_id(self) -> str:
+        return "hashing-512-v1"
+
+    @property
+    def version(self) -> str:
+        return "1"
+
+    @property
+    def semantic(self) -> bool:
+        return False
 
     @staticmethod
     def _tokens(text: str) -> List[str]:
@@ -261,6 +313,10 @@ class APIEmbedder(BaseEmbedder):
 
     def __init__(self, api_key: str, base_url: str = "https://api.openai.com/v1",
                  model: str = "text-embedding-3-small", dimension: int = 1536):
+        if not api_key:
+            raise EmbeddingBackendUnavailableError(
+                "API embedding backend requires an API key",
+            )
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.model = model
@@ -287,6 +343,11 @@ class APIEmbedder(BaseEmbedder):
         result = [item["embedding"] for item in data["data"]]
         if result:
             self._dimension = len(result[0])
+        for vector in result:
+            if not _is_finite_vector(vector, self._dimension):
+                raise InvalidEmbeddingVectorError(
+                    "API embedding returned an empty or non-finite vector",
+                )
         return result
 
     def embed_query(self, text: str) -> List[float]:
@@ -295,6 +356,134 @@ class APIEmbedder(BaseEmbedder):
     @property
     def dimension(self) -> int:
         return self._dimension
+
+    @property
+    def model_id(self) -> str:
+        return f"api:{self.model}"
+
+    @property
+    def version(self) -> str:
+        return "1"
+
+    @property
+    def semantic(self) -> bool:
+        return True
+
+
+class LocalSemanticEmbedder(BaseEmbedder):
+    """Optional local sentence-transformer backend for offline semantic search.
+
+    The dependency is intentionally lazy and optional. When the ``semantic``
+    extra is not installed, construction raises
+    :class:`EmbeddingBackendUnavailableError`; the embedding factory can then
+    fall back to a configured API backend. It never silently degrades to the
+    legacy hashing vector space.
+    """
+
+    DEFAULT_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"
+
+    def __init__(self, model_name: str = None, cache_dir: str = None):
+        try:
+            from sentence_transformers import SentenceTransformer
+        except Exception as exc:
+            raise EmbeddingBackendUnavailableError(
+                "Local semantic backend requires the 'semantic' extra",
+            ) from exc
+        self.model_name = model_name or self.DEFAULT_MODEL
+        self._model = SentenceTransformer(self.model_name, cache_folder=cache_dir)
+
+    def embed(self, texts: List[str]) -> List[List[float]]:
+        vectors = self._model.encode(
+            list(texts),
+            normalize_embeddings=True,
+            convert_to_numpy=True,
+        ).tolist()
+        for vector in vectors:
+            if not _is_finite_vector(vector, self.dimension):
+                raise InvalidEmbeddingVectorError(
+                    "Local semantic backend returned an invalid vector",
+                )
+        return vectors
+
+    def embed_query(self, text: str) -> List[float]:
+        return self.embed([text])[0]
+
+    @property
+    def dimension(self) -> int:
+        return self._model.get_sentence_embedding_dimension()
+
+    @property
+    def model_id(self) -> str:
+        return f"local:{self.model_name}"
+
+    @property
+    def version(self) -> str:
+        return "sentence-transformers"
+
+    @property
+    def semantic(self) -> bool:
+        return True
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def create_semantic_embedder(backend: str = None,
+                             model: str = None,
+                             api_key: str = None,
+                             base_url: str = None) -> BaseEmbedder:
+    """Create the best available true semantic embedder.
+
+    Resolution order:
+    1. Explicit ``local`` backend if the optional sentence-transformers
+       dependency is installed.
+    2. Explicit ``api`` backend using an OpenAI-compatible endpoint.
+    3. ``auto`` tries local first, then API, and raises a clear error when
+       neither backend is usable.
+    """
+    backend = (backend or os.environ.get("OFFICE_AGENT_EMBEDDING_BACKEND", "auto")).lower()
+    model = model or os.environ.get("OFFICE_AGENT_EMBEDDING_MODEL")
+    api_key = api_key or os.environ.get(
+        "OFFICE_AGENT_EMBEDDING_API_KEY",
+        os.environ.get("OPENAI_API_KEY", ""),
+    )
+    base_url = base_url or os.environ.get(
+        "OFFICE_AGENT_EMBEDDING_BASE_URL",
+        "https://api.openai.com/v1",
+    )
+
+    def _local():
+        return LocalSemanticEmbedder(model_name=model)
+
+    def _api():
+        return APIEmbedder(
+            api_key=api_key,
+            base_url=base_url,
+            model=model or "text-embedding-3-small",
+        )
+
+    if backend == "local":
+        return _local()
+    if backend == "api":
+        return _api()
+    if backend != "auto":
+        raise EmbeddingBackendUnavailableError(
+            f"Unknown embedding backend: {backend}",
+        )
+
+    try:
+        return _local()
+    except EmbeddingBackendUnavailableError:
+        if api_key:
+            return _api()
+    raise EmbeddingBackendUnavailableError(
+        "No semantic embedding backend is available. Install the 'semantic' "
+        "extra or configure OFFICE_AGENT_EMBEDDING_API_KEY.",
+    )
 
 
 def cosine_similarity(a: List[float], b: List[float]) -> float:

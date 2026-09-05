@@ -41,6 +41,9 @@ dev = [
     "ruff>=0.1.0",
     "mypy>=1.5,<2",
 ]
+semantic = [
+    "sentence-transformers>=2.7.0",
+]
 
 # mypy baseline config (2026-09-05 census: 736 errors / 91 files — 见外部清单
 # "缺少类型检查在 CI 中拦截" 条目)。本配置不做任何错误抑制：

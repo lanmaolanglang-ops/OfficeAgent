@@ -30,12 +30,14 @@ class KnowledgeRepository(BaseRepository[Knowledge]):
     def add_knowledge(self, title: str, content: str, source: str = None,
                       source_type: str = None, category: str = None,
                       tags: str = None, embedding: str = None,
+                      embedding_model: str = None,
                       metadata_json: str = None,
                       chunk_index: int = 0, total_chunks: int = 1) -> Knowledge:
         kb = Knowledge(
             title=title, content=content, source=source,
             source_type=source_type, category=category, tags=tags,
-            embedding=embedding, metadata_json=metadata_json,
+            embedding=embedding, embedding_model=embedding_model,
+            metadata_json=metadata_json,
             chunk_index=chunk_index, total_chunks=total_chunks,
         )
         return self.create(kb)
