@@ -226,6 +226,7 @@ class TestLegacyVectorIsolation:
         result = search_knowledge("查询", category="policy")
         assert result["status"] == "failed"
         assert "RAG 语义检索后端未配置" in result["error"]
+        assert "Embedding 模型" in result["error"]
 
 
 class TestCosineContract:
@@ -265,6 +266,29 @@ class TestEmbeddingRuntimeDeployment:
 
         reloaded = EmbeddingConfigManager(config_dir=str(tmp_path))
         assert reloaded.get_config()["api_key"] == "sk-secret-value"
+
+    def test_embedding_config_manager_preserves_secret_when_blank(
+            self, tmp_path):
+        from office_agent.knowledge_base.embedding_config import (
+            EmbeddingConfigManager,
+        )
+
+        manager = EmbeddingConfigManager(config_dir=str(tmp_path))
+        manager.save_config(
+            provider="custom",
+            api_key="sk-existing-secret",
+            base_url="https://old.example.com/v1",
+            model="old-model",
+        )
+        updated = manager.save_config(
+            provider="custom",
+            api_key="",
+            base_url="https://new.example.com/v1",
+            model="new-model",
+        )
+        assert updated["api_key"] == "sk-existing-secret"
+        assert updated["base_url"] == "https://new.example.com/v1"
+        assert updated["model"] == "new-model"
 
     def test_create_semantic_embedder_uses_persisted_config(self, monkeypatch):
         from office_agent.knowledge_base import embeddings as embeddings_module
