@@ -6,8 +6,6 @@ import json
 import os
 import socket
 from datetime import datetime, timedelta
-from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -316,6 +314,89 @@ def test_runtime_start_success_existing_service_and_failures(tmp_path, monkeypat
     monkeypatch.setattr(runtime_module.subprocess, "Popen", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("spawn failed")))
     assert broken.start() is False
     assert broken.state.status == AppStatus.ERROR
+
+
+def test_runtime_start_returns_at_first_ready_not_after_fixed_wait(tmp_path, monkeypatch):
+    """L449 证据：readiness 等待在首次健康检查通过时立即返回，
+    等待时长由健康检查节奏决定，并非固定占用调用线程 30 秒。"""
+    from office_agent.runtime_manager import AppStatus
+    import office_agent.runtime_manager as runtime_module
+
+    manager = _runtime(tmp_path / "delay", startup_timeout=30)
+    process = _FakeProcess()
+    health_calls = []
+
+    def _health():
+        health_calls.append(1)
+        return len(health_calls) >= 3
+
+    monkeypatch.setattr(manager, "is_port_in_use", lambda: False)
+    monkeypatch.setattr(manager, "check_health", _health)
+    monkeypatch.setattr(runtime_module.subprocess, "Popen", lambda *_args, **_kwargs: process)
+    monkeypatch.setattr(runtime_module.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(manager, "_monitor_loop", lambda: None)
+    sleeps = []
+    monkeypatch.setattr(runtime_module.time, "sleep", lambda seconds: sleeps.append(seconds))
+    assert manager.start() is True
+    assert manager.state.status == AppStatus.RUNNING
+    assert manager.state.pid == 4321
+    # 第 3 次健康检查通过即返回：只有 2 次 0.5s 间隔，远低于 30s 上限
+    assert len(health_calls) == 3
+    assert sleeps == [0.5, 0.5]
+
+
+def test_runtime_start_timeout_kills_child_process(tmp_path, monkeypatch):
+    """L449 证据：等待有界（startup_timeout），超时后 kill 子进程，不留孤儿。"""
+    from office_agent.runtime_manager import AppStatus
+    import office_agent.runtime_manager as runtime_module
+
+    manager = _runtime(tmp_path / "timeout")  # startup_timeout=1
+    process = _FakeProcess()
+    ticks = iter([0.0, 0.0, 100.0])
+    monkeypatch.setattr(runtime_module.time, "time", lambda: next(ticks, 100.0))
+    monkeypatch.setattr(runtime_module.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(manager, "is_port_in_use", lambda: False)
+    monkeypatch.setattr(manager, "check_health", lambda: False)
+    monkeypatch.setattr(runtime_module.subprocess, "Popen", lambda *_args, **_kwargs: process)
+    assert manager.start() is False
+    assert manager.state.status == AppStatus.ERROR
+    assert "Startup timeout" in manager.state.last_error
+    # 超时清理：子进程被 kill 且 wait 回收，不产生孤儿进程
+    assert process.killed is True
+
+
+def test_runtime_start_stop_during_startup_terminates_child(tmp_path, monkeypatch):
+    """L449 证据：startup 轮询期间调用 stop()（Windows 服务 SvcStop 语义），
+    子进程被 terminate+wait 回收，start() 明确失败返回，不产生孤儿。"""
+    import threading as real_threading
+
+    import office_agent.runtime_manager as runtime_module
+
+    manager = _runtime(tmp_path / "stop-start", startup_timeout=30)
+    process = _FakeProcess()
+    started_polling = real_threading.Event()
+    allow_health_return = real_threading.Event()
+
+    def _health():
+        started_polling.set()
+        allow_health_return.wait(5)
+        return False
+
+    monkeypatch.setattr(manager, "is_port_in_use", lambda: False)
+    monkeypatch.setattr(manager, "check_health", _health)
+    monkeypatch.setattr(runtime_module.subprocess, "Popen", lambda *_args, **_kwargs: process)
+
+    result = []
+    starter = real_threading.Thread(target=lambda: result.append(manager.start()))
+    starter.start()
+    assert started_polling.wait(5)
+    # 模拟 SCM 在 startup 轮询期间并发调用 stop()
+    assert manager.stop() is True
+    allow_health_return.set()
+    starter.join(5)
+    assert not starter.is_alive()
+    assert result == [False]
+    assert process.terminated is True
 
 
 def test_runtime_stop_restart_kill_monitor_and_singleton(tmp_path, monkeypatch):
