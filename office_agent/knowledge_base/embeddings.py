@@ -466,10 +466,23 @@ def create_semantic_embedder(backend: str = None,
             model=model or "text-embedding-3-small",
         )
 
+    def _persisted_api():
+        from .embedding_config import EmbeddingConfigManager
+
+        manager = EmbeddingConfigManager()
+        if not manager.is_configured():
+            return None
+        config = manager.get_config()
+        return APIEmbedder(
+            api_key=config["api_key"],
+            base_url=config["base_url"],
+            model=config["model"],
+        )
+
     if backend == "local":
         return _local()
     if backend == "api":
-        return _api()
+        return _api() if api_key else (_persisted_api() or _api())
     if backend != "auto":
         raise EmbeddingBackendUnavailableError(
             f"Unknown embedding backend: {backend}",
@@ -480,9 +493,12 @@ def create_semantic_embedder(backend: str = None,
     except EmbeddingBackendUnavailableError:
         if api_key:
             return _api()
+        persisted = _persisted_api()
+        if persisted is not None:
+            return persisted
     raise EmbeddingBackendUnavailableError(
         "No semantic embedding backend is available. Install the 'semantic' "
-        "extra or configure OFFICE_AGENT_EMBEDDING_API_KEY.",
+        "extra or configure an OpenAI-compatible embedding provider.",
     )
 
 

@@ -49,6 +49,14 @@ class ImageModelRequest(BaseModel):
     mcp_url: Optional[str] = None
 
 
+class EmbeddingModelRequest(BaseModel):
+    """RAG semantic embedding provider request."""
+    provider: str = "custom"
+    api_key: str = ""
+    base_url: Optional[str] = None
+    model: str = ""
+
+
 def _mask_key(api_key: str) -> str:
     """生成 Key 掩码，不回传明文"""
     if not api_key:
@@ -294,4 +302,100 @@ async def test_image_model_connection():
             "model": gateway.model,
             "latency_ms": 0,
             "message": _image_test_error(str(exc)),
+        }
+
+
+@router.get("/embedding-model")
+def get_embedding_model_settings():
+    """获取 RAG semantic embedding provider 配置（不回传 API Key）。"""
+    try:
+        from ...knowledge_base.embedding_config import EmbeddingConfigManager
+
+        manager = EmbeddingConfigManager()
+        config = manager.get_config()
+        return {
+            "configured": manager.is_configured(),
+            "provider": config["provider"],
+            "model": config["model"],
+            "base_url": config["base_url"],
+            "api_key_mask": _mask_key(config["api_key"]),
+        }
+    except Exception:
+        logger.exception("读取 Embedding 配置失败")
+        raise HTTPException(status_code=500, detail="读取 Embedding 配置失败，请稍后重试")
+
+
+@router.post("/embedding-model")
+def save_embedding_model_settings(req: EmbeddingModelRequest):
+    """保存 OpenAI-compatible semantic embedding provider 配置。"""
+    provider = (req.provider or "custom").strip().lower()
+    api_key = (req.api_key or "").strip()
+    if not api_key:
+        raise HTTPException(status_code=400, detail="API Key 不能为空")
+    try:
+        from ...knowledge_base.embedding_config import EmbeddingConfigManager
+
+        manager = EmbeddingConfigManager()
+        config = manager.save_config(
+            provider=provider,
+            api_key=api_key,
+            base_url=(req.base_url or "").strip(),
+            model=(req.model or "").strip(),
+        )
+        return {
+            "configured": manager.is_configured(),
+            "provider": config["provider"],
+            "model": config["model"],
+            "base_url": config["base_url"],
+            "api_key_mask": _mask_key(config["api_key"]),
+        }
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("保存 Embedding 配置失败")
+        raise HTTPException(status_code=500, detail="保存 Embedding 配置失败，请检查配置后重试")
+
+
+@router.post("/embedding-model/test")
+async def test_embedding_model_connection():
+    """发起一次短文本 embedding 请求，验证 provider 配置真实可用。"""
+    from ...knowledge_base.embedding_config import EmbeddingConfigManager
+
+    manager = EmbeddingConfigManager()
+    if not manager.is_configured():
+        raise HTTPException(status_code=400, detail="请先保存 Embedding provider 配置")
+    config = manager.get_config()
+    from ...knowledge_base.embeddings import APIEmbedder
+
+    try:
+        embedder = APIEmbedder(
+            api_key=config["api_key"],
+            base_url=config["base_url"],
+            model=config["model"],
+        )
+        vector = await asyncio.wait_for(
+            asyncio.to_thread(embedder.embed_query, "Office Agent semantic embedding test"),
+            timeout=60,
+        )
+        return {
+            "success": bool(vector and len(vector) == embedder.dimension),
+            "provider": config["provider"],
+            "model": config["model"],
+            "dimension": embedder.dimension,
+            "message": "Embedding provider 连接成功",
+        }
+    except asyncio.TimeoutError:
+        return {
+            "success": False,
+            "provider": config["provider"],
+            "model": config["model"],
+            "message": "连接超时，请检查网络或服务地址",
+        }
+    except Exception as exc:
+        logger.warning("Embedding provider 测试失败: %s", exc)
+        return {
+            "success": False,
+            "provider": config["provider"],
+            "model": config["model"],
+            "message": _model_test_error(str(exc)),
         }

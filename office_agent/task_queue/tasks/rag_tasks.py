@@ -11,6 +11,18 @@ from ...security.error_sanitizer import sanitize_error
 logger = logging.getLogger("office_agent.tasks.rag")
 
 
+def _rag_error_message(exc: Exception) -> str:
+    """Return a user-facing RAG error without leaking backend internals."""
+    from ...knowledge_base.embeddings import EmbeddingBackendUnavailableError
+
+    if isinstance(exc, EmbeddingBackendUnavailableError):
+        return (
+            "RAG 语义检索后端未配置。请在设置中配置 Embedding Provider，"
+            "或安装 semantic 依赖。"
+        )
+    return sanitize_error(exc)
+
+
 def _public_source(source: str | None, file_path: str) -> str:
     """Keep useful provenance without persisting a local absolute path."""
     candidate = source or file_path
@@ -234,7 +246,7 @@ def index_document(file_path: str, title: str = None,
         logger.info("文档索引 %s 完成: %s, %s chunks",
                     _task_id, resolved_title, result["chunks"])
     except Exception as exc:
-        result.update(status="failed", error=sanitize_error(exc))
+        result.update(status="failed", error=_rag_error_message(exc))
         logger.error("文档索引 %s 失败: %s", _task_id, result["error"])
     return result
 
@@ -252,7 +264,7 @@ def chunk_and_embed(text: str, title: str = None,
         result["title"] = resolved_title
         _progress(progress, 100, "完成")
     except Exception as exc:
-        result.update(status="failed", error=sanitize_error(exc))
+        result.update(status="failed", error=_rag_error_message(exc))
         logger.error("文本嵌入 %s 失败: %s", _task_id, result["error"])
     return result
 
@@ -337,7 +349,7 @@ def search_knowledge(query: str, top_k: int = 5,
                 })
         _progress(progress, 100, f"找到 {len(result['results'])} 条结果")
     except Exception as exc:
-        result.update(status="failed", error=sanitize_error(exc))
+        result.update(status="failed", error=_rag_error_message(exc))
         logger.error("知识检索 %s 失败: %s", _task_id, result["error"])
     return result
 
@@ -370,6 +382,6 @@ def refresh_knowledge_base(progress=None, _task_id: str = None, **kwargs) -> dic
         logger.info("知识库刷新 %s: %s 条记录",
                     _task_id, result["refreshed"])
     except Exception as exc:
-        result.update(status="failed", error=sanitize_error(exc))
+        result.update(status="failed", error=_rag_error_message(exc))
         logger.error("知识库刷新 %s 失败: %s", _task_id, result["error"])
     return result
