@@ -355,11 +355,13 @@ class TemplateAnalyzer:
 
         prs = Presentation(str(path))
 
+        width_emu = prs.slide_width
+        height_emu = prs.slide_height
         config = TemplateConfig(
             file_path=str(path),
             name=path.stem,
-            slide_width=prs.slide_width / 914400,
-            slide_height=prs.slide_height / 914400,
+            slide_width=width_emu / 914400 if width_emu is not None else 13.333,
+            slide_height=height_emu / 914400 if height_emu is not None else 7.5,
             slide_count=len(prs.slides),
         )
 

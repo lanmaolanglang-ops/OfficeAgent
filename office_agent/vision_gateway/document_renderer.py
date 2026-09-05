@@ -255,10 +255,12 @@ class DocumentRenderer:
                     texts.append("[图片]")
 
             # 生成一个占位图片（纯色背景+文字）
+            width_emu = prs.slide_width
+            height_emu = prs.slide_height
             img_path = self._create_placeholder_image(
                 i + 1, texts,
-                width=int(prs.slide_width / 914400 * 96),
-                height=int(prs.slide_height / 914400 * 96),
+                width=int((width_emu or 12192000) / 914400 * 96),
+                height=int((height_emu or 6858000) / 914400 * 96),
             )
 
             img = ImageInput.from_file(img_path, page_number=i+1)

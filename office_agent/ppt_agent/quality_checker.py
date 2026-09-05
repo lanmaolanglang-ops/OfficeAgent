@@ -196,8 +196,10 @@ class PPTQualityChecker:
             expected_slides=expected_slides,
         )
 
-        slide_w = prs.slide_width / 914400
-        slide_h = prs.slide_height / 914400
+        width_emu = prs.slide_width
+        slide_w = width_emu / 914400 if width_emu is not None else 13.333
+        height_emu = prs.slide_height
+        slide_h = height_emu / 914400 if height_emu is not None else 7.5
 
         all_fonts = []
         all_sizes = []
@@ -574,7 +576,7 @@ class PPTQualityChecker:
             height = shape.height / 914400 if shape.height else 1
 
             # 估算每行可容纳字符数（中文约占字号宽度，英文约一半）
-            total_lines = 0
+            total_lines = 0.0
             for para in tf.paragraphs:
                 text = para.text
                 if not text.strip():

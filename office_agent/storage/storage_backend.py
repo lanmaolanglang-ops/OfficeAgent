@@ -4,7 +4,7 @@
 所有存储实现（本地文件系统）必须实现此接口。
 """
 import abc
-from typing import BinaryIO
+from typing import BinaryIO, Iterator
 
 
 class StorageBackend(abc.ABC):
@@ -52,6 +52,17 @@ class StorageBackend(abc.ABC):
     def download_fileobj(self, storage_path: str, fileobj: BinaryIO) -> None:
         """
         下载到文件对象（流式）
+        """
+        pass
+
+    @abc.abstractmethod
+    def iter_file(self, storage_path: str,
+                  chunk_size: int = 1024 * 1024) -> Iterator[bytes]:
+        """
+        分块迭代文件内容（避免大文件整读进内存）
+
+        Returns:
+            每次 yield 一块 bytes
         """
         pass
 

@@ -8,6 +8,7 @@ from typing import Optional
 
 from pptx import Presentation
 from pptx.presentation import Presentation as PresentationType
+from pptx.slide import Slide
 from pptx.util import Inches, Pt
 from pptx.dml.color import RGBColor
 from pptx.enum.text import PP_ALIGN, MSO_ANCHOR, MSO_AUTO_SIZE
@@ -147,8 +148,12 @@ class PPTService:
                     self.prs = base_prs
                     self._base_deck = True
                     # 页面尺寸以模板实际值为准（渲染缩放因子基于它计算）
-                    outline.slide_width = self.prs.slide_width / 914400
-                    outline.slide_height = self.prs.slide_height / 914400
+                    base_width = base_prs.slide_width
+                    if base_width is not None:
+                        outline.slide_width = base_width / 914400
+                    base_height = base_prs.slide_height
+                    if base_height is not None:
+                        outline.slide_height = base_height / 914400
                     self.changes.append(f"使用模板: {Path(base_path).name}（保留母版与主题）")
                 except Exception as exc:
                     logger.warning("模板基底加载失败，回退空白演示文稿: %s", exc)
@@ -245,11 +250,18 @@ class PPTService:
     # 版式渲染
     # ==========================================
 
-    def _add_blank_slide(self) -> object:
+    def _require_presentation(self) -> PresentationType:
+        """返回已初始化的 Presentation；未初始化时快速失败。"""
+        if self.prs is None:
+            raise RuntimeError("演示文稿尚未初始化")
+        return self.prs
+
+    def _add_blank_slide(self) -> Slide:
         """添加空白幻灯片"""
+        prs = self._require_presentation()
         # 任意模板的版式集合不保证 [6] 是空白布局：优先选无占位符的版式
         layout = None
-        for cand in self.prs.slide_layouts:
+        for cand in prs.slide_layouts:
             try:
                 if len(cand.placeholders) == 0:
                     layout = cand
@@ -257,9 +269,9 @@ class PPTService:
             except Exception:
                 continue
         if layout is None:
-            layouts = list(self.prs.slide_layouts)
+            layouts = list(prs.slide_layouts)
             layout = layouts[6] if len(layouts) > 6 else layouts[0]
-        slide = self.prs.slides.add_slide(layout)
+        slide = prs.slides.add_slide(layout)
         # 基底模板时保留母版背景（覆盖填充会抹掉模板的背景/装饰）
         if not self._base_deck:
             bg = slide.background

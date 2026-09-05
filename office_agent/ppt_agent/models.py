@@ -129,6 +129,8 @@ class PPTOutline:
     slide_width: float = 13.333     # 英寸
     slide_height: float = 7.5       # 英寸
     used_template: bool = False     # 是否因 LLM 失败/未配置而回退模板
+    changes: list = field(default_factory=list)          # 生成过程中的变更记录
+    _base_template_path: Optional[str] = None            # 基底模板文件路径
 
     def add_slide(self, slide: SlideContent):
         slide.page_number = len(self.slides) + 1
