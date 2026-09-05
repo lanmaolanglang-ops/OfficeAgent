@@ -1,5 +1,4 @@
 """配置管理 Repository"""
-import json
 import logging
 from typing import Optional, List
 from sqlalchemy import select, and_
@@ -11,18 +10,6 @@ from ..models.config import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _loads(s, default=None):
-    if not s:
-        return default if default is not None else {}
-    try:
-        return json.loads(s)
-    except (json.JSONDecodeError, TypeError):
-        # 损坏的存储 JSON 回退默认值，但必须留痕；
-        # 不记录字段内容本身（可能包含敏感配置）。
-        logger.warning("配置 JSON 字段解析失败，回退默认值", exc_info=True)
-        return default if default is not None else {}
 
 
 class ModelConfigRepository(BaseRepository[ModelConfig]):
@@ -74,9 +61,9 @@ class ModelConfigRepository(BaseRepository[ModelConfig]):
             "cost_input_per_1k": m.cost_input_per_1k,
             "cost_output_per_1k": m.cost_output_per_1k,
             "enabled": m.enabled, "priority": m.priority,
-            "tags": _loads(m.tags, []),
+            "tags": m.tags or [],
             "description": m.description,
-            "extra": _loads(m.config_json),
+            "extra": m.config_json or {},
             "created_at": m.created_at.isoformat() if m.created_at else None,
             "updated_at": m.updated_at.isoformat() if m.updated_at else None,
         }
@@ -114,18 +101,18 @@ class AgentConfigRepository(BaseRepository[AgentConfigModel]):
             "system_prompt": a.system_prompt,
             "prompt_template": a.prompt_template,
             "prompt_version": a.prompt_version,
-            "model_priority": _loads(a.model_priority, []),
-            "fallback_models": _loads(a.fallback_models, []),
-            "available_tools": _loads(a.available_tools, []),
+            "model_priority": a.model_priority or [],
+            "fallback_models": a.fallback_models or [],
+            "available_tools": a.available_tools or [],
             "timeout": a.timeout, "max_retries": a.max_retries,
-            "retry_config": _loads(a.retry_config),
+            "retry_config": a.retry_config or {},
             "max_input_length": a.max_input_length,
             "max_output_length": a.max_output_length,
             "enable_quality_check": a.enable_quality_check,
             "quality_threshold": a.quality_threshold,
             "enabled": a.enabled,
-            "tags": _loads(a.tags, []),
-            "extra": _loads(a.config_json),
+            "tags": a.tags or [],
+            "extra": a.config_json or {},
             "created_at": a.created_at.isoformat() if a.created_at else None,
             "updated_at": a.updated_at.isoformat() if a.updated_at else None,
         }
@@ -179,10 +166,10 @@ class PromptConfigRepository(BaseRepository[PromptConfig]):
             "id": p.id, "name": p.name, "version": p.version,
             "content": p.content, "description": p.description,
             "agent": p.agent, "task_type": p.task_type,
-            "variables": _loads(p.variables, []),
+            "variables": p.variables or [],
             "status": p.status, "is_default": p.is_default,
-            "author": p.author, "tags": _loads(p.tags, []),
-            "extra": _loads(p.config_json),
+            "author": p.author, "tags": p.tags or [],
+            "extra": p.config_json or {},
             "created_at": p.created_at.isoformat() if p.created_at else None,
         }
 
@@ -205,14 +192,14 @@ class SkillConfigRepository(BaseRepository[SkillConfigModel]):
         return {
             "id": s.id, "skill_name": s.skill_name,
             "description": s.description, "version": s.version,
-            "workflow": _loads(s.workflow, []),
-            "tools": _loads(s.tools, []),
+            "workflow": s.workflow or [],
+            "tools": s.tools or [],
             "prompt": s.prompt,
-            "trigger_keywords": _loads(s.trigger_keywords, []),
-            "trigger_patterns": _loads(s.trigger_patterns, []),
-            "parameters": _loads(s.parameters),
-            "enabled": s.enabled, "tags": _loads(s.tags, []),
-            "extra": _loads(s.config_json),
+            "trigger_keywords": s.trigger_keywords or [],
+            "trigger_patterns": s.trigger_patterns or [],
+            "parameters": s.parameters or {},
+            "enabled": s.enabled, "tags": s.tags or [],
+            "extra": s.config_json or {},
         }
 
 
@@ -234,12 +221,12 @@ class WorkflowConfigRepository(BaseRepository[WorkflowConfig]):
         return {
             "id": w.id, "workflow_name": w.workflow_name,
             "description": w.description, "version": w.version,
-            "steps": _loads(w.steps, []),
-            "input_schema": _loads(w.input_schema),
-            "output_schema": _loads(w.output_schema),
+            "steps": w.steps or [],
+            "input_schema": w.input_schema or {},
+            "output_schema": w.output_schema or {},
             "timeout": w.timeout, "max_concurrency": w.max_concurrency,
-            "enabled": w.enabled, "tags": _loads(w.tags, []),
-            "extra": _loads(w.config_json),
+            "enabled": w.enabled, "tags": w.tags or [],
+            "extra": w.config_json or {},
         }
 
 
@@ -256,7 +243,7 @@ class FileRuleRepository(BaseRepository[FileRuleConfig]):
         return {
             "id": f.id, "rule_name": f.rule_name,
             "file_pattern": f.file_pattern,
-            "actions": _loads(f.actions, []),
-            "parameters": _loads(f.parameters),
+            "actions": f.actions or [],
+            "parameters": f.parameters or {},
             "enabled": f.enabled,
         }

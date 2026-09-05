@@ -7,7 +7,6 @@
 - 热更新
 - 运行时查询
 """
-import json
 import re
 import threading
 import time
@@ -493,7 +492,7 @@ class ConfigManager:
                 db_obj.content = data["content"]
                 db_obj.status = data.get("status", "active")
                 db_obj.is_default = data.get("is_default", False)
-                db_obj.variables = json.dumps(data.get("variables", []))
+                db_obj.variables = data.get("variables", [])
                 db_obj.agent = data.get("agent")
                 if data.get("is_default", False):
                     for item in repo.list_versions(data["name"]):
@@ -524,24 +523,24 @@ class ConfigManager:
                 existing = repo.get_by_name(name)
                 if existing:
                     existing.description = data.get("description", "")
-                    existing.workflow = json.dumps(data.get("workflow", []), ensure_ascii=False)
-                    existing.tools = json.dumps(data.get("tools", []))
+                    existing.workflow = data.get("workflow", [])
+                    existing.tools = data.get("tools", [])
                     existing.enabled = data.get("enabled", True)
-                    existing.parameters = json.dumps(data.get("parameters", {}), ensure_ascii=False)
+                    existing.parameters = data.get("parameters", {})
                 else:
                     repo.create_from_dict({
                         "skill_name": name,
                         "description": data.get("description", ""),
                         "version": data.get("version", "1.0.0"),
-                        "workflow": json.dumps(data.get("workflow", []), ensure_ascii=False),
-                        "tools": json.dumps(data.get("tools", []), ensure_ascii=False),
+                        "workflow": data.get("workflow", []),
+                        "tools": data.get("tools", []),
                         "prompt": data.get("prompt"),
-                        "trigger_keywords": json.dumps(data.get("trigger_keywords", []), ensure_ascii=False),
-                        "trigger_patterns": json.dumps(data.get("trigger_patterns", []), ensure_ascii=False),
-                        "parameters": json.dumps(data.get("parameters", {}), ensure_ascii=False),
+                        "trigger_keywords": data.get("trigger_keywords", []),
+                        "trigger_patterns": data.get("trigger_patterns", []),
+                        "parameters": data.get("parameters", {}),
                         "enabled": data.get("enabled", True),
-                        "tags": json.dumps(data.get("tags", []), ensure_ascii=False),
-                        "config_json": json.dumps(data.get("extra", {}), ensure_ascii=False),
+                        "tags": data.get("tags", []),
+                        "config_json": data.get("extra", {}),
                     })
                 session.commit()
             finally:
@@ -563,7 +562,7 @@ class ConfigManager:
                 repo = WorkflowConfigRepository(session)
                 existing = repo.get_by_name(name)
                 if existing:
-                    existing.steps = json.dumps(data.get("steps", []), ensure_ascii=False)
+                    existing.steps = data.get("steps", [])
                     existing.description = data.get("description", "")
                     existing.enabled = data.get("enabled", True)
                 else:
@@ -571,14 +570,14 @@ class ConfigManager:
                         "workflow_name": name,
                         "description": data.get("description", ""),
                         "version": data.get("version", "1.0.0"),
-                        "steps": json.dumps(data.get("steps", []), ensure_ascii=False),
-                        "input_schema": json.dumps(data.get("input_schema", {}), ensure_ascii=False),
-                        "output_schema": json.dumps(data.get("output_schema", {}), ensure_ascii=False),
+                        "steps": data.get("steps", []),
+                        "input_schema": data.get("input_schema", {}),
+                        "output_schema": data.get("output_schema", {}),
                         "timeout": data.get("timeout", 600),
                         "max_concurrency": data.get("max_concurrency", 1),
                         "enabled": data.get("enabled", True),
-                        "tags": json.dumps(data.get("tags", []), ensure_ascii=False),
-                        "config_json": json.dumps(data.get("extra", {}), ensure_ascii=False),
+                        "tags": data.get("tags", []),
+                        "config_json": data.get("extra", {}),
                     })
                 session.commit()
             finally:
@@ -637,7 +636,6 @@ def _merge_list(base: List[Dict], override: List[Dict], key: str) -> List[Dict]:
 
 
 def _model_to_db(data: Dict) -> Dict:
-    import json as _json
     return {
         "model_name": data.get("model_name", data.get("model_id")),
         "provider": data.get("provider", "custom"),
@@ -654,21 +652,20 @@ def _model_to_db(data: Dict) -> Dict:
         "cost_output_per_1k": data.get("cost_output_per_1k", 0),
         "enabled": data.get("enabled", True),
         "priority": data.get("priority", 0),
-        "tags": _json.dumps(data.get("tags", [])),
+        "tags": data.get("tags", []),
         "description": data.get("description"),
-        "config_json": _json.dumps(data.get("extra", {}), ensure_ascii=False),
+        "config_json": data.get("extra", {}),
     }
 
 
 def _agent_to_db(data: Dict) -> Dict:
-    import json as _json
     return {
         "description": data.get("description", ""),
         "version": data.get("version", "1.0.0"),
         "system_prompt": data.get("system_prompt", ""),
-        "model_priority": _json.dumps(data.get("model_priority", [])),
-        "fallback_models": _json.dumps(data.get("fallback_models", [])),
-        "available_tools": _json.dumps(data.get("available_tools", []), ensure_ascii=False),
+        "model_priority": data.get("model_priority", []),
+        "fallback_models": data.get("fallback_models", []),
+        "available_tools": data.get("available_tools", []),
         "timeout": data.get("timeout", 120),
         "max_retries": data.get("max_retries", 3),
         "max_input_length": data.get("max_input_length", 100000),
@@ -676,8 +673,8 @@ def _agent_to_db(data: Dict) -> Dict:
         "enable_quality_check": data.get("enable_quality_check", True),
         "quality_threshold": data.get("quality_threshold", 0.7),
         "enabled": data.get("enabled", True),
-        "tags": _json.dumps(data.get("tags", [])),
-        "config_json": _json.dumps(data.get("extra", {}), ensure_ascii=False),
+        "tags": data.get("tags", []),
+        "config_json": data.get("extra", {}),
     }
 
 

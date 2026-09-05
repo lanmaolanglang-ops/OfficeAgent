@@ -43,9 +43,9 @@ class ModelConfig(Base, TimestampMixin):
     # 状态
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     priority: Mapped[int] = mapped_column(Integer, default=0)
-    tags: Mapped[str] = mapped_column(Text, default="[]")  # JSON array
+    tags: Mapped[list] = mapped_column(JSON, default=list)
     description: Mapped[str] = mapped_column(Text, nullable=True)
-    config_json: Mapped[str] = mapped_column(Text, default="{}")
+    config_json: Mapped[dict] = mapped_column(JSON, default=dict)
 
     def __repr__(self):
         return f"<ModelConfig {self.model_id} ({self.provider})>"
@@ -66,16 +66,16 @@ class AgentConfigModel(Base, TimestampMixin):
     prompt_version: Mapped[str] = mapped_column(String(16), default="latest")
 
     # 模型
-    model_priority: Mapped[str] = mapped_column(Text, default="[]")  # JSON array
-    fallback_models: Mapped[str] = mapped_column(Text, default="[]")
+    model_priority: Mapped[list] = mapped_column(JSON, default=list)
+    fallback_models: Mapped[list] = mapped_column(JSON, default=list)
 
     # 工具
-    available_tools: Mapped[str] = mapped_column(Text, default="[]")  # JSON array
+    available_tools: Mapped[list] = mapped_column(JSON, default=list)
 
     # 执行
     timeout: Mapped[int] = mapped_column(Integer, default=120)
     max_retries: Mapped[int] = mapped_column(Integer, default=3)
-    retry_config: Mapped[str] = mapped_column(Text, default="{}")
+    retry_config: Mapped[dict] = mapped_column(JSON, default=dict)
 
     # 限制
     max_input_length: Mapped[int] = mapped_column(Integer, default=100000)
@@ -87,8 +87,8 @@ class AgentConfigModel(Base, TimestampMixin):
 
     # 状态
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
-    tags: Mapped[str] = mapped_column(Text, default="[]")
-    config_json: Mapped[str] = mapped_column(Text, default="{}")
+    tags: Mapped[list] = mapped_column(JSON, default=list)
+    config_json: Mapped[dict] = mapped_column(JSON, default=dict)
 
     def __repr__(self):
         return f"<AgentConfig {self.agent_name} v{self.version}>"
@@ -109,14 +109,14 @@ class PromptConfig(Base, TimestampMixin):
     task_type: Mapped[str] = mapped_column(String(64), nullable=True, index=True)
 
     # 变量
-    variables: Mapped[str] = mapped_column(Text, default="[]")
+    variables: Mapped[list] = mapped_column(JSON, default=list)
 
     # 状态
     status: Mapped[str] = mapped_column(String(16), default="active", index=True)
     is_default: Mapped[bool] = mapped_column(Boolean, default=False)
     author: Mapped[str] = mapped_column(String(64), nullable=True)
-    tags: Mapped[str] = mapped_column(Text, default="[]")
-    config_json: Mapped[str] = mapped_column(Text, default="{}")
+    tags: Mapped[list] = mapped_column(JSON, default=list)
+    config_json: Mapped[dict] = mapped_column(JSON, default=dict)
 
     __table_args__ = (
         UniqueConstraint("name", "version", name="uq_prompt_config_name_version"),
@@ -135,17 +135,17 @@ class SkillConfigModel(Base, TimestampMixin):
     description: Mapped[str] = mapped_column(Text, default="")
     version: Mapped[str] = mapped_column(String(16), default="1.0.0")
 
-    workflow: Mapped[str] = mapped_column(Text, default="[]")
-    tools: Mapped[str] = mapped_column(Text, default="[]")
+    workflow: Mapped[list] = mapped_column(JSON, default=list)
+    tools: Mapped[list] = mapped_column(JSON, default=list)
     prompt: Mapped[str] = mapped_column(Text, nullable=True)
 
-    trigger_keywords: Mapped[str] = mapped_column(Text, default="[]")
-    trigger_patterns: Mapped[str] = mapped_column(Text, default="[]")
-    parameters: Mapped[str] = mapped_column(Text, default="{}")
+    trigger_keywords: Mapped[list] = mapped_column(JSON, default=list)
+    trigger_patterns: Mapped[list] = mapped_column(JSON, default=list)
+    parameters: Mapped[dict] = mapped_column(JSON, default=dict)
 
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
-    tags: Mapped[str] = mapped_column(Text, default="[]")
-    config_json: Mapped[str] = mapped_column(Text, default="{}")
+    tags: Mapped[list] = mapped_column(JSON, default=list)
+    config_json: Mapped[dict] = mapped_column(JSON, default=dict)
 
     def __repr__(self):
         return f"<SkillConfig {self.skill_name}>"
@@ -160,16 +160,16 @@ class WorkflowConfig(Base, TimestampMixin):
     description: Mapped[str] = mapped_column(Text, default="")
     version: Mapped[str] = mapped_column(String(16), default="1.0.0")
 
-    steps: Mapped[str] = mapped_column(Text, default="[]")
-    input_schema: Mapped[str] = mapped_column(Text, default="{}")
-    output_schema: Mapped[str] = mapped_column(Text, default="{}")
+    steps: Mapped[list] = mapped_column(JSON, default=list)
+    input_schema: Mapped[dict] = mapped_column(JSON, default=dict)
+    output_schema: Mapped[dict] = mapped_column(JSON, default=dict)
 
     timeout: Mapped[int] = mapped_column(Integer, default=600)
     max_concurrency: Mapped[int] = mapped_column(Integer, default=1)
 
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
-    tags: Mapped[str] = mapped_column(Text, default="[]")
-    config_json: Mapped[str] = mapped_column(Text, default="{}")
+    tags: Mapped[list] = mapped_column(JSON, default=list)
+    config_json: Mapped[dict] = mapped_column(JSON, default=dict)
 
     def __repr__(self):
         return f"<WorkflowConfig {self.workflow_name}>"
@@ -182,10 +182,10 @@ class FileRuleConfig(Base, TimestampMixin):
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: _uuid("frc"))
     rule_name: Mapped[str] = mapped_column(String(128), nullable=False)
     file_pattern: Mapped[str] = mapped_column(String(256), nullable=False)
-    actions: Mapped[str] = mapped_column(Text, default="[]")
-    parameters: Mapped[str] = mapped_column(Text, default="{}")
+    actions: Mapped[list] = mapped_column(JSON, default=list)
+    parameters: Mapped[dict] = mapped_column(JSON, default=dict)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
-    config_json: Mapped[str] = mapped_column(Text, default="{}")
+    config_json: Mapped[dict] = mapped_column(JSON, default=dict)
 
     def __repr__(self):
         return f"<FileRuleConfig {self.rule_name}>"
