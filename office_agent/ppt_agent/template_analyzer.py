@@ -22,6 +22,7 @@ from collections import Counter
 import logging
 
 from pptx import Presentation
+from pptx.presentation import Presentation as PresentationType
 from pptx.oxml.ns import qn
 from lxml import etree
 
@@ -30,7 +31,7 @@ from .models import ColorScheme, FontScheme
 logger = logging.getLogger("office_agent.ppt_agent.template_analyzer")
 
 
-def clear_slides(prs: Presentation) -> None:
+def clear_slides(prs: PresentationType) -> None:
     """清空所有幻灯片（保留母版/版式/主题），且不留下孤儿 slide 部件。
 
     python-pptx 的 ``XmlPart.drop_rel`` 带引用计数守卫：rId 在所属部件
@@ -433,7 +434,7 @@ class TemplateAnalyzer:
     # 主题提取（颜色 + 字体）
     # ==========================================
 
-    def _extract_theme(self, prs: Presentation, config: TemplateConfig):
+    def _extract_theme(self, prs: PresentationType, config: TemplateConfig):
         """从母版主题 XML 提取颜色和字体"""
         try:
             master = prs.slide_masters[0]
@@ -524,7 +525,7 @@ class TemplateAnalyzer:
     # 母版提取
     # ==========================================
 
-    def _extract_masters(self, prs: Presentation, config: TemplateConfig):
+    def _extract_masters(self, prs: PresentationType, config: TemplateConfig):
         """提取所有母版信息"""
         for i, master in enumerate(prs.slide_masters):
             master_info = MasterInfo(
@@ -547,7 +548,7 @@ class TemplateAnalyzer:
     # 版式提取
     # ==========================================
 
-    def _extract_all_layouts(self, prs: Presentation, config: TemplateConfig):
+    def _extract_all_layouts(self, prs: PresentationType, config: TemplateConfig):
         """提取所有版式及其占位符位置"""
         for i, layout in enumerate(prs.slide_layouts):
             layout_info = LayoutInfo(
@@ -692,7 +693,7 @@ class TemplateAnalyzer:
     # 背景提取
     # ==========================================
 
-    def _extract_background(self, prs: Presentation, config: TemplateConfig):
+    def _extract_background(self, prs: PresentationType, config: TemplateConfig):
         """提取背景色"""
         try:
             # 先从母版提取
@@ -734,7 +735,7 @@ class TemplateAnalyzer:
     # 从示例幻灯片补充分析
     # ==========================================
 
-    def _analyze_sample_slides(self, prs: Presentation, config: TemplateConfig):
+    def _analyze_sample_slides(self, prs: PresentationType, config: TemplateConfig):
         """分析模板中的示例幻灯片，补充字体和颜色信息"""
         title_sizes = []
         body_sizes = []
@@ -774,7 +775,7 @@ class TemplateAnalyzer:
     # 回退方案（无法读取主题 XML 时）
     # ==========================================
 
-    def _fallback_extract_colors(self, prs: Presentation, config: TemplateConfig):
+    def _fallback_extract_colors(self, prs: PresentationType, config: TemplateConfig):
         """从幻灯片内容回退提取颜色"""
         colors = []
         for slide in prs.slides:
@@ -790,7 +791,7 @@ class TemplateAnalyzer:
             config.colors.dk2 = Counter(colors).most_common(1)[0][0]
             config.colors.accent1 = config.colors.dk2
 
-    def _fallback_extract_fonts(self, prs: Presentation, config: TemplateConfig):
+    def _fallback_extract_fonts(self, prs: PresentationType, config: TemplateConfig):
         """从幻灯片内容回退提取字体"""
         fonts = []
         for slide in prs.slides:
@@ -810,7 +811,7 @@ class TemplateAnalyzer:
     # ==========================================
 
     @staticmethod
-    def _clear_slides(prs: Presentation):
+    def _clear_slides(prs: PresentationType):
         """清空所有幻灯片（保留母版和版式），委托给模块级共享实现"""
         clear_slides(prs)
 

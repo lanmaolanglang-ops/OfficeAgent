@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Optional
 
 from docx import Document
+from docx.document import Document as DocumentType
 from docx.shared import Pt, Cm, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING
 from docx.enum.table import WD_TABLE_ALIGNMENT
@@ -103,7 +104,7 @@ class WordService:
     # 1. 文件读取
     # ==========================================
 
-    def read_file(self, file_path: str) -> Document:
+    def read_file(self, file_path: str) -> DocumentType:
         """
         读取文件，支持 .docx 和 .txt
 
@@ -128,7 +129,7 @@ class WordService:
         else:
             raise ValueError(f"不支持的文件格式: {ext}，仅支持 .docx 和 .txt")
 
-    def _txt_to_docx(self, txt_path: str) -> Document:
+    def _txt_to_docx(self, txt_path: str) -> DocumentType:
         """将 txt 文件转换为 Document 对象，支持 Markdown 标题和表格"""
         # 编码探测统一走 text_encoding 共享入口（失败抛 TextDecodeError，属 ValueError）
         content = read_text_file(txt_path)
@@ -189,7 +190,7 @@ class WordService:
     # 2. 文档结构分析
     # ==========================================
 
-    def analyze_structure(self, doc: Document) -> DocumentStructure:
+    def analyze_structure(self, doc: DocumentType) -> DocumentStructure:
         """
         分析文档结构
 
@@ -346,7 +347,7 @@ class WordService:
                 changes=self.changes,
             )
 
-    def _apply_body_format(self, doc: Document, config: FormatConfig):
+    def _apply_body_format(self, doc: DocumentType, config: FormatConfig):
         """应用正文格式"""
         font = config.body_font
         para_cfg = config.body_paragraph
@@ -369,7 +370,7 @@ class WordService:
                 f"{para_cfg.line_spacing}倍行距，共{count}段"
             )
 
-    def _apply_heading_format(self, doc: Document, config: FormatConfig):
+    def _apply_heading_format(self, doc: DocumentType, config: FormatConfig):
         """应用标题格式（含自动编号）
 
         按文档顺序遍历段落，遇到标题时：
@@ -556,7 +557,7 @@ class WordService:
     # 5. 表格处理（三线表）
     # ==========================================
 
-    def _process_tables(self, doc: Document, table_config: TableConfig):
+    def _process_tables(self, doc: DocumentType, table_config: TableConfig):
         """处理所有表格：三线表 + 自动编号（已有题注则不重复添加）"""
         for table in doc.tables:
             self._table_counter += 1
@@ -717,7 +718,7 @@ class WordService:
     # 页面设置
     # ==========================================
 
-    def _apply_page_setup(self, doc: Document, config: FormatConfig):
+    def _apply_page_setup(self, doc: DocumentType, config: FormatConfig):
         """应用页面设置（页边距、纸张大小等）"""
         ps = config.page_setup
         for section in doc.sections:

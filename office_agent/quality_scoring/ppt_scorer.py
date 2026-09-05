@@ -11,6 +11,7 @@ from typing import Dict, List, Any
 from dataclasses import dataclass, field
 
 from pptx import Presentation
+from pptx.presentation import Presentation as PresentationType
 from pptx.util import Emu
 
 
@@ -111,7 +112,7 @@ class PPTQualityScorer:
 
         return result
 
-    def _analyze_slides(self, prs: Presentation) -> Dict[str, Any]:
+    def _analyze_slides(self, prs: PresentationType) -> Dict[str, Any]:
         """分析所有幻灯片"""
         slide_count = len(prs.slides)
         slide_width = prs.slide_width

@@ -13,6 +13,7 @@ from typing import Dict, List, Any
 from dataclasses import dataclass, field
 
 from docx import Document
+from docx.document import Document as DocumentType
 
 
 @dataclass
@@ -119,7 +120,7 @@ class WordQualityScorer:
 
         return result
 
-    def _analyze_paragraphs(self, doc: Document) -> List[Dict[str, Any]]:
+    def _analyze_paragraphs(self, doc: DocumentType) -> List[Dict[str, Any]]:
         """分析所有段落"""
         paragraphs = []
         for i, para in enumerate(doc.paragraphs):
@@ -127,7 +128,7 @@ class WordQualityScorer:
             if not text:
                 continue
 
-            info = {
+            info: Dict[str, Any] = {
                 "index": i,
                 "text": text[:50],
                 "text_length": len(text),
@@ -147,7 +148,7 @@ class WordQualityScorer:
 
             # Run级别格式
             for run in para.runs:
-                run_info = {
+                run_info: Dict[str, Any] = {
                     "text": run.text[:30],
                     "font_name": run.font.name,
                     "font_size": run.font.size.pt if run.font.size else None,
@@ -183,7 +184,7 @@ class WordQualityScorer:
     _MANUAL_HEADING_RATIO = 1.25
     _MANUAL_HEADING_LEVEL1_RATIO = 1.5
 
-    def _analyze_headings(self, doc: Document,
+    def _analyze_headings(self, doc: DocumentType,
                          paragraphs: List[Dict]) -> Dict[str, Any]:
         """分析标题"""
         headings = []
@@ -253,7 +254,7 @@ class WordQualityScorer:
             "styled_headings": sum(1 for h in headings if not h["is_manual"]),
         }
 
-    def _analyze_format(self, doc: Document,
+    def _analyze_format(self, doc: DocumentType,
                        paragraphs: List[Dict]) -> Dict[str, Any]:
         """分析格式"""
         if not paragraphs:

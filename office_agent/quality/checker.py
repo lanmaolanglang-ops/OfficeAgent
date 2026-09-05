@@ -16,6 +16,7 @@ from typing import Optional, Dict
 from pathlib import Path
 
 from docx import Document
+from docx.document import Document as DocumentType
 from docx.oxml.ns import qn
 
 from ..models.schemas import FormatConfig
@@ -264,7 +265,7 @@ class QualityChecker:
     # 格式检查
     # ==========================================
 
-    def _check_fonts(self, doc: Document, config: FormatConfig, report: QualityReport):
+    def _check_fonts(self, doc: DocumentType, config: FormatConfig, report: QualityReport):
         expected_cn = config.body_font.cn_font
         font_errors = 0
 
@@ -308,7 +309,7 @@ class QualityChecker:
                 fix_suggestion=f"将正文字体统一为{expected_cn}",
             ))
 
-    def _check_font_sizes(self, doc: Document, config: FormatConfig, report: QualityReport):
+    def _check_font_sizes(self, doc: DocumentType, config: FormatConfig, report: QualityReport):
         expected_size = config.body_font.size
         size_errors = 0
 
@@ -351,7 +352,7 @@ class QualityChecker:
                 fixable=True,
             ))
 
-    def _check_line_spacing(self, doc: Document, config: FormatConfig, report: QualityReport):
+    def _check_line_spacing(self, doc: DocumentType, config: FormatConfig, report: QualityReport):
         expected_spacing = config.body_paragraph.line_spacing
         spacing_errors = 0
 
@@ -470,7 +471,7 @@ class QualityChecker:
                     fix_suggestion="重新编排表编号",
                 ))
 
-    def _check_tables(self, doc: Document, config: FormatConfig, report: QualityReport):
+    def _check_tables(self, doc: DocumentType, config: FormatConfig, report: QualityReport):
         tc = config.table_config
 
         for t_idx, table in enumerate(doc.tables):
@@ -493,7 +494,7 @@ class QualityChecker:
                                 fix_suggestion="去除表格左右边框",
                             ))
 
-    def _check_indent(self, doc: Document, config: FormatConfig, report: QualityReport):
+    def _check_indent(self, doc: DocumentType, config: FormatConfig, report: QualityReport):
         expected_indent = (
             config.body_paragraph.first_line_indent_chars * config.body_font.size
             if config.body_paragraph.first_line_indent_chars
@@ -532,7 +533,7 @@ class QualityChecker:
     # 内容检查
     # ==========================================
 
-    def _check_garbled_text(self, doc: Document, report: QualityReport):
+    def _check_garbled_text(self, doc: DocumentType, report: QualityReport):
         for idx, para in enumerate(doc.paragraphs):
             text = para.text
             if not text.strip():
@@ -564,7 +565,7 @@ class QualityChecker:
                     fixable=False,
                 ))
 
-    def _check_empty_paragraphs(self, doc: Document, report: QualityReport):
+    def _check_empty_paragraphs(self, doc: DocumentType, report: QualityReport):
         empty_count = sum(1 for p in doc.paragraphs if not p.text.strip())
         total = len(doc.paragraphs)
         if total > 0 and empty_count > total * 0.3:
@@ -578,7 +579,7 @@ class QualityChecker:
                 fix_suggestion="删除多余空段落",
             ))
 
-    def _check_missing_text(self, doc: Document, original_path: str, report: QualityReport):
+    def _check_missing_text(self, doc: DocumentType, original_path: str, report: QualityReport):
         try:
             orig = Document(original_path)
             orig_text = "\n".join(p.text for p in orig.paragraphs if p.text.strip())

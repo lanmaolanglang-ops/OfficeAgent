@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Optional
 
 from pptx import Presentation
+from pptx.presentation import Presentation as PresentationType
 from pptx.util import Inches, Pt
 from pptx.dml.color import RGBColor
 from pptx.enum.text import PP_ALIGN, MSO_ANCHOR, MSO_AUTO_SIZE
@@ -91,7 +92,7 @@ class PPTService:
     _sy: float = 1.0
 
     def __init__(self):
-        self.prs: Optional[Presentation] = None
+        self.prs: Optional[PresentationType] = None
         self.colors: ColorScheme = THEME_COLORS["professional"]
         self.fonts: FontScheme = DEFAULT_FONTS
         self.changes: list = []
