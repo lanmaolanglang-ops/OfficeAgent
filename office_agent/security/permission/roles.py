@@ -115,7 +115,7 @@ class Role(str, Enum):
 
 
 # 角色权限映射
-ROLE_PERMISSIONS: dict[str, set[str]] = {
+ROLE_PERMISSIONS: dict[Role, set[str]] = {
     Role.ADMIN: set(PERMISSIONS.keys()),  # 管理员拥有所有权限
 
     Role.USER: {
@@ -151,7 +151,7 @@ class RoleInfo:
 
 
 # 角色详细信息
-ROLE_INFO: dict[str, RoleInfo] = {
+ROLE_INFO: dict[Role, RoleInfo] = {
     Role.ADMIN: RoleInfo(
         name="admin",
         display_name="管理员",
@@ -175,7 +175,11 @@ ROLE_INFO: dict[str, RoleInfo] = {
 
 def get_role_permissions(role: str) -> set[str]:
     """获取角色的权限集合"""
-    return ROLE_PERMISSIONS.get(role, set())
+    try:
+        role_key = Role(role)
+    except ValueError:
+        return set()
+    return ROLE_PERMISSIONS.get(role_key, set())
 
 
 def has_permission(role: str, permission: str) -> bool:
@@ -189,6 +193,6 @@ def get_all_permissions() -> dict[str, Permission]:
     return dict(PERMISSIONS)
 
 
-def get_all_roles() -> dict[str, RoleInfo]:
+def get_all_roles() -> dict[Role, RoleInfo]:
     """获取所有角色"""
     return dict(ROLE_INFO)

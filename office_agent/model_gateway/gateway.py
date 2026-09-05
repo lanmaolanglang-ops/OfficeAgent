@@ -41,7 +41,7 @@ class ModelGateway:
         self.router = ModelRouter(self.manager)
         self.failover = FailoverManager(self.manager)
         self.cancel_event = cancel_event
-        self.last_call = None
+        self.last_call: dict | None = None
     
     # === 配置管理 ===
     

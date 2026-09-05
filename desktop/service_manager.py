@@ -47,10 +47,10 @@ def install_service(app_dir: Path, port: int = 8765):
         run_as_admin()
         return
     try:
-        import win32serviceutil  # noqa: F401
-        import win32service  # noqa: F401
-        import win32event  # noqa: F401
-        import servicemanager  # noqa: F401
+        import win32serviceutil  # type: ignore[import-untyped]  # noqa: F401
+        import win32service  # type: ignore[import-untyped]  # noqa: F401
+        import win32event  # type: ignore[import-untyped]  # noqa: F401
+        import servicemanager  # type: ignore[import-untyped]  # noqa: F401
     except ImportError:
         print("安装pywin32: pip install pywin32")
         return False

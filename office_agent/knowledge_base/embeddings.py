@@ -146,7 +146,7 @@ class TfidfEmbedder(BaseEmbedder):
         self._doc_count = len(texts)
 
         # 统计文档频率
-        df = Counter()
+        df: Counter[str] = Counter()
         for text in texts:
             tokens = self._tokenize(text)
             unique_tokens = set(tokens)
@@ -261,7 +261,7 @@ class KeywordEmbedder(BaseEmbedder):
 
     def fit(self, texts: List[str]):
         """从语料中提取关键词"""
-        word_freq = Counter()
+        word_freq: Counter[str] = Counter()
         for text in texts:
             tokens = self._tokenize(text)
             unique = set(tokens)
@@ -384,7 +384,7 @@ class LocalSemanticEmbedder(BaseEmbedder):
 
     def __init__(self, model_name: str | None = None, cache_dir: str | None = None):
         try:
-            from sentence_transformers import SentenceTransformer
+            from sentence_transformers import SentenceTransformer  # type: ignore[import-not-found]
         except Exception as exc:
             raise EmbeddingBackendUnavailableError(
                 "Local semantic backend requires the 'semantic' extra",

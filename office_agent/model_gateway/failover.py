@@ -143,9 +143,8 @@ class FailoverManager:
         if not available:
             configured = [
                 mid for mid in candidates
-                if (self.model_manager.get_model(mid)
-                    and self.model_manager.get_model(mid).enabled
-                    and self.model_manager.get_model(mid).api_key)
+                if (cfg := self.model_manager.get_model(mid))
+                and cfg.enabled and cfg.api_key
             ]
             message = (
                 "所有可用模型均在冷却，请稍后重试"
@@ -158,7 +157,7 @@ class FailoverManager:
         
         errors = []
         attempts = 0
-        attempted_models = []
+        attempted_models: list[str] = []
         
         for model_id in available:
             if self._is_cancelled(cancel_event):

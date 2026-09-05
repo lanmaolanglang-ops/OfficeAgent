@@ -15,7 +15,7 @@ class BaseModelClient(ABC):
 
     # 各提供商视觉调用的唯一实现位于 vision_gateway.clients；
     # 子类在此声明对应的 BaseVisionClient 实现，analyze_image 仅作兼容外观。
-    _vision_client_cls = None
+    _vision_client_cls: type[Any] | None = None
 
     def __init__(self, config: ModelConfig):
         self.config = config

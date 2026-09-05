@@ -277,10 +277,13 @@ class KnowledgeVectorIndex:
 
     def _save_locked(self) -> None:
         """Persist index, manifest, and ID map while holding the lock."""
+        index = self._index
+        if index is None:
+            return
         self.directory.mkdir(parents=True, exist_ok=True)
         # Binary index first, then metadata.  If a crash lands between the
         # files, ``load`` detects the count/id-map mismatch and rebuilds.
-        index_bytes = self._index.save()
+        index_bytes = index.save()
         atomic_write_bytes(self.index_path, bytes(index_bytes))
         atomic_write_json(self.manifest_path, self._manifest, indent=2)
         atomic_write_json(self.id_map_path, self._id_to_key, indent=2)

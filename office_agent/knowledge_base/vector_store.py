@@ -65,8 +65,18 @@ class VectorStore:
     def _is_incremental(self) -> bool:
         return isinstance(self.embedder, TfidfEmbedder)
 
+    def _tfidf(self) -> TfidfEmbedder:
+        """返回当前 TF-IDF embedder；非增量 embedder 时快速失败。
+
+        仅在 ``_is_incremental()`` 已为真的路径调用（已证明不变式）。
+        """
+        embedder = self.embedder
+        if not isinstance(embedder, TfidfEmbedder):
+            raise RuntimeError("当前 embedder 不支持增量 lexical 索引")
+        return embedder
+
     def _tokenize(self, text: str) -> List[str]:
-        return self.embedder._tokenize(text)
+        return self._tfidf()._tokenize(text)
 
     def _idf(self, token: str) -> float:
         doc_count = len(self._doc_tf)
@@ -77,21 +87,23 @@ class VectorStore:
         """把当前 corpus 统计写回 TfidfEmbedder 兼容字段。"""
         if not self._is_incremental():
             return
-        self.embedder._doc_count = len(self._doc_tf)
-        self.embedder.idf = {
+        embedder = self._tfidf()
+        embedder._doc_count = len(self._doc_tf)
+        embedder.idf = {
             token: self._idf(token) for token in self._df
         }
-        self.embedder._fitted = self._fitted
+        embedder._fitted = self._fitted
 
     def _index_chunk(self, chunk: KnowledgeChunk) -> None:
         tokens = self._tokenize(chunk.content)
         tf = Counter(tokens)
         self._doc_tf[chunk.id] = tf
+        embedder = self._tfidf()
         for token in tf:
             self._postings.setdefault(token, set()).add(chunk.id)
             self._df[token] += 1
-            if token not in self.embedder.vocabulary:
-                self.embedder.vocabulary[token] = len(self.embedder.vocabulary)
+            if token not in embedder.vocabulary:
+                embedder.vocabulary[token] = len(embedder.vocabulary)
 
     def _unindex_chunk(self, chunk_id: str) -> None:
         tf = self._doc_tf.pop(chunk_id, Counter())
@@ -123,8 +135,9 @@ class VectorStore:
             self._chunk_by_id = {
                 stored.chunk.id: stored for stored in self._chunks
             }
-            self.embedder.vocabulary = {}
-            self.embedder.idf = {}
+            embedder = self._tfidf()
+            embedder.vocabulary = {}
+            embedder.idf = {}
             self._keyword_cache.clear()
             for stored in self._chunks:
                 stored.embedding = self._new_embedding()
@@ -276,7 +289,7 @@ class VectorStore:
 
     def _incremental_cosine(self, chunk_id: str, query_weights: dict,
                             query_norm: float) -> float:
-        doc_tf = self._doc_tf.get(chunk_id, {})
+        doc_tf: Counter = self._doc_tf.get(chunk_id, Counter())
         if not doc_tf or query_norm == 0:
             return 0.0
         numerator = 0.0
@@ -375,14 +388,15 @@ class VectorStore:
             self._df.clear()
             self._fitted = False
             if self._is_incremental():
-                self.embedder.vocabulary = {}
-                self.embedder.idf = {}
-                self.embedder._doc_count = 0
-                self.embedder._fitted = False
+                embedder = self._tfidf()
+                embedder.vocabulary = {}
+                embedder.idf = {}
+                embedder._doc_count = 0
+                embedder._fitted = False
 
     def save(self, path: str):
         with self._lock:
-            data = {
+            data: dict = {
                 "chunks": [],
                 "fitted": self._fitted,
             }
@@ -396,10 +410,11 @@ class VectorStore:
 
             if self._is_incremental():
                 self._refresh_embedder_stats()
+                embedder = self._tfidf()
                 data["embedder_type"] = "tfidf"
-                data["vocabulary"] = self.embedder.vocabulary
-                data["idf"] = self.embedder.idf
-                data["doc_count"] = self.embedder._doc_count
+                data["vocabulary"] = embedder.vocabulary
+                data["idf"] = embedder.idf
+                data["doc_count"] = embedder._doc_count
 
             os.makedirs(os.path.dirname(path) if os.path.dirname(path) else ".", exist_ok=True)
             with open(path, "w", encoding="utf-8") as handle:
@@ -414,9 +429,10 @@ class VectorStore:
 
             self.clear()
             if data.get("embedder_type") == "tfidf" and self._is_incremental():
-                self.embedder.vocabulary = data.get("vocabulary", {})
-                self.embedder.idf = data.get("idf", {})
-                self.embedder._doc_count = data.get("doc_count", 0)
+                embedder = self._tfidf()
+                embedder.vocabulary = data.get("vocabulary", {})
+                embedder.idf = data.get("idf", {})
+                embedder._doc_count = data.get("doc_count", 0)
 
             for raw_chunk in data.get("chunks", []):
                 chunk_data = dict(raw_chunk)

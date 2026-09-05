@@ -347,7 +347,7 @@ class OfficeKnowledgeBase:
     @_locked
     def stats(self) -> Dict[str, Any]:
         """统计信息"""
-        type_counts = {}
+        type_counts: dict[str, int] = {}
         for doc in self.documents.values():
             t = doc.doc_type
             type_counts[t] = type_counts.get(t, 0) + 1

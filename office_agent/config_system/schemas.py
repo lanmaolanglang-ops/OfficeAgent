@@ -107,7 +107,7 @@ class AgentConfigSchema(BaseModel):
     # 执行
     timeout: int = Field(120, ge=1, le=3600, description="超时秒数")
     max_retries: int = Field(3, ge=0)
-    retry: RetryConfig = Field(default_factory=RetryConfig)
+    retry: RetryConfig = Field(default_factory=RetryConfig)  # type: ignore[arg-type]
 
     # 限制
     max_input_length: int = Field(100000)

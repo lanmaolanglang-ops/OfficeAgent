@@ -105,8 +105,8 @@ class PromptConfig(Base, TimestampMixin):
     description: Mapped[str] = mapped_column(Text, default="")
 
     # 适用范围
-    agent: Mapped[str] = mapped_column(String(64), nullable=True, index=True)
-    task_type: Mapped[str] = mapped_column(String(64), nullable=True, index=True)
+    agent: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    task_type: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
 
     # 变量
     variables: Mapped[list] = mapped_column(JSON, default=list)

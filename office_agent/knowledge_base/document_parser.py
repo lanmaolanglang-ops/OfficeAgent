@@ -91,7 +91,8 @@ class DocumentParser:
             all_text_parts.append(text)
 
             # 判断是否为标题
-            style_name = (para.style.name or "").lower()
+            style = para.style
+            style_name = (style.name or "").lower() if style is not None else ""
             is_heading = False
             heading_level = 0
 
@@ -244,7 +245,7 @@ class DocumentParser:
         sections = []
         all_text_parts = []
 
-        for page_num, page in enumerate(doc, 1):
+        for page_num, page in enumerate(doc.pages(), 1):
             text = page.get_text().strip()
             if text:
                 # 尝试识别标题（第一行较短的文本）

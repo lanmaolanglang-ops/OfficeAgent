@@ -133,9 +133,12 @@ class DatabasePermissionResolver:
             if model is None:
                 return PermissionDecision(False, role=role.name, reason="未知资源类型")
             item = session.get(model, resource_id)
-            owner_id = item.owner_id if resource == "file" and item else (
-                item.user_id if item else None
-            )
+            if item is None:
+                owner_id = None
+            elif resource == "file":
+                owner_id = getattr(item, "owner_id", None)
+            else:
+                owner_id = getattr(item, "user_id", None)
             if not owner_id or owner_id != user_id:
                 return PermissionDecision(False, role=role.name, reason="资源不属于当前用户")
             return PermissionDecision(True, role=role.name, reason="资源所有权检查通过")

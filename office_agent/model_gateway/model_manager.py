@@ -52,11 +52,11 @@ def _advisory_file_lock(path: Path):
                 msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
         else:
             import fcntl
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)  # type: ignore[attr-defined]
             try:
                 yield
             finally:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)  # type: ignore[attr-defined]
 
 
 def resolve_model_config_dir(config_dir: Optional[str] = None) -> Path:
@@ -495,7 +495,7 @@ class ModelManager:
         
         client_class = client_map.get(config.provider)
         if client_class:
-            return client_class(config)
+            return client_class(config)  # type: ignore[abstract]
         return None
     
     def set_routing(self, task_type: AITaskType, model_ids: list[str]):

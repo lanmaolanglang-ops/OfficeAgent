@@ -91,7 +91,7 @@ class KnowledgeDocument:
 @dataclass
 class SearchResult:
     """检索结果"""
-    chunk: KnowledgeChunk = None
+    chunk: Optional[KnowledgeChunk] = None
     score: float = 0.0
     document_title: str = ""
     document_id: str = ""

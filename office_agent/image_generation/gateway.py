@@ -9,7 +9,7 @@ import tempfile
 import time
 import uuid
 from pathlib import Path
-from typing import Optional
+from typing import Optional, cast
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen, build_opener, HTTPRedirectHandler
 from urllib.error import HTTPError, URLError
@@ -39,7 +39,7 @@ def _validate_remote_url(url: str) -> None:
         if host == "localhost" or host.endswith(".localhost"):
             raise ImageGenerationError("拒绝下载内网图像地址")
         addresses = {
-            item[4][0].split("%", 1)[0]
+            cast(str, item[4][0]).split("%", 1)[0]
             for item in socket.getaddrinfo(host, parsed.port, type=socket.SOCK_STREAM)
         }
         if not addresses:

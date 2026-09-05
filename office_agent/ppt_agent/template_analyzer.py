@@ -24,9 +24,9 @@ import logging
 from pptx import Presentation
 from pptx.presentation import Presentation as PresentationType
 from pptx.oxml.ns import qn
-from lxml import etree
+from lxml import etree  # type: ignore[import-untyped]
 
-from .models import ColorScheme, FontScheme
+from .models import ColorScheme, FontScheme, PPTOutline
 
 logger = logging.getLogger("office_agent.ppt_agent.template_analyzer")
 
@@ -383,7 +383,7 @@ class TemplateAnalyzer:
 
         return config
 
-    def apply_to_outline(self, template_path: str, outline) -> object:
+    def apply_to_outline(self, template_path: str, outline: PPTOutline) -> PPTOutline:
         """将模板配置应用到 PPTOutline"""
         config = self.analyze(template_path)
 
@@ -392,7 +392,7 @@ class TemplateAnalyzer:
         outline.slide_width = config.slide_width
         outline.slide_height = config.slide_height
         outline.theme = "custom"
-        outline._template_config = config  # 附加模板配置供 Service 使用
+        setattr(outline, "_template_config", config)  # 附加模板配置供 Service 使用
 
         return outline
 
@@ -560,7 +560,7 @@ class TemplateAnalyzer:
             )
 
             content_count = 0
-            for ph in layout.placeholders:
+            for ph in layout.placeholders:  # type: ignore[misc]
                 ph_info = self._extract_placeholder(ph)
                 layout_info.placeholders.append(ph_info)
 

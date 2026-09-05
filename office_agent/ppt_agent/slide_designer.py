@@ -187,7 +187,7 @@ class SlideDesigner:
         else:
             return "low"
 
-    def suggest_font_size(self, slide: SlideContent) -> int:
+    def suggest_font_size(self, slide: SlideContent) -> float:
         """根据内容密度建议字号"""
         density = self.estimate_content_density(slide)
         if density == "high":

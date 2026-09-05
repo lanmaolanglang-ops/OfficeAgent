@@ -287,7 +287,7 @@ class PPTService:
         shape.line.fill.background()
 
     def _add_text_box(self, slide, left: float, top: float, width: float,
-                      height: float, text: str, font_size: int = 18,
+                      height: float, text: str, font_size: float = 18.0,
                       bold: bool = False, color: str = "",
                       alignment: str = "left", font_name: str = "",
                       anchor: str = "top") -> object:
@@ -324,7 +324,7 @@ class PPTService:
         return box
 
     def _add_bullet_list(self, slide, left: float, top: float, width: float,
-                         height: float, bullets: list, font_size: int = 18,
+                         height: float, bullets: list, font_size: float = 18.0,
                          color: str = "", bullet_char: str = "•",
                          line_spacing: float = 1.5) -> object:
         """添加要点列表"""
