@@ -377,7 +377,7 @@ class PPTOrchestrator:
             self.image_generation["attempted"] += 1
             try:
                 image_path = self.image_gateway.generate(
-                    prompt, size="1024x768", output_dir=tempfile.gettempdir()
+                    prompt, output_dir=tempfile.gettempdir()
                 )
                 if not image_path or not Path(image_path).is_file():
                     raise RuntimeError("生图服务未生成可用文件")

@@ -56,6 +56,11 @@ class WordScoreResult:
 class WordQualityScorer:
     """Word文档质量评分器"""
 
+    # 总分权重（三者之和必须为 1.0）：格式准确性 > 标题识别 > 排版一致性
+    WEIGHT_FORMAT_ACCURACY = 0.4
+    WEIGHT_HEADING_RECOGNITION = 0.35
+    WEIGHT_LAYOUT_CONSISTENCY = 0.25
+
     # 标准格式参考值
     STANDARD_FONTS = {
         "title": {"font": "黑体", "size": 22, "bold": True, "alignment": "center"},
@@ -103,9 +108,9 @@ class WordQualityScorer:
 
         # 总分（加权平均）
         result.total_score = (
-            result.format_accuracy * 0.4 +
-            result.heading_recognition * 0.35 +
-            result.layout_consistency * 0.25
+            result.format_accuracy * self.WEIGHT_FORMAT_ACCURACY +
+            result.heading_recognition * self.WEIGHT_HEADING_RECOGNITION +
+            result.layout_consistency * self.WEIGHT_LAYOUT_CONSISTENCY
         )
 
         # 生成问题和建议

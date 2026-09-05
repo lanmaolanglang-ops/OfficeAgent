@@ -56,6 +56,11 @@ class ExcelScoreResult:
 class ExcelQualityScorer:
     """Excel质量评分器"""
 
+    # 总分权重（三者之和必须为 1.0）：公式准确性 > 分析准确性 > 图表恰当性
+    WEIGHT_FORMULA_ACCURACY = 0.4
+    WEIGHT_ANALYSIS_ACCURACY = 0.35
+    WEIGHT_CHART_APPROPRIATENESS = 0.25
+
     # 常见函数列表
     COMMON_FUNCTIONS = {
         "SUM", "AVERAGE", "COUNT", "COUNTA", "MAX", "MIN",
@@ -106,9 +111,9 @@ class ExcelQualityScorer:
 
         # 总分
         result.total_score = (
-            result.formula_accuracy * 0.4 +
-            result.analysis_accuracy * 0.35 +
-            result.chart_appropriateness * 0.25
+            result.formula_accuracy * self.WEIGHT_FORMULA_ACCURACY +
+            result.analysis_accuracy * self.WEIGHT_ANALYSIS_ACCURACY +
+            result.chart_appropriateness * self.WEIGHT_CHART_APPROPRIATENESS
         )
 
         result.issues = self._collect_issues(analysis, expected_formulas,

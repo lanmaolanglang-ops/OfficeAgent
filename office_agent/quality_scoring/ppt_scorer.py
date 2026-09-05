@@ -7,12 +7,11 @@ PPT Quality Scorer - PPT演示文稿质量评分引擎
 3. 模板遵循度 (template_adherence): 是否遵循统一模板/主题
 """
 import os
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any
 from dataclasses import dataclass, field
 
 from pptx import Presentation
-from pptx.util import Pt, Emu
-from pptx.enum.text import PP_ALIGN
+from pptx.util import Emu
 
 
 @dataclass
@@ -56,6 +55,11 @@ class PPTScoreResult:
 class PPTQualityScorer:
     """PPT质量评分器"""
 
+    # 总分权重（合计必须为 1.0）：视觉与内容并重，模板符合度略低
+    WEIGHT_VISUAL = 0.35
+    WEIGHT_CONTENT_COMPLETENESS = 0.35
+    WEIGHT_TEMPLATE_ADHERENCE = 0.30
+
     def score(self, file_path: str,
              expected_slides: int = 0,
              required_content: List[str] = None) -> PPTScoreResult:
@@ -95,9 +99,9 @@ class PPTQualityScorer:
 
         # 总分
         result.total_score = (
-            result.visual_score * 0.35 +
-            result.content_completeness * 0.35 +
-            result.template_adherence * 0.30
+            result.visual_score * self.WEIGHT_VISUAL +
+            result.content_completeness * self.WEIGHT_CONTENT_COMPLETENESS +
+            result.template_adherence * self.WEIGHT_TEMPLATE_ADHERENCE
         )
 
         result.issues = self._collect_issues(
@@ -128,7 +132,6 @@ class PPTQualityScorer:
 
         # 位置一致性检查
         title_positions = []
-        content_positions = []
 
         for slide_idx, slide in enumerate(prs.slides):
             slide_info = {
@@ -214,7 +217,6 @@ class PPTQualityScorer:
                         if shape.top:
                             title_positions.append(shape.top)
 
-            full_text = " ".join(slide_text)
             text_lengths.append(slide_info["text_length"])
 
             if slide_info["text_length"] == 0 and slide_info["pictures"] == 0:

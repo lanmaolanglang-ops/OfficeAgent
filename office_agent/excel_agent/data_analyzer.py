@@ -25,6 +25,14 @@ from .excel_service import ExcelService
 
 logger = logging.getLogger(__name__)
 
+# 日期类型嗅探采样行数：对非空值取前 N 行做正则匹配判定，
+# 避免大列全量正则扫描。
+DATE_DETECTION_SAMPLE_SIZE = 20
+
+# 列画像中唯一值预览上限：unique_values 仅供预览/提示，
+# 截断到前 N 个去重值，避免高基列撑爆画像结果。
+UNIQUE_VALUES_PREVIEW_LIMIT = 20
+
 
 # ==========================================
 # 语义关键词词典
@@ -292,7 +300,7 @@ class DataAnalyzer:
         non_null = series.dropna()
         sample = non_null.head(5).tolist()
         col.sample_values = [str(v) for v in sample]
-        unique = non_null.drop_duplicates().head(20).tolist()
+        unique = non_null.drop_duplicates().head(UNIQUE_VALUES_PREVIEW_LIMIT).tolist()
         col.unique_values = [v.item() if hasattr(v, "item") else v for v in unique]
 
         # 生成描述（在统计之后）
@@ -346,7 +354,7 @@ class DataAnalyzer:
                 return "number"
 
             # 尝试日期
-            sample = non_null.head(20).astype(str)
+            sample = non_null.head(DATE_DETECTION_SAMPLE_SIZE).astype(str)
             date_count = sum(
                 1 for v in sample
                 if any(re.search(p, str(v)) for p in self.DATE_PATTERNS)
@@ -659,7 +667,7 @@ class DataAnalyzer:
                 col_info.null_count = ws.max_row - 1 - len(values)
                 col_info.unique_count = len(set(str(v) for v in values))
                 col_info.sample_values = [str(v) for v in values[:5]]
-                col_info.unique_values = list(dict.fromkeys(values))[:20]
+                col_info.unique_values = list(dict.fromkeys(values))[:UNIQUE_VALUES_PREVIEW_LIMIT]
 
                 numeric_count = sum(1 for v in values if isinstance(v, (int, float)))
                 if numeric_count > len(values) * 0.8:
@@ -718,7 +726,7 @@ class DataAnalyzer:
                 col_info.null_count = ws.max_row - 1 - len(values)
                 col_info.unique_count = len(set(str(v) for v in values))
                 col_info.sample_values = [str(v) for v in values[:5]]
-                col_info.unique_values = list(dict.fromkeys(values))[:20]
+                col_info.unique_values = list(dict.fromkeys(values))[:UNIQUE_VALUES_PREVIEW_LIMIT]
 
                 numeric_count = sum(1 for v in values if isinstance(v, (int, float)))
                 if numeric_count > len(values) * 0.8:

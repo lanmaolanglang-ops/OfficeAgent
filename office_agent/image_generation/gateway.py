@@ -23,6 +23,9 @@ class ImageGenerationError(RuntimeError):
 
 MAX_IMAGE_DOWNLOAD_BYTES = 20 * 1024 * 1024
 
+# 默认生图尺寸（横向 4:3，适配 PPT 配图）；调用方可显式覆盖。
+DEFAULT_IMAGE_SIZE = "1024x768"
+
 
 def _validate_remote_url(url: str) -> None:
     """只允许解析到公网地址的 HTTP(S) 图片 URL。"""
@@ -149,7 +152,7 @@ class ImageGenerationGateway:
     def available(self) -> bool:
         return bool(self.mcp_url) if self.provider == "mcp" else bool(self.api_key)
 
-    def generate(self, prompt: str, size: str = "1024x768", output_dir: Optional[str] = None) -> str:
+    def generate(self, prompt: str, size: str = DEFAULT_IMAGE_SIZE, output_dir: Optional[str] = None) -> str:
         if not self.available():
             raise ImageGenerationError("未配置图像生成服务")
         if self.provider == "mcp":
@@ -182,7 +185,7 @@ class ImageGenerationGateway:
         try:
             path = self.generate(
                 "极简商务演示测试图，抽象蓝色光影，横向构图，无文字，无水印。",
-                size="1024x768",
+                size=DEFAULT_IMAGE_SIZE,
                 output_dir=output_dir,
             )
             target = Path(path)

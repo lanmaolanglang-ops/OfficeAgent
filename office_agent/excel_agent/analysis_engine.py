@@ -29,6 +29,10 @@ from .models import (
 TREND_DIRECTION_THRESHOLD = 0.03
 TREND_FINDING_THRESHOLD = 0.05
 
+# 列类型嗅探采样行数：只看前 N 个非空值判定 date/number/text，
+# 避免大表全量扫描；采样需足够多以降低误判，50 为经验值。
+TYPE_DETECTION_SAMPLE_SIZE = 50
+
 
 class AnalysisEngine:
     """
@@ -231,7 +235,7 @@ class AnalysisEngine:
             # 尝试数字
             num_count = 0
             date_count = 0
-            for v in values[:50]:
+            for v in values[:TYPE_DETECTION_SAMPLE_SIZE]:
                 if isinstance(v, (int, float)) and not isinstance(v, bool):
                     num_count += 1
                 elif isinstance(v, datetime):
@@ -245,9 +249,9 @@ class AnalysisEngine:
                     except (ValueError, TypeError):
                         pass
 
-            if date_count > len(values[:50]) * 0.5:
+            if date_count > len(values[:TYPE_DETECTION_SAMPLE_SIZE]) * 0.5:
                 types.append("date")
-            elif num_count > len(values[:50]) * 0.5:
+            elif num_count > len(values[:TYPE_DETECTION_SAMPLE_SIZE]) * 0.5:
                 types.append("number")
             else:
                 types.append("text")
