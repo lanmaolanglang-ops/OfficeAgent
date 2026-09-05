@@ -143,7 +143,7 @@ class TestCreateDbFailure:
                             lambda **kwargs: submitted.append(kwargs))
 
         request = TaskCreateRequest(task_type="word_format", instruction="format it")
-        response = asyncio.run(task_router.create_task(request))
+        response = asyncio.run(task_router._create_task_impl(request))
 
         assert response.data.degraded is True
         assert response.data.storage == "memory"
@@ -174,7 +174,7 @@ class TestCreateDbFailure:
             file_ids=["file_missing"],
         )
         with pytest.raises(APIError) as exc:
-            asyncio.run(task_router.create_task(request))
+            asyncio.run(task_router._create_task_impl(request))
         assert exc.value.status_code == 503
         assert exc.value.error_code == "DATABASE_UNAVAILABLE"
 
@@ -195,7 +195,7 @@ class TestCreateDbFailure:
         monkeypatch.setattr(session_module, "session_scope", _fake_session_scope())
 
         with pytest.raises(TypeError):
-            asyncio.run(task_router.create_task(
+            asyncio.run(task_router._create_task_impl(
                 TaskCreateRequest(task_type="word_format", instruction="x"),
             ))
 
@@ -264,7 +264,7 @@ class TestReadDbFailure:
         )
 
         response = asyncio.run(
-            task_router.list_tasks(agent="word_agent", page=1, page_size=5),
+            task_router._list_tasks_impl(agent="word_agent", page=1, page_size=5),
         )
         assert response.data.total == 1
         assert response.data.tasks[0].task_id == task.task_id
@@ -312,7 +312,7 @@ class TestReadDbFailure:
         monkeypatch.setattr(task_router, "_get_db_session", lambda: _Session())
 
         got = asyncio.run(task_router.get_task("db_task"))
-        listed = asyncio.run(task_router.list_tasks(page=1, page_size=5))
+        listed = asyncio.run(task_router._list_tasks_impl(page=1, page_size=5))
         assert got.data.storage == "persisted"
         assert got.data.degraded is False
         assert listed.data.total == 1
@@ -333,7 +333,7 @@ class TestCancelDbFailure:
             instruction="deck", status="running",
         )
 
-        response = asyncio.run(task_router.cancel_task(task.task_id))
+        response = asyncio.run(task_router._cancel_task_impl(task.task_id))
         assert response.message == "任务已取消"
         assert task_router.task_manager.get_task(task.task_id).status == "cancelled"
 

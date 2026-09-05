@@ -129,13 +129,13 @@ def test_create_task_queues_work_and_persists_queue_failures(monkeypatch):
         task_type="word_format", instruction="format it", priority="unexpected",
         options={"theme": "formal"},
     )
-    response = asyncio.run(task_router.create_task(request))
+    response = asyncio.run(task_router._create_task_impl(request))
     assert response.data.status == "queued"
     assert submitted[0]["priority"] == "normal"
     assert submitted[0]["task_name"] == "queue.word_format"
 
     monkeypatch.setattr(queue_module, "submit_task", lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("broker secret")))
-    failed = asyncio.run(task_router.create_task(request))
+    failed = asyncio.run(task_router._create_task_impl(request))
     assert failed.data.status == "failed"
     assert "\u4efb\u52a1\u961f\u5217\u4e0d\u53ef\u7528" in records[failed.data.task_id]["error"]
 
@@ -156,16 +156,16 @@ def test_task_routes_use_memory_fallback(monkeypatch):
     try:
         found = asyncio.run(task_router.get_task(item.task_id))
         assert found.data.status == "running"
-        listing = asyncio.run(task_router.list_tasks(agent="excel_agent", page=1, page_size=5))
+        listing = asyncio.run(task_router._list_tasks_impl(agent="excel_agent", page=1, page_size=5))
         assert listing.data.total == 1
-        cancelled = asyncio.run(task_router.cancel_task(item.task_id))
+        cancelled = asyncio.run(task_router._cancel_task_impl(item.task_id))
         assert cancelled.message == "\u4efb\u52a1\u5df2\u53d6\u6d88"
         feedback = asyncio.run(task_router.task_feedback(item.task_id, FeedbackRequest(rating=5, comment="good")))
         assert feedback.data["rating"] == 5
         with pytest.raises(TaskNotFoundError):
             asyncio.run(task_router.get_task("missing"))
         with pytest.raises(TaskNotFoundError):
-            asyncio.run(task_router.cancel_task("missing"))
+            asyncio.run(task_router._cancel_task_impl("missing"))
     finally:
         task_router.task_manager.tasks = original
 
@@ -238,9 +238,9 @@ def test_task_routes_read_update_database_and_close_sessions(monkeypatch):
     found = asyncio.run(task_router.get_task("db_task"))
     assert found.data.result == {"answer": 42}
     assert found.data.output_files[0].filename == "out.docx"
-    listing = asyncio.run(task_router.list_tasks(status="success", page=1, page_size=10))
+    listing = asyncio.run(task_router._list_tasks_impl(status="success", page=1, page_size=10))
     assert listing.data.total == 1
-    assert asyncio.run(task_router.cancel_task("db_task")).message == "\u4efb\u52a1\u5df2\u53d6\u6d88"
+    assert asyncio.run(task_router._cancel_task_impl("db_task")).message == "\u4efb\u52a1\u5df2\u53d6\u6d88"
     assert asyncio.run(task_router.task_feedback("db_task", FeedbackRequest(rating=4, comment="useful"))).message == "\u53cd\u9988\u5df2\u63d0\u4ea4"
     assert all(session.closed for session in sessions)
     assert sessions[-1].commits == 1
@@ -256,12 +256,12 @@ def test_task_json_corruption_isolated():
 
 def test_unknown_task_type_rejected_before_database_write():
     from fastapi import HTTPException
-    from office_agent.api.router.task import create_task
+    from office_agent.api.router.task import _create_task_impl
     from office_agent.api.schemas.request import TaskCreateRequest
 
     request = TaskCreateRequest(task_type="typo_task", instruction="do it")
     with pytest.raises(HTTPException) as exc:
-        asyncio.run(create_task(request))
+        asyncio.run(_create_task_impl(request))
     assert exc.value.status_code == 422
 
 
@@ -279,6 +279,6 @@ def test_agent_name_derivation_has_single_none_sentinel():
     assert derive("") is None
 
     # 源码级守卫：create_task 内不再出现内联三元推导的两份拷贝
-    src = inspect.getsource(task_module.create_task)
+    src = inspect.getsource(task_module._create_task_impl)
     assert src.count('_agent_name_for_task_type(req.task_type)') == 1
     assert 'split("_")[0]' not in src

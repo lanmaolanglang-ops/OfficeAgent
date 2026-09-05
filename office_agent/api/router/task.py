@@ -160,7 +160,7 @@ def _get_db_session():
 
 @router.post("/create", response_model=BaseResponse[TaskInfo],
              summary="创建任务")
-async def create_task(req: TaskCreateRequest, request: Request = None):
+async def create_task(req: TaskCreateRequest, request: Request):
     """
     创建处理任务（异步队列执行）
 
@@ -169,6 +169,11 @@ async def create_task(req: TaskCreateRequest, request: Request = None):
     - **file_ids**: 输入文件ID列表
     - **priority**: high/normal/low
     """
+    return await _create_task_impl(req, request)
+
+
+async def _create_task_impl(req: TaskCreateRequest, request: Request | None = None):
+    """``create_task`` 的内部实现，允许直接 Python 调用时省略 request。"""
     from ...database.session import session_scope
     from ...database.repository import TaskRepository, FileRepository
     from ...task_queue import (
@@ -375,11 +380,19 @@ async def get_task(task_id: str):
 
 @router.get("/", response_model=BaseResponse[TaskListResponse],
             summary="任务列表")
-async def list_tasks(status: str | None = None, agent: str | None = None,
+async def list_tasks(request: Request, status: str | None = None,
+                     agent: str | None = None,
                      page: int = page_query(),
-                     page_size: int = page_size_query(),
-                     request: Request = None):
+                     page_size: int = page_size_query()):
     """列出任务，支持按状态/Agent筛选"""
+    return await _list_tasks_impl(status, agent, page, page_size, request)
+
+
+async def _list_tasks_impl(status: str | None = None, agent: str | None = None,
+                           page: int = page_query(),
+                           page_size: int = page_size_query(),
+                           request: Request | None = None):
+    """``list_tasks`` 的内部实现，允许直接 Python 调用时省略 request。"""
     user_id, user_role = _request_identity(request)
     normalized_status = None
     if status:
@@ -481,8 +494,13 @@ async def list_tasks(status: str | None = None, agent: str | None = None,
 
 @router.post("/{task_id}/cancel", response_model=BaseResponse,
              summary="取消任务")
-async def cancel_task(task_id: str, request: Request = None):
+async def cancel_task(task_id: str, request: Request):
     """取消任务"""
+    return await _cancel_task_impl(task_id, request)
+
+
+async def _cancel_task_impl(task_id: str, request: Request | None = None):
+    """``cancel_task`` 的内部实现，允许直接 Python 调用时省略 request。"""
     # 尝试从队列取消
     try:
         from ...task_queue import cancel_task as queue_cancel

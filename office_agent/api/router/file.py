@@ -51,7 +51,9 @@ def _effective_owner(request: Request | None, supplied: str | None = None,
                      allow_admin_scope: bool = False) -> str | None:
     if not settings.auth_enabled:
         return supplied
-    user_id = getattr(request.state, "user_id", None) if request else None
+    if request is None:
+        raise HTTPException(status_code=401, detail="缺少已认证用户")
+    user_id = getattr(request.state, "user_id", None)
     if not user_id or user_id == "anonymous":
         raise HTTPException(status_code=401, detail="缺少已认证用户")
     if allow_admin_scope and getattr(request.state, "user_role", "") == "admin":
@@ -119,16 +121,26 @@ async def upload_file(request: Request, file: UploadFile = File(...)):
 
 
 @router.post("/upload/multipart/init", summary="初始化分片上传")
-def init_multipart(filename: str,
-                         expected_size: int = Query(..., ge=1),
-                         expected_parts: int = Query(..., ge=1),
-                         expected_sha256: str = Query(..., min_length=64, max_length=64),
-                         content_type: str | None = None, request: Request = None):
+def init_multipart(request: Request, filename: str,
+                   expected_size: int = Query(..., ge=1),
+                   expected_parts: int = Query(..., ge=1),
+                   expected_sha256: str = Query(..., min_length=64, max_length=64),
+                   content_type: str | None = None):
     """
     初始化大文件分片上传
 
     返回 upload_id，后续用 upload_id 上传分片。
     """
+    return _init_multipart_impl(
+        filename, expected_size, expected_parts, expected_sha256,
+        content_type, request,
+    )
+
+
+def _init_multipart_impl(filename: str, expected_size: int, expected_parts: int,
+                         expected_sha256: str, content_type: str | None = None,
+                         request: Request | None = None):
+    """``init_multipart`` 的内部实现，允许直接 Python 调用时省略 request。"""
     try:
         storage = _get_storage()
         result = storage.init_multipart_upload(
@@ -208,11 +220,18 @@ def abort_multipart(file_id: str, upload_id: str):
 
 
 @router.get("/trash", response_model=BaseResponse, summary="回收站文件列表")
-def list_deleted_files(file_type: str | None = None, owner_id: str | None = None,
-                             page: int = page_query(),
-                             page_size: int = page_size_query(default=50),
-                             request: Request = None):
+def list_deleted_files(request: Request, file_type: str | None = None,
+                       owner_id: str | None = None,
+                       page: int = page_query(),
+                       page_size: int = page_size_query(default=50)):
     """列出可恢复的软删除文件，不包含正在永久删除的 tombstone。"""
+    return _list_deleted_files_impl(file_type, owner_id, page, page_size, request)
+
+
+def _list_deleted_files_impl(file_type: str | None, owner_id: str | None,
+                             page: int, page_size: int,
+                             request: Request | None = None):
+    """``list_deleted_files`` 的内部实现，允许直接 Python 调用时省略 request。"""
     storage = _get_storage()
     files = storage.list_deleted_files(
         owner_id=_effective_owner(request, owner_id, allow_admin_scope=True),
@@ -367,11 +386,18 @@ def delete_file(file_id: str, permanent: bool = Query(default=False)):
 
 
 @router.get("/", response_model=BaseResponse, summary="文件列表")
-def list_files(file_type: str | None = None, owner_id: str | None = None,
-                     page: int = page_query(),
-                     page_size: int = page_size_query(default=50),
-                     request: Request = None):
+def list_files(request: Request, file_type: str | None = None,
+               owner_id: str | None = None,
+               page: int = page_query(),
+               page_size: int = page_size_query(default=50)):
     """列出文件，支持按类型筛选"""
+    return _list_files_impl(file_type, owner_id, page, page_size, request)
+
+
+def _list_files_impl(file_type: str | None, owner_id: str | None,
+                     page: int, page_size: int,
+                     request: Request | None = None):
+    """``list_files`` 的内部实现，允许直接 Python 调用时省略 request。"""
     storage = _get_storage()
     files = storage.list_files(
         owner_id=_effective_owner(request, owner_id, allow_admin_scope=True),
