@@ -9,6 +9,7 @@
 任务不直接操作数据库，通过 Service 层调用 Agent。
 """
 import logging
+from typing import Callable
 from ...api.routing import resolve_route
 from .word_tasks import process_word, format_document
 from .ppt_tasks import generate_ppt, design_ppt
@@ -102,7 +103,7 @@ def process_general(instruction: str = "", input_path: str | None = None,
 
 
 # 任务注册表（供 LocalWorker 使用）
-TASK_REGISTRY = {
+TASK_REGISTRY: dict[str, Callable] = {
     # General
     "general.process": process_general,
     # Word

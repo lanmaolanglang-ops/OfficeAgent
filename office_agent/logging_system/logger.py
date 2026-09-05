@@ -122,7 +122,7 @@ def log_agent_execution(agent_name: str, action: str, task_id: str | None = None
                         **extra):
     """记录 Agent 执行日志"""
     logger = get_logger(f"agent.{agent_name.lower()}")
-    extra_data = {
+    extra_data: dict = {
         "agent_name": agent_name,
         "action": action,
         "status": status,

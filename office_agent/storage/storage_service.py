@@ -557,11 +557,11 @@ class StorageService:
     def list_files(self, owner_id: str | None = None, file_type: str | None = None,
                    bucket: str | None = None, offset: int = 0, limit: int = 100) -> List[FileInfo]:
         """列出文件"""
-        from sqlalchemy import select, and_
+        from sqlalchemy import select, and_, ColumnElement
         session = self._get_session()
         try:
             from ..database.models import File
-            conditions = [File.status.notin_(("deleted", "deleting"))]
+            conditions: list[ColumnElement[bool]] = [File.status.notin_(("deleted", "deleting"))]
             if owner_id:
                 conditions.append(File.owner_id == owner_id)
             if file_type:
@@ -587,11 +587,11 @@ class StorageService:
     def count_files(self, owner_id: str | None = None, file_type: str | None = None,
                     bucket: str | None = None) -> int:
         """统计与 ``list_files`` 相同筛选条件下的未删除文件数。"""
-        from sqlalchemy import select, and_, func
+        from sqlalchemy import select, and_, func, ColumnElement
         session = self._get_session()
         try:
             from ..database.models import File
-            conditions = [File.status.notin_(("deleted", "deleting"))]
+            conditions: list[ColumnElement[bool]] = [File.status.notin_(("deleted", "deleting"))]
             if owner_id:
                 conditions.append(File.owner_id == owner_id)
             if file_type:
@@ -1065,7 +1065,7 @@ class StorageService:
                     or any(not isinstance(n, int) or n < 1 for n in part_numbers)
                     or len(set(part_numbers)) != len(part_numbers)):
                 raise ValueError("分片序号必须是从 1 开始且不重复的整数")
-            if sorted(part_numbers) != list(range(1, expected_parts + 1)):
+            if sorted(n for n in part_numbers if isinstance(n, int)) != list(range(1, expected_parts + 1)):
                 raise ValueError(f"分片必须从 1 连续到 {expected_parts}，不能缺片或多片")
 
             result = self.backend.complete_multipart_upload(

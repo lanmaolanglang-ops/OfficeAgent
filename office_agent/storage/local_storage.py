@@ -166,7 +166,7 @@ class LocalStorage(StorageBackend):
 
     def list_files(self, prefix: str = "", recursive: bool = True) -> list:
         search_path = self._full_path(prefix) if prefix else self.root_path
-        results = []
+        results: list[dict[str, str | int]] = []
 
         if not os.path.exists(search_path):
             return results

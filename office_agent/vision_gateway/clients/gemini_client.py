@@ -29,7 +29,7 @@ class GeminiVisionClient(BaseVisionClient):
 
         try:
             # 构建 Gemini 格式
-            parts = []
+            parts: list[dict] = []
 
             # 系统提示 + 用户提示
             system_prompt = self._build_system_prompt(request)

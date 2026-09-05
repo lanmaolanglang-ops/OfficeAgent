@@ -108,7 +108,7 @@ def get_engine(url: str | None = None) -> Engine:
 
 # 进程级默认引擎：惰性单例。import 本模块不再创建目录或 engine，
 # 初始化收敛到显式生命周期（首次访问 / init_db / dispose_default_engine）。
-_default_engine: Engine = None
+_default_engine: Engine | None = None
 _default_engine_lock = threading.Lock()
 
 

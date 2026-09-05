@@ -210,7 +210,7 @@ class MetricsRegistry:
 
     def get_summary(self) -> dict:
         """获取指标摘要（JSON格式）"""
-        result = {"counters": {}, "gauges": {}, "histograms": {}}
+        result: dict = {"counters": {}, "gauges": {}, "histograms": {}}
         with self._lock:
             counters = list(self._counters.items())
             gauges = list(self._gauges.items())
@@ -219,19 +219,19 @@ class MetricsRegistry:
         for name, counter in counters:
             result["counters"][name] = {
                 "description": counter.description,
-                "values": [{"labels": l, "value": v} for l, v in counter.collect()],
+                "values": [{"labels": label, "value": v} for label, v in counter.collect()],
             }
 
         for name, gauge in gauges:
             result["gauges"][name] = {
                 "description": gauge.description,
-                "values": [{"labels": l, "value": v} for l, v in gauge.collect()],
+                "values": [{"labels": label, "value": v} for label, v in gauge.collect()],
             }
 
         for name, hist in histograms:
             result["histograms"][name] = {
                 "description": hist.description,
-                "values": [{"labels": l, **d} for l, d in hist.collect()],
+                "values": [{"labels": label, **d} for label, d in hist.collect()],
             }
 
         return result

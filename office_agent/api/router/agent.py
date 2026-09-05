@@ -15,7 +15,7 @@ logger = logging.getLogger("office_agent.api.agent")
 
 
 # 内置 Agent（仅在数据库不可用时作为降级清单）
-BUILTIN_AGENTS = [
+BUILTIN_AGENTS: list[dict] = [
     {
         "agent_id": "word_agent",
         "name": "Word Agent",

@@ -13,7 +13,7 @@ import subprocess
 from pathlib import Path
 from enum import Enum
 from dataclasses import dataclass
-from typing import Optional, Callable
+from typing import Optional, Callable, cast
 import urllib.request
 import urllib.error
 
@@ -163,8 +163,9 @@ class ApplicationRuntimeManager:
 
     def _build_command(self) -> list[str]:
         """构建启动命令"""
+        python = self.config.python_executable or sys.executable
         cmd = [
-            self.config.python_executable,
+            python,
             "-m", "uvicorn",
             self.config.backend_module,
             "--host", self.config.host,
@@ -204,7 +205,7 @@ class ApplicationRuntimeManager:
         try:
             cmd = self._build_command()
             env = self._get_env()
-            log_file = self.config.log_dir / "backend.log"
+            log_file = cast(Path, self.config.log_dir) / "backend.log"
             log_handle = open(log_file, "a", encoding="utf-8")
             creationflags = 0
             if sys.platform == "win32":
@@ -354,7 +355,7 @@ class ApplicationRuntimeManager:
 
     def get_logs(self, lines: int = 100) -> str:
         """获取最近日志"""
-        log_file = self.config.log_dir / "backend.log"
+        log_file = cast(Path, self.config.log_dir) / "backend.log"
         if not log_file.exists():
             return ""
         try:

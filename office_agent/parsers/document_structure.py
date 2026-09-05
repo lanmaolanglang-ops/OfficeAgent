@@ -305,7 +305,7 @@ class DocumentStructureAnalyzer:
         tree.paragraphs_count = len([p for p in doc.paragraphs if p.text.strip()])
 
         # 第一遍：识别每个段落的类型
-        raw_nodes = []
+        raw_nodes: list[DocumentNode] = []
         for idx, para in enumerate(doc.paragraphs):
             text = para.text.strip()
             if not text:
@@ -575,6 +575,8 @@ class DocumentStructureAnalyzer:
 
     def _llm_refinement(self, nodes: list):
         """使用 LLM 对不确定的节点进行语义判断"""
+        if self.llm_callback is None:
+            return
         for position, node in enumerate(nodes):
             # 只对不确定的节点（正文但可能是标题，或未知类型）调用 LLM
             if node.type not in ("paragraph", "unknown"):
@@ -625,7 +627,7 @@ class DocumentStructureAnalyzer:
 
     def _get_font_info(self, para) -> tuple:
         """获取段落的主要字号和加粗状态"""
-        size_weights = {}
+        size_weights: dict[float, int] = {}
         bold_chars = 0
         total_chars = 0
 
@@ -642,7 +644,7 @@ class DocumentStructureAnalyzer:
 
         # 以承载字符最多的字号为主字号，避免单个大号符号/局部强调
         # 把整段正文误判为标题。
-        main_size = max(size_weights, key=size_weights.get) if size_weights else 0.0
+        main_size = max(size_weights, key=size_weights.__getitem__) if size_weights else 0.0
         is_bold = bool(total_chars and bold_chars >= total_chars / 2)
         if not main_size and para.style and para.style.font:
             if para.style.font.size:

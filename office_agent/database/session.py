@@ -10,14 +10,12 @@ from sqlalchemy.orm import Session, sessionmaker
 from .connection import default_engine
 
 _session_kwargs = {
-    "autocommit": False,
     "autoflush": False,
     "expire_on_commit": False,
-    "future": True,
 }
 
 _factory_lock = threading.Lock()
-_factory: sessionmaker = None
+_factory: sessionmaker | None = None
 
 
 def _session_factory() -> sessionmaker:
@@ -29,7 +27,11 @@ def _session_factory() -> sessionmaker:
     if _factory is None:
         with _factory_lock:
             if _factory is None:
-                _factory = sessionmaker(bind=default_engine(), **_session_kwargs)
+                _factory = sessionmaker(
+                    bind=default_engine(),
+                    autoflush=_session_kwargs["autoflush"],
+                    expire_on_commit=_session_kwargs["expire_on_commit"],
+                )
     return _factory
 
 

@@ -51,7 +51,7 @@ def setup_logging(log_dir: Path):
     """配置日志 - 使用Python标准logging，不依赖uvicorn的log_config"""
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / "office_agent.log"
-    handlers = [logging.FileHandler(str(log_file), encoding="utf-8")]
+    handlers: list[logging.Handler] = [logging.FileHandler(str(log_file), encoding="utf-8")]
     if not FROZEN:
         handlers.append(logging.StreamHandler(sys.stdout))
     logging.basicConfig(

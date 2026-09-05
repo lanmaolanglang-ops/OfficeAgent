@@ -45,7 +45,7 @@ def _lock_for(path: Path) -> threading.RLock:
     return lock
 
 
-def atomic_write(path: PathLike, writer: Callable[[IO[Any]], None], *,
+def atomic_write(path: PathLike, writer: Callable[[IO[Any]], Any], *,
                  binary: bool = False, encoding: str = "utf-8",
                  mode: int | None = None) -> None:
     """
@@ -68,6 +68,7 @@ def atomic_write(path: PathLike, writer: Callable[[IO[Any]], None], *,
         fd, temp_path = tempfile.mkstemp(
             prefix=f".{target.name}.", suffix=".tmp", dir=str(target.parent)
         )
+        replaced = False
         try:
             if binary:
                 with os.fdopen(fd, "wb") as handle:
@@ -85,9 +86,9 @@ def atomic_write(path: PathLike, writer: Callable[[IO[Any]], None], *,
                 except OSError:
                     logger.warning("无法收紧文件权限 %s: %s", temp_path, mode)
             os.replace(temp_path, target)
-            temp_path = None
+            replaced = True
         finally:
-            if temp_path is not None:
+            if not replaced:
                 try:
                     os.unlink(temp_path)
                 except OSError:

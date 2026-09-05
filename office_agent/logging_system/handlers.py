@@ -9,7 +9,6 @@ import os
 import logging
 import logging.handlers
 import threading
-from typing import Optional
 
 from .formatter import JsonFormatter, HumanReadableFormatter
 from .background import submit as submit_background
@@ -114,12 +113,13 @@ class DatabaseLogHandler(logging.Handler):
                         traceback.format_exception(*record.exc_info)
                     )
 
+                exc_type = record.exc_info[0] if record.exc_info else None
                 error_log = ErrorLog(
                     request_id=ctx.get("request_id", ""),
                     task_id=ctx.get("task_id", ""),
                     logger_name=record.name,
                     level=record.levelname,
-                    error_type=record.exc_info[0].__name__ if record.exc_info else record.levelname,
+                    error_type=exc_type.__name__ if exc_type else record.levelname,
                     error_message=record.getMessage()[:2000],
                     stack_trace=stack_trace,
                     extra_json=json.dumps({

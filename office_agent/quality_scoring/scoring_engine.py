@@ -37,8 +37,8 @@ Excel:
     )
 """
 import os
-from typing import Dict, List, Any, Optional, Union
-from dataclasses import dataclass, field, asdict
+from typing import Dict, List, Any
+from dataclasses import dataclass, field
 
 from .word_scorer import WordQualityScorer, WordScoreResult
 from .ppt_scorer import PPTQualityScorer, PPTScoreResult
@@ -180,28 +180,33 @@ class QualityScoringEngine:
 
         # 调用对应评分器
         if file_type == "word":
-            raw = self._word_scorer.score(
+            return self._wrap_word_result(self._word_scorer.score(
                 file_path,
-                expected_format=kwargs.get("expected_format")
-            )
-            return self._wrap_word_result(raw)
+                expected_format=kwargs.get("expected_format"),
+            ))
 
-        elif file_type == "ppt":
-            raw = self._ppt_scorer.score(
+        if file_type == "ppt":
+            return self._wrap_ppt_result(self._ppt_scorer.score(
                 file_path,
                 expected_slides=kwargs.get("expected_slides", 0),
                 required_content=kwargs.get("required_content"),
-            )
-            return self._wrap_ppt_result(raw)
+            ))
 
-        elif file_type == "excel":
-            raw = self._excel_scorer.score(
+        if file_type == "excel":
+            return self._wrap_excel_result(self._excel_scorer.score(
                 file_path,
                 expected_formulas=kwargs.get("expected_formulas"),
                 expected_charts=kwargs.get("expected_charts"),
                 expected_sheets=kwargs.get("expected_sheets"),
-            )
-            return self._wrap_excel_result(raw)
+            ))
+
+        # 兜底：_detect_type 仅返回 word/ppt/excel/unknown，正常不会到达此处
+        return ScoreResult(
+            file_path=file_path,
+            file_type=file_type,
+            total_score=0,
+            issues=[f"无法评分: {file_type}"],
+        )
 
     def score_multiple(self, file_paths: List[str], **kwargs) -> List[ScoreResult]:
         """批量评分"""

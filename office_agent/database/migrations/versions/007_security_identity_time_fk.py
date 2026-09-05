@@ -77,7 +77,7 @@ def _replace_fk(table: str, column: str, referred: str,
 def upgrade() -> None:
     bind = op.get_bind()
     user_columns = {item["name"] for item in sa.inspect(bind).get_columns("user")}
-    additions = {
+    additions: dict[str, sa.Column] = {
         "is_verified": sa.Column("is_verified", sa.Boolean(), nullable=False, server_default=sa.false()),
         "last_login_ip": sa.Column("last_login_ip", sa.String(64), nullable=True),
         "failed_login_count": sa.Column("failed_login_count", sa.Integer(), nullable=False, server_default="0"),
@@ -127,12 +127,12 @@ def upgrade() -> None:
     for table, columns in aware_columns.items():
         existing = {item["name"]: item for item in sa.inspect(bind).get_columns(table)}
         with op.batch_alter_table(table) as batch:
-            for column in columns:
-                if column in existing and not _column_is_aware(existing[column]):
+            for col_name in columns:
+                if col_name in existing and not _column_is_aware(existing[col_name]):
                     batch.alter_column(
-                        column, existing_type=sa.DateTime(),
+                        col_name, existing_type=sa.DateTime(),
                         type_=sa.DateTime(timezone=True), existing_nullable=True,
-                        postgresql_using=f'"{column}" AT TIME ZONE \'UTC\'',
+                        postgresql_using=f'"{col_name}" AT TIME ZONE \'UTC\'',
                     )
 
     if "security_users" in sa.inspect(bind).get_table_names():

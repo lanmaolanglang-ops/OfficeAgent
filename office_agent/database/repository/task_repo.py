@@ -67,7 +67,7 @@ class TaskRepository(BaseRepository[Task]):
         return bool(rowcount)
 
     def update_progress(self, task_id: str, progress: int, current_step: str | None = None):
-        data = {"progress": progress}
+        data: dict[str, int | str] = {"progress": progress}
         if current_step is not None:
             data["current_step"] = current_step
         self.update(task_id, data)
@@ -125,7 +125,7 @@ class TaskRepository(BaseRepository[Task]):
         return bool(rowcount)
 
     def add_feedback(self, task_id: str, rating: int, comment: str | None = None):
-        data = {"feedback_rating": rating}
+        data: dict[str, int | str] = {"feedback_rating": rating}
         if comment:
             data["feedback_comment"] = comment
         self.update(task_id, data)

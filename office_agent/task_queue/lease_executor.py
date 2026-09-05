@@ -47,7 +47,7 @@ class LeaseThreadPool:
         with self._cond:
             if self._shutdown:
                 raise RuntimeError("cannot schedule new futures after shutdown")
-            future = Future()
+            future: Future = Future()
             self._queue.append((future, fn, args, kwargs))
             # 存活线程少于准入上限（例如全部在停靠）：补一名替补线程，
             # 新提交的任务无需等待停靠线程唤醒。

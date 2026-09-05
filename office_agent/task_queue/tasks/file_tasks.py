@@ -90,9 +90,9 @@ def process_upload(file_path: str, file_id: str | None = None,
             result["file_type"] = "pdf"
             try:
                 import pymupdf
-                doc = pymupdf.open(file_path)
-                metadata["pages"] = len(doc)
-                doc.close()
+                pdf_doc = pymupdf.open(file_path)
+                metadata["pages"] = len(pdf_doc)
+                pdf_doc.close()
             except Exception as exc:
                 logger.warning("提取 PDF 元数据失败 %s: %s", file_path, exc)
 
@@ -257,7 +257,7 @@ def system_health_check(progress=None, _task_id: str | None = None, **kwargs) ->
     """
     系统健康检查（定时任务，每小时执行）
     """
-    result = {"status": "success", "checks": {}}
+    result: dict = {"status": "success", "checks": {}}
 
     try:
         if progress:

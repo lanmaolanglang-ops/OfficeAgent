@@ -516,8 +516,15 @@ category 取值：heading, paragraph, page_break, table, whitespace, alignment, 
         """检查单页"""
         result = PageVisualResult(page_number=page.page_number)
 
+        image = page.image
+        gateway = self.gateway
+        if image is None or gateway is None:
+            result.summary = "缺少图像或未配置 VisionGateway"
+            result.score = 0
+            return result
+
         request = VisionRequest(
-            images=[page.image],
+            images=[image],
             prompt=self._build_page_prompt(page),
             task_type=VisionTaskType.QUALITY_CHECK,
             system_prompt=self.SYSTEM_PROMPT,
@@ -525,7 +532,7 @@ category 取值：heading, paragraph, page_break, table, whitespace, alignment, 
             temperature=0.2,
         )
 
-        resp = self.gateway.analyze(request, model_key=model_key)
+        resp = gateway.analyze(request, model_key=model_key)
 
         if not resp.success:
             result.summary = f"检查失败: {resp.error}"

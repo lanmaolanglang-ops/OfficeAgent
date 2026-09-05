@@ -10,6 +10,7 @@ __pycache__/
 .coverage
 htmlcov/
 .coverage.*
+.workbuddy/
 
 # === 虚拟环境 ===
 .venv/

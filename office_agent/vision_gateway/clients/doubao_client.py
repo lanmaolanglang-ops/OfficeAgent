@@ -5,7 +5,6 @@
 """
 import json
 import time
-from typing import Optional
 
 from .base import BaseVisionClient
 from ..vision_models import VisionRequest, VisionResponse
@@ -30,7 +29,7 @@ class DoubaoVisionClient(BaseVisionClient):
             return self._make_error("没有提供图片", start)
 
         try:
-            content = []
+            content: list[dict] = []
 
             # 文本
             user_prompt = self._build_user_prompt(request)

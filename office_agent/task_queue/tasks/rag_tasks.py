@@ -72,7 +72,7 @@ def _load_filtered(repo, *, page_size: int = 1000, **filters):
 def _load_search_candidates(repo, category: str | None,
                             max_candidates: int, page_size: int = 1000):
     """Load at most max_candidates and report whether more rows exist."""
-    items = []
+    items: list = []
     offset = 0
     target = max_candidates + 1
     while len(items) < target:
@@ -368,7 +368,7 @@ def search_knowledge(query: str, top_k: int = 5,
     索引；索引缺失、损坏或不可用时安全回退到原有精确余弦路径。ANN 只负责
     加速，数据库仍是唯一事实来源。
     """
-    result = {
+    result: dict = {
         "status": "success", "results": [], "candidate_count": 0,
         "candidate_limit": 0, "truncated": False, "rebuild_required": False,
         "legacy_count": 0, "incompatible_count": 0, "embedding_model": None,
@@ -446,21 +446,21 @@ def search_knowledge(query: str, top_k: int = 5,
                     result["ann_used"] = True
                     result["ann_status"] = ann_status
                     result["ann_index_count"] = ann_index.count
-                    ann_scores = {}
+                    ann_scores: dict[str, float] = {}
                     if ann_index.count:
                         for record_id, similarity in ann_index.search(
                                 query_vector, top_k, overfetch=ANN_SEARCH_OVERFETCH):
                             if record_id in compatible_by_id:
                                 ann_scores[record_id] = similarity
                     for record_id, (item, lexical_match) in compatible_by_id.items():
-                        score = ann_scores.get(record_id)
-                        if score is None and not lexical_match:
+                        ann_score = ann_scores.get(record_id)
+                        if ann_score is None and not lexical_match:
                             continue
-                        if score is None:
-                            score = 0.35
+                        if ann_score is None:
+                            ann_score = 0.35
                         if lexical_match:
-                            score = max(score, 0.35)
-                        scored.append((score, item))
+                            ann_score = max(ann_score, 0.35)
+                        scored.append((ann_score, item))
                 except (ANNIndexUnavailableError, ANNIndexCorruptedError) as exc:
                     result["ann_used"] = False
                     result["ann_status"] = "fallback"
@@ -500,7 +500,7 @@ def search_knowledge(query: str, top_k: int = 5,
 
 def refresh_knowledge_base(progress=None, _task_id: str | None = None, **kwargs) -> dict:
     """幂等重算全部持久化向量。"""
-    result = {"status": "success", "refreshed": 0, "total": 0}
+    result: dict = {"status": "success", "refreshed": 0, "total": 0}
     try:
         _progress(progress, 20, "扫描知识库")
         from ...database.repository import KnowledgeRepository

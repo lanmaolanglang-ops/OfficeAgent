@@ -33,7 +33,7 @@ class Span:
         self.start_time = time.time()
         self.end_time: Optional[float] = None
         self.status = "ok"
-        self.error = None
+        self.error: str | None = None
         self.events: List[dict] = []
         self.children: List["Span"] = []
 

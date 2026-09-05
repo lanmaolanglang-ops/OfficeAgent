@@ -85,8 +85,8 @@ THEME_TEMPLATES = {
 }
 
 # 缺少真实输入时保持为空。示例数字/时间线绝不能进入用户成品。
-DEFAULT_DATA = []
-DEFAULT_TIMELINE = []
+DEFAULT_DATA: list = []
+DEFAULT_TIMELINE: list = []
 
 
 class ContentPlanner:
@@ -186,7 +186,7 @@ class ContentPlanner:
 
         lines = text.strip().split("\n")
         current_slide = None
-        current_bullets = []
+        current_bullets: list[str] = []
 
         for line in lines:
             line = line.rstrip()

@@ -7,7 +7,7 @@
 - 数据库
 """
 import os
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Callable
 from pathlib import Path
 
 from ..logging_system import get_logger
@@ -20,7 +20,7 @@ class EnvLoader:
     """从环境变量加载配置"""
 
     # 环境变量映射
-    ENV_MAP = {
+    ENV_MAP: dict[str, tuple[str, Callable[[str], Any]]] = {
         # 基础
         "ENVIRONMENT": ("environment", str),
         "DEBUG": ("debug", lambda v: v.lower() in ("true", "1", "yes")),

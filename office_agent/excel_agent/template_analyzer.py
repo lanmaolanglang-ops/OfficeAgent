@@ -401,7 +401,6 @@ class ExcelTemplateAnalyzer:
 
         # 如果第一个非空行的下一行有不同样式（比如有公式/数字格式），那第一行是表头
         if ws.max_row and ws.max_row > first_non_empty:
-            next_style = self._extract_style(ws.cell(row=first_non_empty + 1, column=1))
             first_val = ws.cell(row=first_non_empty, column=1).value
             next_val = ws.cell(row=first_non_empty + 1, column=1).value
             # 第一行是文本，第二行是数字/公式 → 第一行是表头
@@ -612,7 +611,7 @@ class ExcelTemplateAnalyzer:
                          sheet_name: str | None = None,
                          data_rows: int | None = None) -> List[FormatSpec]:
         """从模板配置生成 FormatSpec 列表"""
-        specs = []
+        specs: List[FormatSpec] = []
         sheet = config.get_sheet(sheet_name)
         if not sheet:
             return specs

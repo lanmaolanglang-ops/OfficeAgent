@@ -361,7 +361,7 @@ class LocalWorker:
             if current is None and status == "running" and progress == 0:
                 # 任务可能还没创建，跳过
                 return
-            data = {}
+            data: dict = {}
             if status not in self._TERMINAL_STATUSES and status != "running":
                 data["status"] = status
             if progress is not None and status not in self._TERMINAL_STATUSES:
@@ -404,7 +404,7 @@ class LocalWorker:
                 session.close()
 
     @staticmethod
-    def _snapshot_task(task) -> dict:
+    def _snapshot_task(task) -> dict | None:
         """Copy safe task metadata before a possible DB failure detaches it."""
         if task is None:
             return None
@@ -704,7 +704,7 @@ class LocalWorker:
             return None
         instruction = f"自动质量修订：基于原始要求‘{task.instruction}’，修复：" + "；".join(map(str, issues))
         llm_instruction = instruction
-        model_call = {"called": False, "success": False, "fallback_used": True}
+        model_call: dict = {"called": False, "success": False, "fallback_used": True}
         try:
             from ..model_gateway import ModelGateway
             response = ModelGateway(cancel_event=cancel_event).chat(

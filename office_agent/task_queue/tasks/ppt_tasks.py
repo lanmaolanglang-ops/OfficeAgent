@@ -150,7 +150,7 @@ def generate_ppt(outline: str | None = None, input_path: str | None = None,
         _task_id: 任务ID
     """
     options = options or {}
-    result = {"status": "success", "output_files": [], "slides": 0}
+    result: dict = {"status": "success", "output_files": [], "slides": 0}
 
     try:
         if progress:
@@ -277,7 +277,7 @@ def generate_ppt(outline: str | None = None, input_path: str | None = None,
             message = getattr(ppt_result, 'message', '')
 
             if output and os.path.exists(str(output)):
-                image_status = dict(orchestrator.image_generation)
+                image_status: dict = dict(orchestrator.image_generation)
                 errors = image_status.pop("errors", [])
                 generated_images = int(image_status.get("generated", 0) or 0)
                 if max_generated_images <= 0:

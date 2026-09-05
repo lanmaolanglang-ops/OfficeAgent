@@ -253,7 +253,7 @@ class FormatRuleParser:
         segments = [s.strip() for s in segments if s.strip()]
 
         # 先提取全局设置（不区分正文/标题的）
-        global_config = {}
+        global_config: dict = {}
         self._parse_global_settings(normalized, global_config, rule)
 
         # 逐段解析，判断作用域
@@ -470,8 +470,8 @@ class FormatRuleParser:
 
         return None
 
-    def _extract_size(self, text: str) -> Optional[str]:
-        """提取字号（返回中文字号名或磅值字符串）"""
+    def _extract_size(self, text: str) -> str | float | None:
+        """提取字号（返回中文字号名或磅值）"""
         # 先移除"段前X磅"/"段后X磅"，避免误识别为字号
         text_clean = SPACE_BEFORE_PATTERN.sub("", text)
         text_clean = SPACE_AFTER_PATTERN.sub("", text_clean)

@@ -111,7 +111,7 @@ class LogContext:
         self.agent_name = agent_name
         self.user_id = user_id
         self.trace_id = trace_id
-        self._tokens = []
+        self._tokens: list[tuple[str, contextvars.Token]] = []
 
     def __enter__(self):
         if self.request_id:

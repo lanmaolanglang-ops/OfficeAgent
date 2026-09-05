@@ -4,7 +4,6 @@ OpenAI GPT Vision 客户端
 """
 import json
 import time
-from typing import Optional
 
 from .base import BaseVisionClient
 from ..vision_models import VisionRequest, VisionResponse
@@ -30,7 +29,7 @@ class OpenAIVisionClient(BaseVisionClient):
 
         try:
             # 构建消息内容
-            content = []
+            content: list[dict] = []
 
             # 文本提示
             user_prompt = self._build_user_prompt(request)

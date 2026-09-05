@@ -108,7 +108,7 @@ class ColumnInfo:
 
     def to_schema_dict(self) -> dict:
         """生成 DataSchema 格式"""
-        d = {
+        d: dict[str, Any] = {
             "name": self.name,
             "type": self.data_type,
             "semantic_type": self.semantic_type,

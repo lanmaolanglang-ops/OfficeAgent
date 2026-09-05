@@ -38,7 +38,7 @@ class JsonFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         # 基础字段
-        log_entry = {
+        log_entry: dict = {
             "time": datetime.fromtimestamp(
                 record.created, tz=timezone.utc
             ).isoformat(),

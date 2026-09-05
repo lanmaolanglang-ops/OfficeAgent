@@ -74,6 +74,7 @@ class ConfigManager:
 
     _instance = None
     _instance_lock = threading.Lock()
+    _initialized: bool = False
 
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
@@ -492,7 +493,7 @@ class ConfigManager:
                 db_obj.content = data["content"]
                 db_obj.status = data.get("status", "active")
                 db_obj.is_default = data.get("is_default", False)
-                db_obj.variables = data.get("variables", [])
+                db_obj.variables = data.get("variables") or []
                 db_obj.agent = data.get("agent")
                 if data.get("is_default", False):
                     for item in repo.list_versions(data["name"]):
