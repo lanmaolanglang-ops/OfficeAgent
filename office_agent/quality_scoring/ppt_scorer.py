@@ -135,7 +135,7 @@ class PPTQualityScorer:
         title_positions = []
 
         for slide_idx, slide in enumerate(prs.slides):
-            slide_info = {
+            slide_info: Dict[str, Any] = {
                 "index": slide_idx,
                 "shapes": 0,
                 "has_title": False,
@@ -355,7 +355,7 @@ class PPTQualityScorer:
     def _score_content(self, info: Dict, expected_slides: int,
                       required_content: List[str] | None) -> float:
         """内容完整度评分"""
-        score = 50
+        score = 50.0
 
         # 页数合理
         sc = info["slide_count"]

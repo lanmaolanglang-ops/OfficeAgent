@@ -119,7 +119,7 @@ def process_word(input_path: str, output_path: str | None = None,
         _task_id: 任务ID
     """
     options = options or {}
-    result = {"status": "success", "output_files": [], "steps": []}
+    result: dict = {"status": "success", "output_files": [], "steps": []}
 
     try:
         if progress:

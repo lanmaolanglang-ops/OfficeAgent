@@ -280,7 +280,7 @@ class ExcelQualityScorer:
     def _score_formulas(self, analysis: Dict,
                        expected: List[str] | None = None) -> float:
         """公式正确率评分"""
-        score = 40  # 基础分
+        score = 40.0  # 基础分
 
         total = analysis["total_formulas"]
         if total == 0:
@@ -322,7 +322,7 @@ class ExcelQualityScorer:
     def _score_analysis(self, analysis: Dict,
                        expected_sheets: List[str] | None = None) -> float:
         """数据分析准确率评分"""
-        score = 40
+        score = 40.0
 
         # 有多个Sheet（可能有分析）
         ts = analysis["total_sheets"]
@@ -360,7 +360,7 @@ class ExcelQualityScorer:
     def _score_charts(self, analysis: Dict,
                      expected_charts: List[str] | None = None) -> float:
         """图表合理性评分"""
-        score = 30
+        score = 30.0
 
         cc = analysis["chart_count"]
         if cc >= 3:

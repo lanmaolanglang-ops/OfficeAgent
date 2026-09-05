@@ -74,7 +74,7 @@ class SlidePlan:
         """Convert the legacy shape back to ``PPTOrchestrator`` input data."""
         result = []
         for slide in self.slides:
-            item = {"layout": slide.layout, "title": slide.title}
+            item: dict[str, str | list[str]] = {"layout": slide.layout, "title": slide.title}
             if slide.suggested_bullets:
                 if slide.layout == SlideLayout.CONTENT_TWO_COL.value:
                     midpoint = len(slide.suggested_bullets) // 2
@@ -204,15 +204,15 @@ class SlidePlanner:
 
     def _read_document(self, path: str) -> str:
         """Read legacy planner inputs; kept only for compatibility callers."""
-        path = Path(path)
-        if not path.exists():
-            raise FileNotFoundError(f"文档不存在: {path}")
+        path_obj = Path(path)
+        if not path_obj.exists():
+            raise FileNotFoundError(f"文档不存在: {path_obj}")
 
-        suffix = path.suffix.lower()
+        suffix = path_obj.suffix.lower()
         if suffix == ".docx":
             try:
                 from docx import Document
-                document = Document(str(path))
+                document = Document(str(path_obj))
                 return "\n".join(
                     paragraph.text.strip()
                     for paragraph in document.paragraphs
@@ -222,9 +222,9 @@ class SlidePlanner:
                 raise RuntimeError(f"Word 文档读取失败: {exc}") from exc
         if suffix in (".txt", ".md"):
             try:
-                return read_text_file(path)
+                return read_text_file(path_obj)
             except TextDecodeError as exc:
-                raise RuntimeError(f"文本编码无法识别: {path.name}") from exc
+                raise RuntimeError(f"文本编码无法识别: {path_obj.name}") from exc
         raise ValueError(f"不支持的文档格式: {suffix}")
 
     def generate_ppt(self, plan: SlidePlan, output_path: str = ""):

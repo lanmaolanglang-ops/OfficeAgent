@@ -135,7 +135,7 @@ def analyze_excel(input_path: str, output_path: str | None = None,
     Excel 数据分析任务
     """
     options = options or {}
-    result = {"status": "success", "output_files": [], "analysis": {}}
+    result: dict = {"status": "success", "output_files": [], "analysis": {}}
 
     try:
         if progress:

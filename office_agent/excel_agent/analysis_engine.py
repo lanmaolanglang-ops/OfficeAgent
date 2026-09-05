@@ -15,7 +15,7 @@ import logging
 import re
 import statistics
 from datetime import datetime, timezone
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, TypedDict
 from collections import defaultdict
 
 from .models import (
@@ -35,6 +35,13 @@ TREND_FINDING_THRESHOLD = 0.05
 # 列类型嗅探采样行数：只看前 N 个非空值判定 date/number/text，
 # 避免大表全量扫描；采样需足够多以降低误判，50 为经验值。
 TYPE_DETECTION_SAMPLE_SIZE = 50
+
+
+class _GroupAccumulator(TypedDict):
+    """分组聚合累加器：维度分组内指标求和、计数与原始值集合。"""
+    sum: float
+    count: int
+    values: list[float]
 
 
 class AnalysisEngine:
@@ -547,7 +554,9 @@ class AnalysisEngine:
         metric_name = headers[metric_col] if metric_col < len(headers) else f"列{metric_col+1}"
 
         # 分组聚合
-        groups = defaultdict(lambda: {"sum": 0.0, "count": 0, "values": []})
+        groups: defaultdict[str, _GroupAccumulator] = defaultdict(
+            lambda: {"sum": 0.0, "count": 0, "values": []}
+        )
         for row in rows:
             if dim_col < len(row) and metric_col < len(row):
                 key = str(row[dim_col]) if row[dim_col] is not None else "(空)"

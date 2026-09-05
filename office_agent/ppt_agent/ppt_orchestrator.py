@@ -8,6 +8,7 @@ import logging
 import re
 import tempfile
 from pathlib import Path
+from typing import TypedDict
 
 from ..security.error_sanitizer import sanitize_error
 from ..quality.checker import IssueSeverity
@@ -27,6 +28,14 @@ def _safe_presentation_name(value: str, fallback: str = "presentation") -> str:
     name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", str(value or ""))
     name = re.sub(r"_+", "_", name).strip(" ._")[:30]
     return name or fallback
+
+
+class _ImageGenState(TypedDict):
+    """配图生成状态：是否可用、尝试/成功计数与错误记录。"""
+    configured: bool
+    attempted: int
+    generated: int
+    errors: list[str]
 
 
 class PPTOrchestrator:
@@ -54,7 +63,7 @@ class PPTOrchestrator:
         self.model_gateway = model_gateway
         self.image_gateway = image_gateway
         self.max_generated_images = max(0, min(int(max_generated_images), 8))
-        self.image_generation = {
+        self.image_generation: _ImageGenState = {
             "configured": False,
             "attempted": 0,
             "generated": 0,

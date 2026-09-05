@@ -446,7 +446,7 @@ class ExcelVisionAnalyzer:
             return {"error": result.error}
 
         table = result.table
-        plan = {
+        plan: Dict[str, Any] = {
             "table_name": table.title,
             "table_type": table.table_type,
             "columns": [],
