@@ -38,6 +38,9 @@ hiddenimports = [
     'openpyxl',
     'pandas',
     'numpy',
+    'usearch',
+    'usearch.index',
+    'usearch.compiled',
     'fitz',
     'PIL',
     # 数据库

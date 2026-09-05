@@ -2,10 +2,18 @@
 import hashlib
 import json
 import logging
+import math
 import os
 from pathlib import Path
 from urllib.parse import urlparse
 
+from ...knowledge_base.ann_index import (
+    ANN_MIN_CANDIDATES,
+    ANN_SEARCH_OVERFETCH,
+    ANNIndexCorruptedError,
+    ANNIndexUnavailableError,
+    KnowledgeVectorIndex,
+)
 from ...security.error_sanitizer import sanitize_error
 
 logger = logging.getLogger("office_agent.tasks.rag")
@@ -130,6 +138,7 @@ def _store_chunks(chunks, title: str, category: str | None,
     fingerprint = _document_fingerprint(chunks, title, category, source)
     embedder = create_semantic_embedder()
     embeddings = embedder.embed([chunk.content for chunk in chunks])
+    ann_records = []
     with session_scope() as session:
         repo = KnowledgeRepository(session)
         existing = _load_filtered(
@@ -165,11 +174,13 @@ def _store_chunks(chunks, title: str, category: str | None,
                     "section_title": existing_metadata.get("section_title", ""),
                     "page_number": existing_metadata.get("page_number", 0),
                 }, ensure_ascii=False)
+                ann_records.append((item.id, embedding))
             logger.info("刷新重复知识索引: %s (%s chunks)", title, len(chunks))
+            _try_update_existing_ann_index(embedder, ann_records)
             return len(chunks)
 
-        for index, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
-            repo.add_knowledge(
+        for chunk_idx, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
+            item = repo.add_knowledge(
                 title=title,
                 content=chunk.content,
                 source=source,
@@ -185,9 +196,11 @@ def _store_chunks(chunks, title: str, category: str | None,
                     "page_number": chunk.page_number,
                     "document_fingerprint": fingerprint,
                 }, ensure_ascii=False),
-                chunk_index=index,
+                chunk_index=chunk_idx,
                 total_chunks=len(chunks),
             )
+            ann_records.append((item.id, embedding))
+    _try_update_existing_ann_index(embedder, ann_records)
     return len(chunks)
 
 
@@ -223,6 +236,81 @@ def _item_embedding_dimension(item) -> int:
     except (TypeError, ValueError, json.JSONDecodeError):
         vector = []
     return len(vector) if isinstance(vector, list) else 0
+
+
+def _parse_embedding_vector(item) -> list[float]:
+    try:
+        vector = json.loads(item.embedding or "[]")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+    if not isinstance(vector, list):
+        return []
+    return vector
+
+
+def _is_finite_vector(vector: list[float], dimension: int) -> bool:
+    return (
+        len(vector) == dimension
+        and all(
+            isinstance(value, (int, float)) and math.isfinite(float(value))
+            for value in vector
+        )
+    )
+
+
+def _compatible_records(items, embedder):
+    """Yield ``(knowledge_id, vector)`` for current-model rows only."""
+    for item in items:
+        model = _item_embedding_model(item)
+        if model in LEGACY_EMBEDDING_MODEL_IDS or model != embedder.model_id:
+            continue
+        if _item_embedding_dimension(item) != embedder.dimension:
+            continue
+        vector = _parse_embedding_vector(item)
+        if _is_finite_vector(vector, embedder.dimension):
+            yield item.id, vector
+
+
+def _try_update_existing_ann_index(embedder, records) -> None:
+    """Update a healthy ANN index after ingestion; never fail the write."""
+    if not records:
+        return
+    try:
+        index = KnowledgeVectorIndex()
+        if index.load(
+                embedder.model_id, embedder.version, embedder.dimension):
+            index.upsert(
+                records, embedder.model_id, embedder.version, embedder.dimension,
+            )
+    except (ANNIndexUnavailableError, ANNIndexCorruptedError) as exc:
+        logger.warning("ANN 索引暂不可用，索引更新已跳过: %s", exc)
+    except Exception:
+        logger.warning("ANN 索引更新失败，已跳过", exc_info=True)
+
+
+def _prepare_ann_index(embedder, repo, indexable_by_id):
+    """Load or rebuild the persistent index for the current embedding model."""
+    index = KnowledgeVectorIndex()
+    model_id = embedder.model_id
+    version = embedder.version
+    dimension = embedder.dimension
+
+    if index.load(model_id, version, dimension):
+        missing = [
+            record_id for record_id in indexable_by_id
+            if record_id not in index.indexed_ids
+        ]
+        if missing:
+            index.upsert(
+                [(record_id, indexable_by_id[record_id]) for record_id in missing],
+                model_id, version, dimension,
+            )
+            return index, "updated"
+        return index, "active"
+
+    records = list(_compatible_records(_load_all(repo), embedder))
+    index.rebuild(records, model_id, version, dimension)
+    return index, "rebuilt"
 
 
 def index_document(file_path: str, title: str = None,
@@ -272,18 +360,29 @@ def chunk_and_embed(text: str, title: str = None,
 def search_knowledge(query: str, top_k: int = 5,
                      category: str = None, max_candidates: int = 10000,
                      progress=None,
-                     _task_id: str = None, **kwargs) -> dict:
-    """使用持久化向量执行余弦检索，并回退到文本匹配。"""
+                     _task_id: str = None, *,
+                     min_ann_candidates: int = None, **kwargs) -> dict:
+    """使用持久化向量执行余弦检索，并回退到文本匹配。
+
+    候选集达到 :data:`ANN_MIN_CANDIDATES` 时优先使用持久化 usearch ANN
+    索引；索引缺失、损坏或不可用时安全回退到原有精确余弦路径。ANN 只负责
+    加速，数据库仍是唯一事实来源。
+    """
     result = {
         "status": "success", "results": [], "candidate_count": 0,
         "candidate_limit": 0, "truncated": False, "rebuild_required": False,
         "legacy_count": 0, "incompatible_count": 0, "embedding_model": None,
+        "ann_used": False, "ann_status": "small_dataset",
+        "ann_reason": None, "ann_index_count": 0,
     }
     try:
         if not isinstance(query, str) or not query.strip():
             raise ValueError("检索词不能为空")
         top_k = max(1, min(int(top_k), 50))
         max_candidates = max(1, min(int(max_candidates), 100000))
+        ann_threshold = ANN_MIN_CANDIDATES if min_ann_candidates is None else max(
+            1, int(min_ann_candidates),
+        )
         result["candidate_limit"] = max_candidates
         _progress(progress, 20, "准备检索条件")
         from ...database.repository import KnowledgeRepository
@@ -295,7 +394,10 @@ def search_knowledge(query: str, top_k: int = 5,
         embedder = create_semantic_embedder()
         result["embedding_model"] = embedder.model_id
         query_vector = embedder.embed_query(query)
-        scored = []
+        special_scored = []
+        compatible_items = []
+        compatible_by_id = {}
+        indexable_by_id = {}
         with session_scope() as session:
             repo = KnowledgeRepository(session)
             items, truncated = _load_search_candidates(
@@ -313,10 +415,7 @@ def search_knowledge(query: str, top_k: int = 5,
                     query.lower() in (item.content or "").lower()
                     or query.lower() in (item.title or "").lower()
                 )
-                try:
-                    vector = json.loads(item.embedding or "[]")
-                except (TypeError, ValueError, json.JSONDecodeError):
-                    vector = []
+                vector = _parse_embedding_vector(item)
                 legacy = _item_embedding_model(item) in LEGACY_EMBEDDING_MODEL_IDS
                 compatible = (
                     _item_embedding_model(item) == embedder.model_id
@@ -331,11 +430,56 @@ def search_knowledge(query: str, top_k: int = 5,
                         result["legacy_count"] += 1
                     else:
                         result["incompatible_count"] += 1
+                    special_scored.append((score, item))
                 else:
+                    compatible_items.append((item, vector, lexical_match))
+                    compatible_by_id[item.id] = (item, lexical_match)
+                    if _is_finite_vector(vector, embedder.dimension):
+                        indexable_by_id[item.id] = vector
+
+            scored = list(special_scored)
+            if len(compatible_items) >= ann_threshold:
+                try:
+                    ann_index, ann_status = _prepare_ann_index(
+                        embedder, repo, indexable_by_id,
+                    )
+                    result["ann_used"] = True
+                    result["ann_status"] = ann_status
+                    result["ann_index_count"] = ann_index.count
+                    ann_scores = {}
+                    if ann_index.count:
+                        for record_id, similarity in ann_index.search(
+                                query_vector, top_k, overfetch=ANN_SEARCH_OVERFETCH):
+                            if record_id in compatible_by_id:
+                                ann_scores[record_id] = similarity
+                    for record_id, (item, lexical_match) in compatible_by_id.items():
+                        score = ann_scores.get(record_id)
+                        if score is None and not lexical_match:
+                            continue
+                        if score is None:
+                            score = 0.35
+                        if lexical_match:
+                            score = max(score, 0.35)
+                        scored.append((score, item))
+                except (ANNIndexUnavailableError, ANNIndexCorruptedError) as exc:
+                    result["ann_used"] = False
+                    result["ann_status"] = "fallback"
+                    result["ann_reason"] = type(exc).__name__
+                    logger.warning(
+                        "ANN 索引不可用，回退精确余弦: task=%s reason=%s",
+                        _task_id, result["ann_reason"],
+                    )
+                    for item, vector, lexical_match in compatible_items:
+                        score = cosine_similarity(query_vector, vector)
+                        if lexical_match:
+                            score = max(score, 0.35)
+                        scored.append((score, item))
+            else:
+                for item, vector, lexical_match in compatible_items:
                     score = cosine_similarity(query_vector, vector)
                     if lexical_match:
                         score = max(score, 0.35)
-                scored.append((score, item))
+                    scored.append((score, item))
 
             for score, item in sorted(
                     scored, key=lambda pair: pair[0], reverse=True)[:top_k]:
@@ -368,6 +512,7 @@ def refresh_knowledge_base(progress=None, _task_id: str = None, **kwargs) -> dic
             items = _load_all(repo)
             embedder = create_semantic_embedder()
             vectors = embedder.embed([item.content for item in items])
+            ann_records = []
             for item, vector in zip(items, vectors):
                 item.embedding = json.dumps(vector)
                 item.embedding_model = embedder.model_id
@@ -376,8 +521,22 @@ def refresh_knowledge_base(progress=None, _task_id: str = None, **kwargs) -> dic
                 metadata["embedding_version"] = embedder.version
                 metadata["embedding_dimension"] = embedder.dimension
                 item.metadata_json = json.dumps(metadata, ensure_ascii=False)
+                if _is_finite_vector(vector, embedder.dimension):
+                    ann_records.append((item.id, vector))
             result["total"] = len(items)
             result["refreshed"] = len(items)
+        if result["total"] >= ANN_MIN_CANDIDATES:
+            try:
+                KnowledgeVectorIndex().rebuild(
+                    ann_records,
+                    embedder.model_id,
+                    embedder.version,
+                    embedder.dimension,
+                )
+            except (ANNIndexUnavailableError, ANNIndexCorruptedError) as exc:
+                logger.warning("ANN 索引重建暂不可用: %s", exc)
+            except Exception:
+                logger.warning("ANN 索引重建失败", exc_info=True)
         _progress(progress, 100, f"已刷新 {result['refreshed']} 条向量")
         logger.info("知识库刷新 %s: %s 条记录",
                     _task_id, result["refreshed"])
