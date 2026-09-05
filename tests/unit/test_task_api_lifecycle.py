@@ -280,5 +280,5 @@ def test_agent_name_derivation_has_single_none_sentinel():
 
     # 源码级守卫：create_task 内不再出现内联三元推导的两份拷贝
     src = inspect.getsource(task_module.create_task)
-    assert src.count('_agent_name_for_task_type(req.task_type)') == 2
+    assert src.count('_agent_name_for_task_type(req.task_type)') == 1
     assert 'split("_")[0]' not in src

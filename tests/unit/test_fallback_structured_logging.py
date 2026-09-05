@@ -12,6 +12,7 @@
 import logging
 
 import pytest
+from sqlalchemy.exc import SQLAlchemyError
 
 
 class _ListHandler(logging.Handler):
@@ -305,14 +306,14 @@ class TestPptImageAvailabilityFallback:
 # ---------------------------------------------------------------- task api db-session fallback
 
 class TestTaskApiSessionFallback:
-    def test_session_failure_returns_none_and_logs(self, monkeypatch, capture_logs):
+    def test_session_sqlalchemy_failure_returns_none_and_logs(self, monkeypatch, capture_logs):
         import office_agent.database.session as db_session
         from office_agent.api.router.task import _get_db_session
 
         handler = capture_logs("office_agent.api.task")
 
         def _boom():
-            raise RuntimeError("database unavailable")
+            raise SQLAlchemyError("database unavailable")
         monkeypatch.setattr(db_session, "SessionLocal", _boom)
 
         assert _get_db_session() is None
@@ -321,3 +322,14 @@ class TestTaskApiSessionFallback:
         # 日志不含连接串/密钥等敏感内容，仅为定位信息
         assert all("password" not in r.getMessage().lower()
                    and "://" not in r.getMessage() for r in handler.records)
+
+    def test_session_programming_error_propagates(self, monkeypatch):
+        import office_agent.database.session as db_session
+        from office_agent.api.router.task import _get_db_session
+
+        def _boom():
+            raise RuntimeError("programming bug")
+        monkeypatch.setattr(db_session, "SessionLocal", _boom)
+
+        with pytest.raises(RuntimeError):
+            _get_db_session()
