@@ -19,6 +19,7 @@ Chart Generator - Excel 智能图表生成器
 - 相关性 → 散点图
 - 多维对比 → 雷达图
 """
+import logging
 import re
 from typing import Optional, List, Tuple
 from openpyxl.chart import (
@@ -30,6 +31,8 @@ from openpyxl.chart.series import DataPoint
 from openpyxl.utils import quote_sheetname
 
 from .models import ChartSpec, DataProfile, SheetInfo, ColumnInfo
+
+logger = logging.getLogger("office_agent.excel_agent.chart_generator")
 
 
 # ==========================================
@@ -153,8 +156,12 @@ class ChartGenerator:
             try:
                 from .data_analyzer import DataAnalyzer
                 self.profile = DataAnalyzer().analyze(file_path)
-            except Exception:
-                pass
+            except Exception as exc:
+                # 画像失败降级为无 profile 选图：继续生成，但原因必须可观测
+                logger.warning(
+                    "数据分析画像失败，降级为无画像选图 %s: %s",
+                    file_path, exc, exc_info=True,
+                )
 
         # 生成图表规格
         if text:

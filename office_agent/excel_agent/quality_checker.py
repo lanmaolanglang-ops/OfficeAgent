@@ -39,6 +39,7 @@ Excel Quality Checker - Excel 质量检查与自动修复
 - 空值 → 标记/填充
 - 公式不一致 → 统一
 """
+import logging
 import re
 import statistics
 from pathlib import Path
@@ -50,6 +51,8 @@ from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter, column_index_from_string
 
 from .models import ExcelQualityIssue, DataProfile
+
+logger = logging.getLogger("office_agent.excel_agent.quality_checker")
 
 
 # Excel 错误值
@@ -614,7 +617,12 @@ class ExcelQualityChecker:
         issues = []
         try:
             wb = load_workbook(file_path, data_only=True, read_only=True)
-        except Exception:
+        except Exception as exc:
+            # 结构检查已通过、仅缓存值扫描不可用：跳过该腿但必须可观测
+            logger.warning(
+                "缓存错误值扫描跳过（无法以 data_only 重开文件）%s: %s",
+                file_path, exc, exc_info=True,
+            )
             return issues
         try:
             for ws in wb.worksheets:
@@ -636,8 +644,12 @@ class ExcelQualityChecker:
                             if len(issues) >= 20:
                                 return issues
                 _ = scanned
-        except Exception:
-            pass
+        except Exception as exc:
+            # 扫描中途失败：保留已收集的部分结果返回，原因必须可观测
+            logger.warning(
+                "缓存错误值扫描中断，返回部分结果 %s: %s",
+                file_path, exc, exc_info=True,
+            )
         finally:
             wb.close()
         return issues

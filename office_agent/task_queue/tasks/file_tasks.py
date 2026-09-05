@@ -56,8 +56,8 @@ def process_upload(file_path: str, file_id: str = None,
                 doc = Document(file_path)
                 result["metadata"]["paragraphs"] = len(doc.paragraphs)
                 result["metadata"]["tables"] = len(doc.tables)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("提取 Word 元数据失败 %s: %s", file_path, exc)
 
         elif ext == ".pptx":
             result["file_type"] = "ppt"
@@ -65,8 +65,8 @@ def process_upload(file_path: str, file_id: str = None,
                 from pptx import Presentation
                 prs = Presentation(file_path)
                 result["metadata"]["slides"] = len(prs.slides)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("提取 PPT 元数据失败 %s: %s", file_path, exc)
 
         elif ext == ".xlsx":
             result["file_type"] = "excel"
@@ -88,8 +88,8 @@ def process_upload(file_path: str, file_id: str = None,
                 doc = pymupdf.open(file_path)
                 result["metadata"]["pages"] = len(doc)
                 doc.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("提取 PDF 元数据失败 %s: %s", file_path, exc)
 
         if progress:
             progress.update(70, "生成文件信息")

@@ -19,12 +19,15 @@ from pathlib import Path
 from typing import Optional, List, Tuple
 from dataclasses import dataclass, field, asdict
 from collections import Counter
+import logging
 
 from pptx import Presentation
 from pptx.oxml.ns import qn
 from lxml import etree
 
 from .models import ColorScheme, FontScheme
+
+logger = logging.getLogger("office_agent.ppt_agent.template_analyzer")
 
 
 def clear_slides(prs: Presentation) -> None:
@@ -445,8 +448,12 @@ class TemplateAnalyzer:
             # 提取字体方案
             self._parse_font_scheme(theme_xml, config)
 
-        except Exception:
+        except Exception as exc:
             # 回退到从幻灯片内容分析
+            logger.warning(
+                "主题 XML 解析失败，降级为从幻灯片内容提取颜色/字体: %s",
+                exc, exc_info=True,
+            )
             self._fallback_extract_colors(prs, config)
             self._fallback_extract_fonts(prs, config)
 

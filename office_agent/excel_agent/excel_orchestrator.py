@@ -4,6 +4,7 @@ Excel Orchestrator - Excel Agent 总控
 流程：
 用户需求/文件 → 任务分析 → 数据理解 → 公式/图表生成 → Excel Service → 质量检查 → 输出
 """
+import logging
 from pathlib import Path
 
 from .models import (
@@ -15,6 +16,8 @@ from .formula_generator import FormulaGenerator
 from .chart_generator import ChartGenerator
 from .quality_checker import ExcelQualityChecker
 from .template_analyzer import ExcelTemplateAnalyzer
+
+logger = logging.getLogger("office_agent.excel_agent.excel_orchestrator")
 
 
 class ExcelOrchestrator:
@@ -212,7 +215,12 @@ class ExcelOrchestrator:
             finally:
                 if owns_wb:
                     wb.close()
-        except Exception:
+        except Exception as exc:
+            # best-effort 检测失败：降级为无提示，但原因必须可观测
+            logger.warning(
+                "脆弱元素检测失败，降级为无提示继续 %s: %s",
+                file_path, exc, exc_info=True,
+            )
             return ""
         seen = []
         for k in ("数据透视表", "图表", "图片"):

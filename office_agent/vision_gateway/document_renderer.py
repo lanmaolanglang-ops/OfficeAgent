@@ -175,6 +175,7 @@ class DocumentRenderer:
                     pass
 
         # 降级：提取每页文本信息
+        logger.info("PPTX 图片渲染不可用，降级为文本提取: %s", Path(file_path).name)
         return self._extract_pptx_text_pages(file_path)
 
     def _convert_pptx_to_pdf(self, file_path: str) -> Optional[str]:
@@ -195,6 +196,7 @@ class DocumentRenderer:
                     break
 
         if not soffice:
+            logger.info("未找到 LibreOffice，PPTX 渲染将降级为文本提取")
             return None
 
         conversion_dir = tempfile.mkdtemp(prefix="lo-convert-", dir=self.output_dir)

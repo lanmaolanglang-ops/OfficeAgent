@@ -351,7 +351,9 @@ class PPTOrchestrator:
                 return outline
             self.image_generation["configured"] = True
         except Exception as exc:
-            self.image_generation["errors"].append(sanitize_error(exc))
+            error = sanitize_error(exc)
+            self.image_generation["errors"].append(error)
+            logger.warning("配图服务可用性检查失败，降级为纯文本大纲: %s", error)
             return outline
         # 优先处理 LLM 明确标记的图文页；若模型没有标记任何页面，则从普通
         # 内容页中确定性选择，避免“配置了生图但规划结果全是文本”。

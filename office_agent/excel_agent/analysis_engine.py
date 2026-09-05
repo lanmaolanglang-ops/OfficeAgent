@@ -11,6 +11,7 @@ Excel Analysis Engine - 数据分析引擎
 
 输出：结构化分析报告
 """
+import logging
 import re
 import statistics
 from datetime import datetime, timezone
@@ -22,6 +23,8 @@ from .models import (
     TrendAnalysis, FindingType, FindingSeverity,
     DataProfile, DataSchema,
 )
+
+logger = logging.getLogger("office_agent.excel_agent.analysis_engine")
 
 # 趋势阈值（此前一处 0.03、一处 0.05 硬编码且口径不明）：
 # - 方向判定：平均环比绝对值超过 3% 才认为存在方向性趋势，避免噪声被命名为涨/跌
@@ -86,7 +89,12 @@ class AnalysisEngine:
                 self.schema = analyzer.analyze_schema_frames(file_path, frames)
             else:
                 self.schema = analyzer.analyze_schema(file_path)
-        except Exception:
+        except Exception as exc:
+            # 画像失败不阻断主分析：降级为无 schema 继续生成报告，但原因必须可观测
+            logger.warning(
+                "数据画像失败，降级为无 schema 继续分析 %s: %s",
+                file_path, exc, exc_info=True,
+            )
             self.schema = None
 
         reports = [self._run_analysis(file_path, name) for name in requested_sheets]

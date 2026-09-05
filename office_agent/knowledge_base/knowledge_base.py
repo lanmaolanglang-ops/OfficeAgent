@@ -204,7 +204,8 @@ class OfficeKnowledgeBase:
                     doc = self.import_document(fpath, doc_type=inferred_type)
                     docs.append(doc)
                 except Exception as e:
-                    print(f"导入失败 {fname}: {e}")
+                    # 单文档失败不阻断目录导入：跳过并保留其余部分结果
+                    logger.warning("导入失败 %s: %s", fname, e, exc_info=True)
 
         return docs
 

@@ -93,6 +93,8 @@ def _get_db_session():
         from ...database.session import SessionLocal
         return SessionLocal()
     except Exception:
+        # 与 Agent 接口一致：降级到非数据库路径前必须留下结构化日志
+        logger.exception("创建数据库会话失败，任务接口将降级到非数据库路径")
         return None
 
 
