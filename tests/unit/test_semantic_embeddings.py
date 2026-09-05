@@ -225,7 +225,7 @@ class TestLegacyVectorIsolation:
         )
         result = search_knowledge("查询", category="policy")
         assert result["status"] == "failed"
-        assert "backend down" in result["error"]
+        assert "RAG 语义检索后端未配置" in result["error"]
 
 
 class TestCosineContract:
@@ -240,3 +240,102 @@ class TestCosineContract:
         scores = batch_cosine_similarity(query, corpus)
         assert scores[0] > scores[1]
         assert scores[2] == 0.0
+
+
+class TestEmbeddingRuntimeDeployment:
+    def test_embedding_config_manager_persists_without_plaintext_key(
+            self, tmp_path):
+        from office_agent.knowledge_base.embedding_config import (
+            EmbeddingConfigManager,
+        )
+
+        manager = EmbeddingConfigManager(config_dir=str(tmp_path))
+        config = manager.save_config(
+            provider="custom",
+            api_key="sk-secret-value",
+            base_url="https://example.com/v1",
+            model="text-embedding-3-small",
+        )
+        assert manager.is_configured() is True
+        assert config["api_key"] == "sk-secret-value"
+
+        raw = json.loads((tmp_path / "embedding_config.json").read_text())
+        assert "sk-secret-value" not in raw
+        assert raw["api_key_enc"]
+
+        reloaded = EmbeddingConfigManager(config_dir=str(tmp_path))
+        assert reloaded.get_config()["api_key"] == "sk-secret-value"
+
+    def test_create_semantic_embedder_uses_persisted_config(self, monkeypatch):
+        from office_agent.knowledge_base import embeddings as embeddings_module
+        from office_agent.knowledge_base import embedding_config as config_module
+
+        captured = {}
+        fake = _CountingEmbedder()
+
+        class _ConfiguredManager:
+            def is_configured(self):
+                return True
+
+            def get_config(self):
+                return {
+                    "provider": "custom",
+                    "api_key": "sk-test",
+                    "base_url": "https://example.com/v1",
+                    "model": "text-embedding-3-small",
+                }
+
+        monkeypatch.setattr(
+            config_module, "EmbeddingConfigManager", _ConfiguredManager,
+        )
+        monkeypatch.setattr(
+            embeddings_module,
+            "APIEmbedder",
+            lambda **kwargs: captured.update(kwargs) or fake,
+        )
+        monkeypatch.setattr(
+            embeddings_module,
+            "LocalSemanticEmbedder",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                embeddings_module.EmbeddingBackendUnavailableError("local"),
+            ),
+        )
+        monkeypatch.setenv("OFFICE_AGENT_EMBEDDING_BACKEND", "auto")
+        monkeypatch.delenv("OFFICE_AGENT_EMBEDDING_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        assert embeddings_module.create_semantic_embedder() is fake
+        assert captured["model"] == "text-embedding-3-small"
+
+    def test_api_embedder_controlled_integration(self, monkeypatch):
+        import urllib.request
+
+        from office_agent.knowledge_base.embeddings import APIEmbedder
+
+        class _Response:
+            def read(self):
+                return json.dumps({
+                    "data": [{"embedding": [0.0, 0.0, 0.0, 1.0]}],
+                }).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        monkeypatch.setattr(
+            urllib.request,
+            "urlopen",
+            lambda request, timeout: (_Response()),
+        )
+        embedder = APIEmbedder(
+            api_key="sk-test",
+            base_url="https://example.com/v1",
+            model="text-embedding-3-small",
+        )
+        vector = embedder.embed_query("中文语义检索")
+        assert embedder.semantic is True
+        assert embedder.model_id == "api:text-embedding-3-small"
+        assert len(vector) == 4
+        assert vector == [0.0, 0.0, 0.0, 1.0]
