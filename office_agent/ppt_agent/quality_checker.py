@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from pptx import Presentation
 
 from .models import PPTOutline, SlideContent
+from ..quality.checker import IssueSeverity
 
 
 # ==========================================
@@ -38,6 +39,10 @@ class PPTQualityIssue:
     detail: str = ""
     fixable: bool = True
     fix_action: dict = field(default_factory=dict)  # 修正动作
+
+    def __post_init__(self):
+        # 构造边界统一校验：枚举是唯一权威，未知 severity 不得静默漂移
+        self.severity = IssueSeverity.normalize(self.severity)
 
     def to_dict(self) -> dict:
         return {
@@ -61,17 +66,17 @@ class PPTQualityReport:
     expected_slides: Optional[int] = None
 
     def compute_score(self):
-        errors = sum(1 for i in self.issues if i.severity == "error")
-        warnings = sum(1 for i in self.issues if i.severity == "warning")
-        infos = sum(1 for i in self.issues if i.severity == "info")
+        errors = sum(1 for i in self.issues if i.severity == IssueSeverity.ERROR.value)
+        warnings = sum(1 for i in self.issues if i.severity == IssueSeverity.WARNING.value)
+        infos = sum(1 for i in self.issues if i.severity == IssueSeverity.INFO.value)
         self.score = max(0.0, 100.0 - errors * 10 - warnings * 3 - infos * 1)
         self.passed = errors == 0
 
     def errors(self) -> list:
-        return [i for i in self.issues if i.severity == "error"]
+        return [i for i in self.issues if i.severity == IssueSeverity.ERROR.value]
 
     def warnings(self) -> list:
-        return [i for i in self.issues if i.severity == "warning"]
+        return [i for i in self.issues if i.severity == IssueSeverity.WARNING.value]
 
     def fixable_issues(self) -> list:
         return [i for i in self.issues if i.fixable]
@@ -246,7 +251,7 @@ class PPTQualityChecker:
                 report.issues.append(PPTQualityIssue(
                     slide_index=slide_idx,
                     issue_type="font",
-                    severity="warning",
+                    severity=IssueSeverity.WARNING.value,
                     message=f"使用了{len(set(slide_fonts))}种字体",
                     detail=f"字体: {', '.join(list(set(slide_fonts))[:5])}",
                     fixable=True,
@@ -258,7 +263,7 @@ class PPTQualityChecker:
             report.issues.append(PPTQualityIssue(
                 slide_index=-1,
                 issue_type="font",
-                severity="warning",
+                severity=IssueSeverity.WARNING.value,
                 message=f"全文档使用了{len(set(all_fonts))}种字体",
                 detail=f"建议统一为1-2种字体: {', '.join(list(set(all_fonts))[:5])}",
                 fixable=True,
@@ -296,7 +301,7 @@ class PPTQualityChecker:
                 report.issues.append(PPTQualityIssue(
                     slide_index=idx,
                     issue_type="content",
-                    severity="error",
+                    severity=IssueSeverity.ERROR.value,
                     message="缺少标题",
                     detail="非封面/引用/总结页应有标题",
                     fixable=True,
@@ -309,7 +314,7 @@ class PPTQualityChecker:
                 report.issues.append(PPTQualityIssue(
                     slide_index=idx,
                     issue_type="overflow",
-                    severity="warning",
+                    severity=IssueSeverity.WARNING.value,
                     message=f"要点过多（{len(bullets)}条）",
                     detail=f"建议每页不超过{self.MAX_BULLETS}条，考虑分页或精简",
                     fixable=True,
@@ -321,7 +326,7 @@ class PPTQualityChecker:
                 report.issues.append(PPTQualityIssue(
                     slide_index=idx,
                     issue_type="content",
-                    severity="info",
+                    severity=IssueSeverity.INFO.value,
                     message=f"内容较少（{len(bullets)}条要点）",
                     detail="建议补充更多内容",
                     fixable=False,
@@ -335,7 +340,7 @@ class PPTQualityChecker:
                 report.issues.append(PPTQualityIssue(
                     slide_index=idx,
                     issue_type="overflow",
-                    severity="warning",
+                    severity=IssueSeverity.WARNING.value,
                     message=f"文字量过大（约{total_chars}字）",
                     detail=f"建议每页不超过{self.MAX_CHARS_PER_SLIDE}字",
                     fixable=True,
@@ -347,7 +352,7 @@ class PPTQualityChecker:
                 report.issues.append(PPTQualityIssue(
                     slide_index=idx,
                     issue_type="content",
-                    severity="error",
+                    severity=IssueSeverity.ERROR.value,
                     message="表格页缺少表格数据",
                     fixable=False,
                 ))
@@ -357,7 +362,7 @@ class PPTQualityChecker:
                 report.issues.append(PPTQualityIssue(
                     slide_index=idx,
                     issue_type="content",
-                    severity="error",
+                    severity=IssueSeverity.ERROR.value,
                     message="图表页缺少图表数据",
                     detail="需要 chart_categories 和 chart_series",
                     fixable=False,
@@ -373,7 +378,7 @@ class PPTQualityChecker:
             report.issues.append(PPTQualityIssue(
                 slide_index=0,
                 issue_type="layout",
-                severity="warning",
+                severity=IssueSeverity.WARNING.value,
                 message="建议第一页为封面页",
                 fixable=True,
                 fix_action={"type": "insert_cover"},
@@ -382,7 +387,7 @@ class PPTQualityChecker:
             report.issues.append(PPTQualityIssue(
                 slide_index=len(layouts) - 1,
                 issue_type="layout",
-                severity="info",
+                severity=IssueSeverity.INFO.value,
                 message="建议最后一页为总结/感谢页",
                 fixable=True,
                 fix_action={"type": "append_summary"},
@@ -529,7 +534,7 @@ class PPTQualityChecker:
                 report.issues.append(PPTQualityIssue(
                     slide_index=slide_idx,
                     issue_type="layout",
-                    severity="warning",
+                    severity=IssueSeverity.WARNING.value,
                     message="元素超出页面左/上边界",
                     detail=f"位置: ({left:.1f}, {top:.1f})",
                     fixable=False,
@@ -538,7 +543,7 @@ class PPTQualityChecker:
                 report.issues.append(PPTQualityIssue(
                     slide_index=slide_idx,
                     issue_type="layout",
-                    severity="warning",
+                    severity=IssueSeverity.WARNING.value,
                     message="元素超出页面右/下边界",
                     detail=f"元素: ({left:.1f},{top:.1f}) 大小: {width:.1f}x{height:.1f}, "
                            f"页面: {slide_w:.1f}x{slide_h:.1f}",
@@ -602,7 +607,7 @@ class PPTQualityChecker:
                     report.issues.append(PPTQualityIssue(
                         slide_index=slide_idx,
                         issue_type="overflow",
-                        severity="warning",
+                        severity=IssueSeverity.WARNING.value,
                         message="文字可能溢出文本框",
                         detail=f"约需{total_lines}行，文本框约容纳{max_lines}行",
                         fixable=True,
@@ -620,7 +625,7 @@ class PPTQualityChecker:
             report.issues.append(PPTQualityIssue(
                 slide_index=slide_idx,
                 issue_type="content",
-                severity="warning",
+                severity=IssueSeverity.WARNING.value,
                 message="页面内容为空或极少",
                 fixable=False,
             ))
@@ -631,7 +636,8 @@ class PPTQualityChecker:
             return
 
         diff = actual - expected
-        severity = "warning" if abs(diff) <= 2 else "error"
+        severity = (IssueSeverity.WARNING.value if abs(diff) <= 2
+                    else IssueSeverity.ERROR.value)
 
         if diff > 0:
             message = f"页数超出要求（实际{actual}页，期望{expected}页，多{diff}页）"
@@ -663,7 +669,7 @@ class PPTQualityChecker:
             report.issues.append(PPTQualityIssue(
                 slide_index=-1,
                 issue_type="template",
-                severity="warning",
+                severity=IssueSeverity.WARNING.value,
                 message="页面尺寸与模板不一致",
                 detail=f"模板: {config.slide_width:.1f}x{config.slide_height:.1f}, "
                        f"实际: {actual_w:.1f}x{actual_h:.1f}",

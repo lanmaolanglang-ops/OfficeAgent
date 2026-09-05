@@ -51,6 +51,7 @@ from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter, column_index_from_string
 
 from .models import ExcelQualityIssue, DataProfile
+from ..quality.checker import IssueSeverity
 
 logger = logging.getLogger("office_agent.excel_agent.quality_checker")
 
@@ -136,7 +137,7 @@ class ExcelQualityChecker:
 
         if not Path(file_path).exists():
             report.issues.append(ExcelQualityIssue(
-                issue_type="file", severity="error",
+                issue_type="file", severity=IssueSeverity.ERROR.value,
                 message=f"文件不存在: {file_path}", fixable=False,
             ))
             self._calc_score(report)
@@ -147,7 +148,7 @@ class ExcelQualityChecker:
             wb = load_workbook(file_path, data_only=False, keep_vba=keep_vba)
         except Exception as e:
             report.issues.append(ExcelQualityIssue(
-                issue_type="file", severity="error",
+                issue_type="file", severity=IssueSeverity.ERROR.value,
                 message=f"无法打开文件: {e}", fixable=False,
             ))
             self._calc_score(report)
@@ -174,7 +175,7 @@ class ExcelQualityChecker:
 
         if not Path(file_path).exists():
             report.issues.append(ExcelQualityIssue(
-                issue_type="file", severity="error",
+                issue_type="file", severity=IssueSeverity.ERROR.value,
                 message=f"文件不存在: {file_path}", fixable=False,
             ))
             self._calc_score(report)
@@ -185,7 +186,7 @@ class ExcelQualityChecker:
             wb = load_workbook(file_path, data_only=False, keep_vba=keep_vba)
         except Exception as e:
             report.issues.append(ExcelQualityIssue(
-                issue_type="file", severity="error",
+                issue_type="file", severity=IssueSeverity.ERROR.value,
                 message=f"无法打开文件: {e}", fixable=False,
             ))
             self._calc_score(report)
@@ -220,7 +221,7 @@ class ExcelQualityChecker:
             if sheet.row_count <= 1:
                 issues.append(ExcelQualityIssue(
                     sheet_name=sheet.name, issue_type="structure",
-                    severity="warning", message=f"工作表 {sheet.name} 没有数据",
+                    severity=IssueSeverity.WARNING.value, message=f"工作表 {sheet.name} 没有数据",
                 ))
                 continue
 
@@ -229,7 +230,7 @@ class ExcelQualityChecker:
                 if null_ratio > 0.5:
                     issues.append(ExcelQualityIssue(
                         sheet_name=sheet.name, issue_type="data",
-                        severity="warning",
+                        severity=IssueSeverity.WARNING.value,
                         message=f"列 {col.name} 空值率 {null_ratio:.0%}",
                         cell_ref=get_column_letter(col.index + 1),
                     ))
@@ -253,7 +254,7 @@ class ExcelQualityChecker:
         if max_row <= 1 and max_col <= 1:
             issues.append(ExcelQualityIssue(
                 sheet_name=sheet_name, issue_type="structure",
-                severity="warning", message="工作表为空",
+                severity=IssueSeverity.WARNING.value, message="工作表为空",
             ))
             return issues
 
@@ -295,7 +296,7 @@ class ExcelQualityChecker:
                     desc, detail, fixable = EXCEL_ERRORS[val_str]
                     issues.append(ExcelQualityIssue(
                         sheet_name=sheet_name, issue_type="formula",
-                        severity="error",
+                        severity=IssueSeverity.ERROR.value,
                         message=f"{val_str}: {detail}",
                         cell_ref=cell.coordinate, fixable=fixable,
                     ))
@@ -330,7 +331,7 @@ class ExcelQualityChecker:
             if len(patterns) > 1:
                 issues.append(ExcelQualityIssue(
                     sheet_name=sheet_name, issue_type="formula",
-                    severity="warning",
+                    severity=IssueSeverity.WARNING.value,
                     message=f"第{get_column_letter(col_idx)}列公式模式不一致（{len(patterns)}种模式）",
                     cell_ref=get_column_letter(col_idx), fixable=True,
                 ))
@@ -354,7 +355,7 @@ class ExcelQualityChecker:
                     target_ws = ws.parent[referenced_sheet]
                 except KeyError:
                     issues.append(ExcelQualityIssue(
-                        sheet_name=ws.title, issue_type="formula", severity="error",
+                        sheet_name=ws.title, issue_type="formula", severity=IssueSeverity.ERROR.value,
                         message=f"公式引用了不存在的工作表 {referenced_sheet}",
                         cell_ref=cell_ref, fixable=False,
                     ))
@@ -369,7 +370,7 @@ class ExcelQualityChecker:
                     display_ref = match.group(0)
                     issues.append(ExcelQualityIssue(
                         sheet_name=ws.title, issue_type="formula",
-                        severity="warning",
+                        severity=IssueSeverity.WARNING.value,
                         message=f"公式引用 {display_ref} 可能超出数据范围",
                         cell_ref=cell_ref, fixable=False,
                     ))
@@ -395,14 +396,14 @@ class ExcelQualityChecker:
                 if ref_val == 0:
                     issues.append(ExcelQualityIssue(
                         sheet_name=ws.title, issue_type="formula",
-                        severity="error",
+                        severity=IssueSeverity.ERROR.value,
                         message=f"#DIV/0! 风险：分母 {col_str}{row_str} 为 0",
                         cell_ref=cell_ref, fixable=True,
                     ))
                 elif ref_val is None:
                     issues.append(ExcelQualityIssue(
                         sheet_name=ws.title, issue_type="formula",
-                        severity="warning",
+                        severity=IssueSeverity.WARNING.value,
                         message=f"除零风险：分母 {col_str}{row_str} 为空",
                         cell_ref=cell_ref, fixable=True,
                     ))
@@ -440,7 +441,7 @@ class ExcelQualityChecker:
         if max_empty >= 2:
             issues.append(ExcelQualityIssue(
                 sheet_name=sheet_name, issue_type="data",
-                severity="warning",
+                severity=IssueSeverity.WARNING.value,
                 message=f"数据区域有 {max_empty} 个连续空行",
                 fixable=True,
             ))
@@ -473,7 +474,7 @@ class ExcelQualityChecker:
                 if null_ratio > 0.3 and null_count < data_rows:
                     issues.append(ExcelQualityIssue(
                         sheet_name=sheet_name, issue_type="data",
-                        severity="warning",
+                        severity=IssueSeverity.WARNING.value,
                         message=f"列「{col_name}」空值率 {null_ratio:.0%}",
                         cell_ref=get_column_letter(col_idx),
                         fixable=False,
@@ -482,7 +483,7 @@ class ExcelQualityChecker:
                 if has_text_in_number_col:
                     issues.append(ExcelQualityIssue(
                         sheet_name=sheet_name, issue_type="data",
-                        severity="warning",
+                        severity=IssueSeverity.WARNING.value,
                         message=f"列「{col_name}」数值列中混入文本",
                         cell_ref=get_column_letter(col_idx),
                         fixable=False,
@@ -506,7 +507,7 @@ class ExcelQualityChecker:
         if dup_count > 0:
             issues.append(ExcelQualityIssue(
                 sheet_name=sheet_name, issue_type="data",
-                severity="info",
+                severity=IssueSeverity.INFO.value,
                 message=f"检测到 {dup_count} 行可能重复",
                 fixable=False,
             ))
@@ -542,7 +543,7 @@ class ExcelQualityChecker:
         if not header_styled and max_row > header_row:
             issues.append(ExcelQualityIssue(
                 sheet_name=sheet_name, issue_type="format",
-                severity="info", message="表头缺少样式（建议加粗或添加背景色）",
+                severity=IssueSeverity.INFO.value, message="表头缺少样式（建议加粗或添加背景色）",
                 fixable=True,
             ))
 
@@ -557,7 +558,7 @@ class ExcelQualityChecker:
         if len(body_fonts) > 3:
             issues.append(ExcelQualityIssue(
                 sheet_name=sheet_name, issue_type="format",
-                severity="info",
+                severity=IssueSeverity.INFO.value,
                 message=f"正文字体种类过多（{len(body_fonts)}种），建议统一",
                 fixable=True,
             ))
@@ -581,7 +582,7 @@ class ExcelQualityChecker:
             if max_len > width * 1.2 and width < max_len:
                 issues.append(ExcelQualityIssue(
                     sheet_name=sheet_name, issue_type="format",
-                    severity="info",
+                    severity=IssueSeverity.INFO.value,
                     message=f"列「{col_letter}」宽度不足（当前{width:.0f}，建议{max_len + 2:.0f}）",
                     cell_ref=col_letter, fixable=True,
                 ))
@@ -601,7 +602,7 @@ class ExcelQualityChecker:
                 if fmt == "General" and isinstance(sample_cell.value, (int, float)):
                     issues.append(ExcelQualityIssue(
                         sheet_name=sheet_name, issue_type="format",
-                        severity="info",
+                        severity=IssueSeverity.INFO.value,
                         message=f"列「{col_name}」建议使用千分位数字格式",
                         cell_ref=get_column_letter(col_idx),
                         fixable=True,
@@ -636,7 +637,7 @@ class ExcelQualityChecker:
                             issues.append(ExcelQualityIssue(
                                 sheet_name=ws.title,
                                 issue_type="formula",
-                                severity="error",
+                                severity=IssueSeverity.ERROR.value,
                                 message=f"{desc}：单元格 {cell.coordinate} 计算结果为 {val}（{detail}）",
                                 cell_ref=cell.coordinate,
                                 fixable=False,
@@ -673,14 +674,14 @@ class ExcelQualityChecker:
         if chart_count == 0:
             issues.append(ExcelQualityIssue(
                 sheet_name=sheet_name, issue_type="chart",
-                severity="warning", fixable=True,
+                severity=IssueSeverity.WARNING.value, fixable=True,
                 message="未生成任何图表",
             ))
             return issues
 
         issues.append(ExcelQualityIssue(
             sheet_name=sheet_name, issue_type="chart",
-            severity="info", fixable=False,
+            severity=IssueSeverity.INFO.value, fixable=False,
             message=f"输出包含 {chart_count} 个图表，建议在 Excel/WPS 中打开确认渲染",
         ))
         return issues
@@ -738,7 +739,7 @@ class ExcelQualityChecker:
                 if negatives:
                     issues.append(ExcelQualityIssue(
                         sheet_name=sheet_name, issue_type="calculation",
-                        severity="warning",
+                        severity=IssueSeverity.WARNING.value,
                         message=f"列「{col_name}」有 {len(negatives)} 个负值",
                         cell_ref=get_column_letter(col_idx),
                         fixable=False,
@@ -749,7 +750,7 @@ class ExcelQualityChecker:
             if zeros > len(nums) * 0.5 and len(nums) > 5:
                 issues.append(ExcelQualityIssue(
                     sheet_name=sheet_name, issue_type="calculation",
-                    severity="info",
+                    severity=IssueSeverity.INFO.value,
                     message=f"列「{col_name}」零值占比 {zeros/len(nums):.0%}",
                     cell_ref=get_column_letter(col_idx),
                     fixable=False,
@@ -770,7 +771,7 @@ class ExcelQualityChecker:
                                 issues.append(ExcelQualityIssue(
                                     sheet_name=sheet_name,
                                     issue_type="calculation",
-                                    severity="info",
+                                    severity=IssueSeverity.INFO.value,
                                     message=f"列「{col_name}」单元格 {get_column_letter(col_idx)}{r} 值 {v:,.0f} 可能是离群值（均值{mean:,.0f}）",
                                     cell_ref=f"{get_column_letter(col_idx)}{r}",
                                     fixable=False,
@@ -925,9 +926,9 @@ class ExcelQualityChecker:
     def _calc_score(self, report: QualityReport):
         """计算质量评分"""
         unresolved = [i for i in report.issues if not getattr(i, "fixed", False)]
-        report.error_count = sum(1 for i in unresolved if i.severity == "error")
-        report.warning_count = sum(1 for i in unresolved if i.severity == "warning")
-        report.info_count = sum(1 for i in unresolved if i.severity == "info")
+        report.error_count = sum(1 for i in unresolved if i.severity == IssueSeverity.ERROR.value)
+        report.warning_count = sum(1 for i in unresolved if i.severity == IssueSeverity.WARNING.value)
+        report.info_count = sum(1 for i in unresolved if i.severity == IssueSeverity.INFO.value)
 
         score = 100
         score -= report.error_count * 10

@@ -6,6 +6,7 @@ from typing import Optional, List, Any
 from enum import Enum
 
 from ..models.schemas import ExcelTaskType
+from ..quality.checker import IssueSeverity
 
 
 def col_letter(index: int) -> str:
@@ -257,11 +258,15 @@ class ExcelQualityIssue:
     """Excel 质量问题"""
     sheet_name: str = ""
     issue_type: str = ""        # formula/format/data/chart/structure
-    severity: str = "warning"   # error/warning/info
+    severity: str = IssueSeverity.WARNING.value
     message: str = ""
     cell_ref: str = ""
     fixable: bool = True
     fixed: bool = False
+
+    def __post_init__(self):
+        # 构造边界统一校验：枚举是唯一权威，未知 severity 不得静默漂移
+        self.severity = IssueSeverity.normalize(self.severity)
 
     def to_dict(self) -> dict:
         return {

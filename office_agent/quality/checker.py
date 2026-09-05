@@ -25,10 +25,36 @@ logger = logging.getLogger(__name__)
 
 
 class IssueSeverity(Enum):
-    """问题严重程度"""
+    """问题严重程度（Word/Excel/PPT 质量问题共用的唯一权威词汇表）"""
     ERROR = "error"
     WARNING = "warning"
     INFO = "info"
+
+    @classmethod
+    def values(cls) -> list:
+        """全部合法 severity 字符串值。"""
+        return [member.value for member in cls]
+
+    @classmethod
+    def is_valid(cls, value) -> bool:
+        """value 是否为合法 severity（先经 normalize 同款规范化再判定）。"""
+        if not isinstance(value, str):
+            return False
+        return value.strip().lower() in cls.values()
+
+    @classmethod
+    def normalize(cls, value, *, fallback=None) -> str:
+        """信任边界规范化：大小写/空白不敏感；未知值不静默漂移。
+
+        未知值给定 fallback 时返回 fallback，否则抛 ValueError。
+        """
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in cls.values():
+                return normalized
+        if fallback is not None:
+            return fallback
+        raise ValueError(f"未知 IssueSeverity: {value!r}")
 
 
 class IssueType(Enum):
@@ -59,6 +85,10 @@ class QualityIssue:
     actual: str = ""
     fixable: bool = True
     fix_suggestion: str = ""
+
+    def __post_init__(self):
+        # 构造边界统一校验：枚举是唯一权威，未知 severity 不得静默漂移
+        self.severity = IssueSeverity.normalize(self.severity)
 
     def to_dict(self) -> dict:
         return asdict(self)

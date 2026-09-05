@@ -10,6 +10,7 @@ import tempfile
 from pathlib import Path
 
 from ..security.error_sanitizer import sanitize_error
+from ..quality.checker import IssueSeverity
 
 from .models import PPTOutline, PPTGenerationResult
 from .content_planner import ContentPlanner
@@ -443,7 +444,8 @@ class PPTOrchestrator:
             logger.exception("PPT 已生成，但质量检查失败: %s", output_path)
             warning = f"质量检查未完成：{sanitize_error(exc)}"
             result.quality_issues.append({
-                "type": "quality_check", "severity": "warning", "message": warning,
+                "type": "quality_check", "severity": IssueSeverity.WARNING.value,
+                "message": warning,
             })
             result.changes.append(warning)
             return
