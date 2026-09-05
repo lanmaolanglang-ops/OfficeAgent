@@ -17,7 +17,7 @@ def _rag_error_message(exc: Exception) -> str:
 
     if isinstance(exc, EmbeddingBackendUnavailableError):
         return (
-            "RAG 语义检索后端未配置。请在设置中配置 Embedding Provider，"
+            "RAG 语义检索后端未配置。请在设置页的“Embedding 模型”中配置 Provider，"
             "或安装 semantic 依赖。"
         )
     return sanitize_error(exc)

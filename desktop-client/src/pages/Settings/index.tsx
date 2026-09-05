@@ -6,7 +6,7 @@ import {
 } from 'lucide-react';
 import { useSettingsStore, useBackendStore } from '../../stores';
 import type { AgentType } from '../../types';
-import { getModelSettings, saveModelSettings, setDefaultModel, testModelConnection, getImageModelSettings, saveImageModelSettings, testImageModelConnection, type ModelSettingsStatus, type ModelConnectionTest, type ImageModelSettings, type ImageModelConnectionTest } from '../../services/api';
+import { getModelSettings, saveModelSettings, setDefaultModel, testModelConnection, getImageModelSettings, saveImageModelSettings, testImageModelConnection, getEmbeddingModelSettings, saveEmbeddingModelSettings, testEmbeddingModelConnection, type ModelSettingsStatus, type ModelConnectionTest, type ImageModelSettings, type ImageModelConnectionTest, type EmbeddingModelSettings, type EmbeddingModelConnectionTest } from '../../services/api';
 import { isTauri, setAutoStart, getAutoStart } from '../../services/tauri';
 
 const agentOptions: { value: AgentType; label: string }[] = [
@@ -189,6 +189,70 @@ export default function SettingsPage() {
       setImageError(e instanceof Error ? e.message : '生图测试失败');
     } finally {
       setTestingImage(false);
+    }
+  };
+
+  const [embeddingForm, setEmbeddingForm] = useState({ model: '', baseUrl: '', apiKey: '' });
+  const [embeddingStatus, setEmbeddingStatus] = useState<EmbeddingModelSettings>({
+    configured: false, provider: 'custom', model: '', base_url: '', api_key_mask: '',
+  });
+  const [savingEmbedding, setSavingEmbedding] = useState(false);
+  const [testingEmbedding, setTestingEmbedding] = useState(false);
+  const [embeddingError, setEmbeddingError] = useState('');
+  const [embeddingTest, setEmbeddingTest] = useState<EmbeddingModelConnectionTest | null>(null);
+
+  const loadEmbeddingStatus = useCallback(async () => {
+    try {
+      const status = await getEmbeddingModelSettings();
+      setEmbeddingStatus(status);
+      setEmbeddingForm((f) => ({
+        ...f,
+        model: status.model || f.model,
+        baseUrl: status.base_url || f.baseUrl,
+      }));
+    } catch {
+      // Backend 未连接时保持默认状态
+    }
+  }, []);
+
+  useEffect(() => {
+    loadEmbeddingStatus();
+  }, [loadEmbeddingStatus]);
+
+  const handleSaveEmbedding = async () => {
+    if (!embeddingForm.apiKey.trim() && !embeddingStatus.configured) {
+      setEmbeddingError('请先填写 Embedding API Key');
+      return;
+    }
+    setSavingEmbedding(true);
+    setEmbeddingError('');
+    setEmbeddingTest(null);
+    try {
+      const status = await saveEmbeddingModelSettings({
+        provider: 'custom',
+        model: embeddingForm.model.trim(),
+        api_key: embeddingForm.apiKey.trim(),
+        base_url: embeddingForm.baseUrl.trim(),
+      });
+      setEmbeddingStatus(status);
+      setEmbeddingForm((f) => ({ ...f, apiKey: '' }));
+    } catch (e) {
+      setEmbeddingError(e instanceof Error ? e.message : '保存失败，请检查 Backend 连接');
+    } finally {
+      setSavingEmbedding(false);
+    }
+  };
+
+  const handleEmbeddingTest = async () => {
+    setTestingEmbedding(true);
+    setEmbeddingError('');
+    setEmbeddingTest(null);
+    try {
+      setEmbeddingTest(await testEmbeddingModelConnection());
+    } catch (e) {
+      setEmbeddingError(e instanceof Error ? e.message : 'Embedding 测试失败');
+    } finally {
+      setTestingEmbedding(false);
     }
   };
 
@@ -395,6 +459,48 @@ export default function SettingsPage() {
               )}
               {imageError && <p id="image-config-error" role="alert" className="flex items-start gap-2 text-sm text-danger"><AlertTriangle className="mt-0.5 h-4 w-4 flex-none" aria-hidden="true" /><span>{imageError}</span></p>}
               <p id="image-key-help" className="text-xs text-fg-muted">PPT 生成时会优先为图文页配图，并为普通内容页兜底。测试会真实生成并立即删除一张图片，可能产生一次模型调用费用。</p>
+            </div>
+          </div>
+
+          {/* Embedding 模型 */}
+          <div className={cardCls}>
+            <h2 className={labelCls}><Key className="w-4 h-4 text-fg-soft" /> Embedding 模型</h2>
+            <div className="mb-3">
+              {embeddingStatus.configured ? (
+                <span className="flex items-center gap-2 text-sm text-ok"><CheckCircle2 className="h-4 w-4" aria-hidden="true" />已配置（{embeddingStatus.model || '默认模型'} · {embeddingStatus.api_key_mask}）</span>
+              ) : (
+                <span className="flex items-center gap-2 text-sm text-fg-muted"><AlertTriangle className="h-4 w-4" aria-hidden="true" />未配置，RAG 知识库语义检索不可用</span>
+              )}
+            </div>
+            <div className="space-y-3">
+              <div>
+                <label htmlFor="embedding-base-url" className="block text-xs text-fg-muted mb-1.5">Embedding Base URL</label>
+                <input id="embedding-base-url" type="url" value={embeddingForm.baseUrl} onChange={(e) => setEmbeddingForm((f) => ({ ...f, baseUrl: e.target.value }))} className={inputCls} placeholder="https://api.openai.com/v1" />
+              </div>
+              <div>
+                <label htmlFor="embedding-model" className="block text-xs text-fg-muted mb-1.5">Embedding Model</label>
+                <input id="embedding-model" type="text" value={embeddingForm.model} onChange={(e) => setEmbeddingForm((f) => ({ ...f, model: e.target.value }))} className={inputCls} placeholder="text-embedding-3-small" />
+              </div>
+              <div>
+                <label htmlFor="embedding-api-key" className="block text-xs text-fg-muted mb-1.5">API Key{embeddingStatus.configured ? '（留空则保留已保存的 Key）' : ''}</label>
+                <input id="embedding-api-key" type="password" value={embeddingForm.apiKey} onChange={(e) => setEmbeddingForm((f) => ({ ...f, apiKey: e.target.value }))} className={inputCls} placeholder="sk-..." autoComplete="off" aria-describedby="embedding-key-help embedding-config-error" />
+              </div>
+              <div className="flex flex-wrap items-center gap-3">
+                <button onClick={handleSaveEmbedding} disabled={savingEmbedding || testingEmbedding} className="flex min-h-10 items-center gap-2 px-4 py-2 bg-muted text-fg rounded-xl hover:bg-line text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-50">
+                  {savingEmbedding && <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />}{savingEmbedding ? '保存中...' : '保存 Embedding 配置'}
+                </button>
+                <button onClick={handleEmbeddingTest} disabled={!embeddingStatus.configured || savingEmbedding || testingEmbedding} className="flex min-h-10 items-center gap-2 px-4 py-2 bg-brand text-white rounded-xl hover:bg-brand-hover text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-50">
+                  {testingEmbedding && <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />}{testingEmbedding ? '正在测试...' : '测试连接'}
+                </button>
+              </div>
+              {embeddingTest && (
+                <p role="status" className={`flex items-start gap-2 text-sm ${embeddingTest.success ? 'text-ok' : 'text-danger'}`}>
+                  {embeddingTest.success ? <CheckCircle2 className="mt-0.5 h-4 w-4 flex-none" aria-hidden="true" /> : <AlertTriangle className="mt-0.5 h-4 w-4 flex-none" aria-hidden="true" />}
+                  <span>{embeddingTest.message}</span>
+                </p>
+              )}
+              {embeddingError && <p id="embedding-config-error" role="alert" className="flex items-start gap-2 text-sm text-danger"><AlertTriangle className="mt-0.5 h-4 w-4 flex-none" aria-hidden="true" /><span>{embeddingError}</span></p>}
+              <p id="embedding-key-help" className="text-xs text-fg-muted">RAG 知识库语义检索使用 OpenAI-compatible Embedding Provider。API Key 仅加密保存在本机，设置页不回显完整 Key。</p>
             </div>
           </div>
 

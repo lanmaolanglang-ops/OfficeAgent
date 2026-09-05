@@ -232,6 +232,47 @@ export async function testImageModelConnection(): Promise<ImageModelConnectionTe
   );
 }
 
+// Embedding 模型配置（GET/POST /api/settings/embedding-model）
+export interface EmbeddingModelSettings {
+  configured: boolean;
+  provider: string;
+  model: string;
+  base_url: string;
+  api_key_mask: string;
+}
+
+export interface EmbeddingModelConnectionTest {
+  success: boolean;
+  provider: string;
+  model: string;
+  dimension?: number;
+  message: string;
+}
+
+export async function getEmbeddingModelSettings(): Promise<EmbeddingModelSettings> {
+  return await request<EmbeddingModelSettings>('/api/settings/embedding-model');
+}
+
+export async function saveEmbeddingModelSettings(payload: {
+  provider?: string;
+  model: string;
+  api_key: string;
+  base_url?: string;
+}): Promise<EmbeddingModelSettings> {
+  return await request<EmbeddingModelSettings>('/api/settings/embedding-model', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function testEmbeddingModelConnection(): Promise<EmbeddingModelConnectionTest> {
+  return await request<EmbeddingModelConnectionTest>(
+    '/api/settings/embedding-model/test',
+    { method: 'POST' },
+    75_000,
+  );
+}
+
 // 上传文件（支持进度回调与中止信号）
 export async function uploadFile(
   file: File,
