@@ -271,10 +271,10 @@ class OfficeKnowledgeBase:
 
     @_locked
     def remove_document(self, doc_id: str) -> bool:
-        """删除文档（注意：向量不会自动删除，需要重建索引）"""
+        """删除文档并增量移除其 lexical postings。"""
         if doc_id in self.documents:
             removed = self.documents.pop(doc_id)
-            self._rebuild_index()
+            self.store.remove_chunks([chunk.id for chunk in removed.chunks])
             try:
                 self.save()
             except Exception:
@@ -283,6 +283,47 @@ class OfficeKnowledgeBase:
                 raise
             return True
         return False
+
+    @_locked
+    def update_text(self, doc_id: str, text: str, title: str = "",
+                    doc_type: str = "", tags: List[str] = None) -> Optional[KnowledgeDocument]:
+        """按 doc_id 增量替换文档文本，旧 postings 立即失效。"""
+        old_doc = self.documents.get(doc_id)
+        if old_doc is None:
+            return None
+
+        resolved_title = title or old_doc.title
+        resolved_type = doc_type or old_doc.doc_type
+        resolved_tags = tags if tags is not None else old_doc.tags
+        parsed = self.parser.parse_text(
+            text, title=resolved_title, doc_type=resolved_type,
+        )
+        new_doc = KnowledgeDocument(
+            id=doc_id,
+            title=resolved_title,
+            doc_type=resolved_type,
+            source_path=old_doc.source_path,
+            content=text,
+            tags=resolved_tags,
+        )
+        chunks = self.chunker.chunk_document(parsed, doc_id=doc_id)
+        for chunk in chunks:
+            chunk.metadata["doc_type"] = resolved_type
+            chunk.metadata["tags"] = resolved_tags
+        new_doc.chunks = chunks
+        new_doc.chunk_count = len(chunks)
+
+        self.documents.pop(doc_id, None)
+        self.store.remove_chunks([chunk.id for chunk in old_doc.chunks])
+        self.store.add_chunks(chunks)
+        self.documents[doc_id] = new_doc
+        try:
+            self.save()
+        except Exception:
+            self.documents[doc_id] = old_doc
+            self._rebuild_index()
+            raise
+        return new_doc
 
     @_locked
     def _rebuild_index(self):
@@ -323,6 +364,8 @@ class OfficeKnowledgeBase:
     @_locked
     def save(self):
         """保存到磁盘"""
+        if hasattr(self.store, "_refresh_embedder_stats"):
+            self.store._refresh_embedder_stats()
         # 保存文档元数据
         docs_data = {
             doc_id: {
@@ -344,7 +387,8 @@ class OfficeKnowledgeBase:
         # 保存 chunks（含向量）
         chunks_data = []
         embeddings_by_chunk_id = {
-            stored.chunk.id: stored.embedding for stored in self.store._chunks
+            stored.chunk.id: list(stored.embedding)
+            for stored in self.store._chunks
         }
         for doc in self.documents.values():
             for chunk in doc.chunks:
@@ -434,6 +478,10 @@ class OfficeKnowledgeBase:
                         logger.warning("跳过损坏的知识文档 %s: %s", doc_id, exc)
             except Exception as exc:
                 logger.warning("加载知识文档文件失败 %s: %s", docs_path, exc)
+
+        # 重建 incremental lexical index。chunks.json 是 source of truth，
+        # 这里只做一次可靠的启动重建，不依赖进程内隐藏状态。
+        self.store.rebuild_index()
 
     def info(self) -> str:
         """知识库信息"""
