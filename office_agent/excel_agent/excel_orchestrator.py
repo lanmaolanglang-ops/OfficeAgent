@@ -232,7 +232,7 @@ class ExcelOrchestrator:
                          task: str = "",
                          sheet_name: str = "Sheet1",
                          output_path: str = "output.xlsx",
-                         headers: list = None,
+                         headers: list | None = None,
                          has_header: bool = True) -> ExcelResult:
         """
         从数据创建 Excel

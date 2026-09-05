@@ -19,8 +19,8 @@ class UserRepository(BaseRepository[User]):
     def list_active(self, offset: int = 0, limit: int = 100) -> List[User]:
         return self.find(offset=offset, limit=limit, is_active=True)
 
-    def create_user(self, username: str, email: str = None,
-                    password_hash: str = None, display_name: str = None,
+    def create_user(self, username: str, email: str | None = None,
+                    password_hash: str | None = None, display_name: str | None = None,
                     role: str = "user") -> User:
         user = User(
             username=username,

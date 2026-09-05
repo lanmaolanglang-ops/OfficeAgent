@@ -169,7 +169,7 @@ class ExcelQualityChecker:
         self._calc_score(report)
         return report
 
-    def check_and_fix(self, file_path: str, output_path: str = None) -> QualityReport:
+    def check_and_fix(self, file_path: str, output_path: str | None = None) -> QualityReport:
         """检查并自动修复"""
         report = QualityReport(file_path=file_path)
 
@@ -282,7 +282,7 @@ class ExcelQualityChecker:
     def _check_formulas(self, ws, max_row, max_col) -> List[ExcelQualityIssue]:
         issues = []
         sheet_name = ws.title
-        formula_cells = {}  # col_idx -> [(row, formula)]
+        formula_cells: dict[int, list[tuple[int, str]]] = {}  # col_idx -> [(row, formula)]
 
         for row in ws.iter_rows(min_row=1, max_row=max_row, max_col=max_col):
             for cell in row:
@@ -615,7 +615,7 @@ class ExcelQualityChecker:
 
     def _check_cached_errors(self, file_path: str) -> List[ExcelQualityIssue]:
         """以 data_only=True 重开文件，捕获公式计算后的真实错误值。"""
-        issues = []
+        issues: List[ExcelQualityIssue] = []
         try:
             wb = load_workbook(file_path, data_only=True, read_only=True)
         except Exception as exc:
@@ -945,6 +945,6 @@ def check_excel(file_path: str) -> QualityReport:
     return ExcelQualityChecker().check(file_path)
 
 
-def check_and_fix_excel(file_path: str, output_path: str = None) -> QualityReport:
+def check_and_fix_excel(file_path: str, output_path: str | None = None) -> QualityReport:
     """便捷函数：检查并修复"""
     return ExcelQualityChecker().check_and_fix(file_path, output_path)

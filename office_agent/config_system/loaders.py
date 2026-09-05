@@ -70,7 +70,7 @@ class EnvLoader:
     @classmethod
     def load(cls) -> Dict[str, Any]:
         """从环境变量加载配置"""
-        result = {}
+        result: Dict[str, Any] = {}
         for env_key, (config_path, converter) in cls.ENV_MAP.items():
             value = os.environ.get(env_key)
             if value is not None:

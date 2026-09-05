@@ -122,7 +122,7 @@ class PromptConfigRepository(BaseRepository[PromptConfig]):
     def __init__(self, session):
         super().__init__(session, PromptConfig)
 
-    def get_by_name_version(self, name: str, version: str = None) -> Optional[PromptConfig]:
+    def get_by_name_version(self, name: str, version: str | None = None) -> Optional[PromptConfig]:
         stmt = select(PromptConfig).where(PromptConfig.name == name)
         if version:
             stmt = stmt.where(PromptConfig.version == version)

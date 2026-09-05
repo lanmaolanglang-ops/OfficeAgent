@@ -62,7 +62,7 @@ class PPTQualityScorer:
 
     def score(self, file_path: str,
              expected_slides: int = 0,
-             required_content: List[str] = None) -> PPTScoreResult:
+             required_content: List[str] | None = None) -> PPTScoreResult:
         """
         评分PPT
 
@@ -352,7 +352,7 @@ class PPTQualityScorer:
         return max(0, min(100, score))
 
     def _score_content(self, info: Dict, expected_slides: int,
-                      required_content: List[str]) -> float:
+                      required_content: List[str] | None) -> float:
         """内容完整度评分"""
         score = 50
 
@@ -422,7 +422,7 @@ class PPTQualityScorer:
         return max(0, min(100, score))
 
     def _collect_issues(self, info, expected_slides,
-                        required_content: List[str] = None) -> List[str]:
+                        required_content: List[str] | None = None) -> List[str]:
         issues = []
         if info["font_count"] > 5:
             issues.append(f"字体种类过多({info['font_count']}种)，建议统一为2-3种")

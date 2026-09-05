@@ -53,7 +53,7 @@ class ExecutionLogRepository(BaseRepository[ExecutionLog]):
                       prompt_tokens: int = 0, completion_tokens: int = 0,
                       total_tokens: int = 0, cost: float = 0.0,
                       duration_ms: int = 0, status: str = "success",
-                      error_message: str | None = None, metadata: dict = None,
+                      error_message: str | None = None, metadata: dict | None = None,
                       start_time: datetime | None = None, end_time: datetime | None = None) -> ExecutionLog:
         started_at = start_time or datetime.now(timezone.utc)
         terminal_statuses = {"success", "error", "failed", "cancelled", "completed"}

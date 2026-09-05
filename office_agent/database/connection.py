@@ -55,7 +55,7 @@ def _register_sqlite_pragmas(target: Engine) -> Engine:
 
 
 # 引擎参数
-_engine_kwargs = {
+_engine_kwargs: dict[str, object] = {
     "echo": os.environ.get("DB_ECHO", "false").lower() == "true",
     "future": True,
 }
@@ -76,7 +76,7 @@ else:
     })
 
 
-def get_engine(url: str = None) -> Engine:
+def get_engine(url: str | None = None) -> Engine:
     """获取数据库引擎"""
     db_url = url or DATABASE_URL
     if db_url.startswith("sqlite") and db_url != "sqlite:///:memory:":

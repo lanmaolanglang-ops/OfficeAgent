@@ -364,11 +364,11 @@ class FormulaGenerator:
 
     def _generate_aggregate(self, tpl: FormulaTemplate,
                              target_cols: List[ColumnInfo],
-                             sheet: SheetInfo,
+                             sheet: SheetInfo | None,
                              data_start_row: int,
                              result_row_offset: int = 0) -> List[FormulaSpec]:
         """生成聚合公式（SUM/AVERAGE/COUNT等）"""
-        formulas = []
+        formulas: List[FormulaSpec] = []
         if sheet and sheet.row_count <= 0:
             return formulas
         if not target_cols and sheet:
@@ -399,12 +399,12 @@ class FormulaGenerator:
 
     def _generate_row_wise(self, tpl: FormulaTemplate,
                             target_cols: List[ColumnInfo],
-                            sheet: SheetInfo,
+                            sheet: SheetInfo | None,
                             data_start_row: int,
                             text: str = "",
                             start_result_col: int = 0) -> List[FormulaSpec]:
         """生成逐行公式（增长率/占比/排名/累计）"""
-        formulas = []
+        formulas: List[FormulaSpec] = []
         if sheet and sheet.row_count <= 0:
             return formulas
         if not target_cols and sheet:
@@ -498,10 +498,10 @@ class FormulaGenerator:
     def _generate_conditional(self, tpl: FormulaTemplate,
                                target_cols: List[ColumnInfo],
                                condition_col: Optional[ColumnInfo],
-                               sheet: SheetInfo,
+                               sheet: SheetInfo | None,
                                data_start_row: int) -> List[FormulaSpec]:
         """生成条件聚合公式（SUMIF/COUNTIF/SUMIFS等）"""
-        formulas = []
+        formulas: List[FormulaSpec] = []
         if not sheet:
             return formulas
 
@@ -585,10 +585,10 @@ class FormulaGenerator:
     def _generate_lookup(self, tpl: FormulaTemplate,
                           lookup_info: dict,
                           target_cols: List[ColumnInfo],
-                          sheet: SheetInfo,
+                          sheet: SheetInfo | None,
                           data_start_row: int) -> List[FormulaSpec]:
         """生成查找公式（VLOOKUP/XLOOKUP/INDEX+MATCH）"""
-        formulas = []
+        formulas: List[FormulaSpec] = []
         if not lookup_info or not sheet:
             return formulas
 
@@ -655,11 +655,11 @@ class FormulaGenerator:
 
     def _generate_logical(self, tpl: FormulaTemplate,
                            target_cols: List[ColumnInfo],
-                           sheet: SheetInfo,
+                           sheet: SheetInfo | None,
                            data_start_row: int,
                            text: str = "") -> List[FormulaSpec]:
         """生成逻辑公式"""
-        formulas = []
+        formulas: List[FormulaSpec] = []
         if not target_cols or not sheet or sheet.row_count <= 0:
             return formulas
 

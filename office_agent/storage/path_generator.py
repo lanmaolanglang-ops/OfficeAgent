@@ -53,7 +53,7 @@ def _date_path() -> str:
 
 
 def generate_storage_path(bucket: str, file_id: str, extension: str,
-                          parent_file_id: str = None) -> str:
+                          parent_file_id: str | None = None) -> str:
     """
     生成存储路径
 

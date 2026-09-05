@@ -71,7 +71,7 @@ class WordQualityScorer:
     }
 
     def score(self, file_path: str,
-             expected_format: Dict[str, Any] = None) -> WordScoreResult:
+             expected_format: Dict[str, Any] | None = None) -> WordScoreResult:
         """
         评分Word文档
 
@@ -260,12 +260,12 @@ class WordQualityScorer:
             return {"error": "无段落"}
 
         # 统计字体使用
-        font_usage = {}
-        size_usage = {}
+        font_usage: Dict[str, int] = {}
+        size_usage: Dict[float, int] = {}
         bold_count = 0
-        alignment_usage = {}
+        alignment_usage: Dict[str, int] = {}
         indented_count = 0
-        line_spacing_usage = {}
+        line_spacing_usage: Dict[float, int] = {}
 
         body_paragraphs = []  # 正文段落（非标题）
 
@@ -296,8 +296,8 @@ class WordQualityScorer:
         total_body = len(body_paragraphs) if body_paragraphs else 1
 
         # 找主要字体和字号
-        main_font = max(font_usage, key=font_usage.get) if font_usage else None
-        main_size = max(size_usage, key=size_usage.get) if size_usage else None
+        main_font = max(font_usage, key=lambda k: font_usage[k]) if font_usage else None
+        main_size = max(size_usage, key=lambda k: size_usage[k]) if size_usage else None
 
         # 字体一致性比例
         font_consistency = font_usage.get(main_font, 0) / total_body if main_font else 0
@@ -310,7 +310,7 @@ class WordQualityScorer:
         ls_ratio = sum(line_spacing_usage.values()) / total_body
 
         # 对齐方式
-        main_alignment = max(alignment_usage, key=alignment_usage.get) if alignment_usage else None
+        main_alignment = max(alignment_usage, key=lambda k: alignment_usage[k]) if alignment_usage else None
 
         return {
             "total_paragraphs": len(paragraphs),
@@ -388,7 +388,7 @@ class WordQualityScorer:
         }
 
     def _score_format(self, format_info: Dict,
-                     expected: Dict = None) -> float:
+                     expected: Dict | None = None) -> float:
         """格式正确率评分"""
         if "error" in format_info:
             return 0

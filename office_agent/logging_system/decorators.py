@@ -13,18 +13,17 @@
 """
 import time
 import functools
-from typing import Callable, Optional
+from typing import Callable
 
 from .logger import get_logger, log_agent_execution
 from .context import (
-    set_agent_name, set_task_id, get_task_id,
-    get_request_id, get_agent_name, LogContext,
+    set_agent_name, get_task_id,
 )
 from .metrics import registry
 from .tracer import trace_agent
 
 
-def log_execution(agent_name: str = None, action: str = None,
+def log_execution(agent_name: str | None = None, action: str | None = None,
                   log_input: bool = True, log_output: bool = True,
                   input_max_len: int = 500, output_max_len: int = 500):
     """
@@ -161,7 +160,7 @@ def log_execution(agent_name: str = None, action: str = None,
     return decorator
 
 
-def log_model_call_decorator(provider: str = None):
+def log_model_call_decorator(provider: str | None = None):
     """
     模型调用日志装饰器
 
@@ -267,7 +266,7 @@ def _save_execution_log(**kwargs):
         from .background import submit as submit_background
         from ..database.session import SessionLocal
         from ..database.repository import ExecutionLogRepository
-        from .context import get_request_id, get_task_id, get_trace_id
+        from .context import get_request_id, get_trace_id
 
         request_id = get_request_id()
         trace_id = get_trace_id()

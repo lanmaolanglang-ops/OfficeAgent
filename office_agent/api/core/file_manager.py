@@ -17,7 +17,7 @@ class FileInfo:
     """文件信息"""
     def __init__(self, file_id: str, original_name: str, stored_path: str,
                  file_type: str, extension: str, size: int,
-                 metadata: Dict = None):
+                 metadata: Dict | None = None):
         self.file_id = file_id
         self.original_name = original_name
         self.stored_path = stored_path
@@ -54,7 +54,7 @@ class FileManager:
         ".gif": "image", ".bmp": "image", ".webp": "image",
     }
 
-    def __init__(self, upload_dir: str = None, output_dir: str = None):
+    def __init__(self, upload_dir: str | None = None, output_dir: str | None = None):
         self.upload_dir = upload_dir or settings.upload_dir
         self.output_dir = output_dir or settings.output_dir
         os.makedirs(self.upload_dir, exist_ok=True)

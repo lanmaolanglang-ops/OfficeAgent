@@ -86,7 +86,7 @@ class ApplicationRuntimeManager:
     桌面应用入口，管理Backend进程的完整生命周期
     """
 
-    def __init__(self, config: AppConfig = None):
+    def __init__(self, config: AppConfig | None = None):
         self.config = config or AppConfig()
         self.state = AppState(
             backend_url=f"http://{self.config.host}:{self.config.port}",
@@ -248,7 +248,7 @@ class ApplicationRuntimeManager:
                 except Exception:
                     pass
 
-    def stop(self, timeout: float = None) -> bool:
+    def stop(self, timeout: float | None = None) -> bool:
         """停止Backend"""
         timeout = timeout or self.config.shutdown_timeout
         self._stop_event.set()
@@ -394,7 +394,7 @@ class ApplicationRuntimeManager:
 _runtime_manager: Optional[ApplicationRuntimeManager] = None
 
 
-def get_runtime_manager(config: AppConfig = None) -> ApplicationRuntimeManager:
+def get_runtime_manager(config: AppConfig | None = None) -> ApplicationRuntimeManager:
     global _runtime_manager
     if _runtime_manager is None:
         _runtime_manager = ApplicationRuntimeManager(config)

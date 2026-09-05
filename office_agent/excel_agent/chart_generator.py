@@ -193,7 +193,7 @@ class ChartGenerator:
                            sheet_name: str | None = None,
                            chart_type: str = "") -> List[ChartSpec]:
         """从自然语言生成图表规格；chart_type 显式给定时优先"""
-        charts = []
+        charts: List[ChartSpec] = []
         sheet = self.profile.get_sheet(sheet_name) if self.profile else None
 
         # 识别图表类型：显式参数优先，否则从文本推断
@@ -279,7 +279,7 @@ class ChartGenerator:
 
     def auto_charts(self, sheet_name: str | None = None) -> List[ChartSpec]:
         """根据数据特征自动推荐图表"""
-        charts = []
+        charts: List[ChartSpec] = []
         sheet = self.profile.get_sheet(sheet_name) if self.profile else None
         if not sheet or sheet.row_count <= 0:
             return charts

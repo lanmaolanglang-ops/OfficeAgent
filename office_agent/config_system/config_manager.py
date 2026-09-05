@@ -127,7 +127,7 @@ class ConfigManager:
         logger.info("开始加载配置...")
 
         # 1. 全局配置
-        global_dict = {}
+        global_dict: Dict[str, Any] = {}
         # YAML 全局
         yaml_global = self._yaml_loader.load("config.yaml")
         if yaml_global:

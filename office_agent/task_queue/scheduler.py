@@ -21,7 +21,7 @@ class ScheduledTask:
     """定时任务"""
 
     def __init__(self, name: str, func: Callable, interval_seconds: int,
-                 priority: str = "low", args: tuple = (), kwargs: dict = None):
+                 priority: str = "low", args: tuple = (), kwargs: dict | None = None):
         self.name = name
         self.func = func
         self.interval = interval_seconds
@@ -52,7 +52,7 @@ class TaskScheduler:
         self._lock = threading.Lock()
 
     def add(self, name: str, func: Callable, interval_seconds: int,
-            priority: str = "low", args: tuple = (), kwargs: dict = None):
+            priority: str = "low", args: tuple = (), kwargs: dict | None = None):
         """添加定时任务"""
         task = ScheduledTask(name, func, interval_seconds, priority, args, kwargs)
         with self._lock:
@@ -157,7 +157,7 @@ class TaskScheduler:
 scheduler = TaskScheduler()
 
 
-def setup_default_schedules(sched: TaskScheduler = None):
+def setup_default_schedules(sched: TaskScheduler | None = None):
     """设置默认定时任务"""
     import os as _os
     from .tasks.file_tasks import cleanup_temp_files, system_health_check, cleanup_old_logs

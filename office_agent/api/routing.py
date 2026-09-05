@@ -39,7 +39,7 @@ def _keyword_positions(text: str, keyword: str) -> list:
                 rf"(?<![a-z0-9]){re.escape(keyword)}(?![a-z0-9])", text
             )
         ]
-    positions = []
+    positions: list[int] = []
     start = 0
     while True:
         idx = text.find(keyword, start)

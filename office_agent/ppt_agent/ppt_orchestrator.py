@@ -60,7 +60,7 @@ class PPTOrchestrator:
             "generated": 0,
             "errors": [],
         }
-        self._generated_temp_images = []
+        self._generated_temp_images: list[str] = []
         self.planner = ContentPlanner(model_gateway=model_gateway)
         self.template_analyzer = TemplateAnalyzer()
         self.service = PPTService()
@@ -270,7 +270,7 @@ class PPTOrchestrator:
     def generate_with_template(self, template_path: str,
                                theme: str = "",
                                text: str = "",
-                               slides_data: list = None,
+                               slides_data: list | None = None,
                                slide_count: int = 10,
                                output_path: str = "") -> PPTGenerationResult:
         """
@@ -419,7 +419,7 @@ class PPTOrchestrator:
             self._generated_temp_images.clear()
 
     def _pre_check_and_fix(self, outline: PPTOutline,
-                           expected_slides: int = None) -> PPTOutline:
+                           expected_slides: int | None = None) -> PPTOutline:
         """
         生成前检查 Outline 并自动修正可修复问题
 
@@ -436,7 +436,7 @@ class PPTOrchestrator:
         return fixed
 
     def _attach_quality(self, result: PPTGenerationResult, output_path: str,
-                        expected_slides: int = None) -> None:
+                        expected_slides: int | None = None) -> None:
         """附加质量信息；检查器故障不得反向覆盖已成功生成的产物。"""
         try:
             quality = self.quality_checker.check(output_path, expected_slides)
