@@ -211,3 +211,24 @@ def test_combo_semantics_preserved():
     assert chart.type == "col"
     # 系列标题均取自各自表头单元格
     assert all(ref is not None for ref in _series_title_refs(chart))
+
+
+# ---------------------------------------------------------------
+# 场景 7：无类别列（纯数值表）请求 combo 不崩溃，降级为柱状图
+# ---------------------------------------------------------------
+
+def test_combo_without_category_column_degrades_to_column():
+    """纯数值表没有文本/日期类别列，_find_category_column 返回 None。
+
+    此前 combo 分支把 None 直接传给 _build_combo_spec，内部访问
+    cat_col.index 会触发 AttributeError；修复后降级为普通柱状图。
+    """
+    gen = ChartGenerator(profile=_profile(
+        [("Q1", 0, "number"), ("Q2", 1, "number")],
+        row_count=3,
+    ))
+    specs = gen.generate_from_text("组合图", chart_type="combo")
+    # 不崩溃且产出降级结果：至少一个图表、且无 combo 类型
+    assert specs, "无类别列时应降级产出普通柱状图"
+    assert all(spec.chart_type != "combo" for spec in specs)
+

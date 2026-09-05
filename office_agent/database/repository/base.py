@@ -1,7 +1,9 @@
 """Repository 基类"""
-from typing import TypeVar, Generic, Type, Optional, List, Any, Dict
+from typing import TypeVar, Generic, Type, Optional, List, Any, Dict, cast
 from sqlalchemy import select, func
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
+from sqlalchemy.sql.expression import Executable
 
 from ..base import Base
 
@@ -41,6 +43,16 @@ class BaseRepository(Generic[ModelType]):
         if not isinstance(name, str) or name not in self.model.__mapper__.attrs:
             raise ValueError(f"未知过滤字段: {name}")
         return getattr(self.model, name)
+
+    def _execute_rowcount(self, statement: Executable) -> int:
+        """执行 DML 语句并返回受影响行数。
+
+        SQLAlchemy 2.0 的 ``Session.execute`` 静态返回类型恒为 ``Result[Any]``，
+        无法在类型层区分 DML（运行时实际返回 ``CursorResult``，才有 ``rowcount``）。
+        此处把该运行时不变式显式化，避免每个调用点重复 cast。
+        """
+        result = cast("CursorResult[Any]", self.session.execute(statement))
+        return result.rowcount
 
     def get_all(self, offset: int = 0, limit: int = 100) -> List[ModelType]:
         offset, limit = self._page(offset, limit)

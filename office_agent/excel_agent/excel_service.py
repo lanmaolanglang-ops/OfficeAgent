@@ -114,13 +114,26 @@ class ExcelService:
         self._opened_from: Optional[str] = None
         self.changes: List[str] = []
 
+    @property
+    def workbook(self) -> Workbook:
+        """返回已创建/打开的工作簿。
+
+        将 ``self.wb`` 的生命周期不变式显式化：``create()`` / ``open()`` 之前为
+        ``None``，之后恒为有效 ``Workbook``。任何在打开前访问工作簿的调用都属
+        使用错误，这里抛出明确异常，而非让调用方收到晦涩的
+        ``AttributeError: 'NoneType' object has no attribute ...``。
+        """
+        if self.wb is None:
+            raise RuntimeError("工作簿尚未创建或打开，请先调用 create() 或 open()")
+        return self.wb
+
     def create(self, file_path: str, sheet_name: str = "Sheet1") -> 'ExcelService':
         """创建新工作簿"""
         self.wb = Workbook()
         self.wb.active.title = sheet_name
         self.file_path = file_path
         # 新建工作簿没有"磁盘上的原始数据"，保存到同一路径是安全的
-        self._opened_from: Optional[str] = None
+        self._opened_from = None
         self.changes.append(f"创建新工作簿: {file_path}")
         return self
 
@@ -172,34 +185,34 @@ class ExcelService:
     def get_sheet(self, name: str | None = None):
         """获取工作表"""
         if name is None:
-            return self.wb.active
-        if name in self.wb.sheetnames:
-            return self.wb[name]
+            return self.workbook.active
+        if name in self.workbook.sheetnames:
+            return self.workbook[name]
         return None
 
     def create_sheet(self, name: str, index: int | None = None):
         """创建新工作表"""
-        if name in self.wb.sheetnames:
-            return self.wb[name]
-        ws = self.wb.create_sheet(name, index)
+        if name in self.workbook.sheetnames:
+            return self.workbook[name]
+        ws = self.workbook.create_sheet(name, index)
         self.changes.append(f"创建工作表: {name}")
         return ws
 
     def rename_sheet(self, old_name: str, new_name: str):
         """重命名工作表"""
-        if old_name in self.wb.sheetnames:
-            self.wb[old_name].title = new_name
+        if old_name in self.workbook.sheetnames:
+            self.workbook[old_name].title = new_name
             self.changes.append(f"重命名工作表: {old_name} → {new_name}")
 
     def delete_sheet(self, name: str):
         """删除工作表"""
-        if name in self.wb.sheetnames:
-            del self.wb[name]
+        if name in self.workbook.sheetnames:
+            del self.workbook[name]
             self.changes.append(f"删除工作表: {name}")
 
     def list_sheets(self) -> List[str]:
         """列出所有工作表"""
-        return list(self.wb.sheetnames)
+        return list(self.workbook.sheetnames)
 
     # ==========================================
     # 数据读写

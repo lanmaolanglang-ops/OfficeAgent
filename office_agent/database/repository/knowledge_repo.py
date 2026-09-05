@@ -44,8 +44,8 @@ class KnowledgeRepository(BaseRepository[Knowledge]):
 
     def increment_usage(self, kb_id: str):
         from sqlalchemy import update
-        return self.session.execute(
+        return self._execute_rowcount(
             update(Knowledge).where(Knowledge.id == kb_id)
             .values(usage_count=Knowledge.usage_count + 1)
             .execution_options(synchronize_session="fetch")
-        ).rowcount
+        )

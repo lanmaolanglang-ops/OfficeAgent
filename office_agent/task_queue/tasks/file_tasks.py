@@ -5,6 +5,10 @@ import os
 import logging
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
+from typing import Any, cast
+
+from sqlalchemy.engine import CursorResult
+
 from ...security.error_sanitizer import sanitize_error
 from ...runtime_config import get_data_root
 
@@ -149,7 +153,7 @@ def cleanup_old_logs(days: int | None = None, progress=None, _task_id: str | Non
     if not days or days <= 0:
         days = int(os.environ.get("LOG_RETENTION_DAYS", "30"))
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-    deleted = {}
+    deleted: dict[str, int | str] = {}
     try:
         from sqlalchemy import delete
         from ...database.session import SessionLocal
@@ -158,7 +162,7 @@ def cleanup_old_logs(days: int | None = None, progress=None, _task_id: str | Non
         try:
             for model in (ExecutionLog, ModelCallLog, ErrorLog):
                 try:
-                    res = session.execute(delete(model).where(model.created_at < cutoff))
+                    res = cast("CursorResult[Any]", session.execute(delete(model).where(model.created_at < cutoff)))
                     deleted[model.__tablename__] = res.rowcount or 0
                 except Exception as exc:
                     deleted[getattr(model, "__tablename__", model.__name__)] = f"error: {sanitize_error(exc, '清理失败')}"

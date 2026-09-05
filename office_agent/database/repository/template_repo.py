@@ -32,8 +32,8 @@ class TemplateRepository(BaseRepository[Template]):
 
     def increment_usage(self, template_id: str):
         from sqlalchemy import update
-        return self.session.execute(
+        return self._execute_rowcount(
             update(Template).where(Template.id == template_id)
             .values(usage_count=Template.usage_count + 1)
             .execution_options(synchronize_session="fetch")
-        ).rowcount
+        )

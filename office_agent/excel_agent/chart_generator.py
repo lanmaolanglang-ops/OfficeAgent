@@ -149,7 +149,7 @@ class ChartGenerator:
         service.open(file_path)
 
         if sheet_name is None:
-            sheet_name = service.wb.sheetnames[0]
+            sheet_name = service.workbook.sheetnames[0]
 
         # 分析数据
         if self.profile is None:
@@ -214,7 +214,14 @@ class ChartGenerator:
 
         end_row = sheet.row_count + 1  # 包含表头
 
-        if chart_type == "combo":
+        # 组合图必须有类别列作为 X 轴（_build_combo_spec 直接访问 cat_col.index）；
+        # 无类别列（如纯数值表）时降级为普通柱状图，避免 None dereference 崩溃。
+        # 与 auto_charts 的 `if not cat_col: return` 同一语义，但此处仅对 combo
+        # 降级，其余图表类型（pie/radar/column）本就能用 "A" 兜底类别列。
+        if chart_type == "combo" and cat_col is None:
+            chart_type = "column"
+
+        if chart_type == "combo" and cat_col is not None:
             # 组合图：第一个系列柱状，第二个系列折线（次轴）
             spec = self._build_combo_spec(
                 target_cols, cat_col, sheet, text, position_index=len(charts)

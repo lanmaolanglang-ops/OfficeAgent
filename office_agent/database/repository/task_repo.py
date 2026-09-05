@@ -55,7 +55,7 @@ class TaskRepository(BaseRepository[Task]):
         return self.create(task)
 
     def start_task(self, task_id: str):
-        result = self.session.execute(
+        rowcount = self._execute_rowcount(
             update(Task)
             .where(Task.id == task_id, Task.status.in_(("pending", "queued")))
             .values(
@@ -64,7 +64,7 @@ class TaskRepository(BaseRepository[Task]):
             )
             .execution_options(synchronize_session="fetch")
         )
-        return bool(result.rowcount)
+        return bool(rowcount)
 
     def update_progress(self, task_id: str, progress: int, current_step: str | None = None):
         data = {"progress": progress}
@@ -88,13 +88,13 @@ class TaskRepository(BaseRepository[Task]):
             data["quality_score"] = quality_score
         if duration_ms is not None:
             data["duration_ms"] = duration_ms
-        result = self.session.execute(
+        rowcount = self._execute_rowcount(
             update(Task)
             .where(Task.id == task_id, Task.status.notin_(("success", "failed", "cancelled")))
             .values(**data)
             .execution_options(synchronize_session="fetch")
         )
-        return bool(result.rowcount)
+        return bool(rowcount)
 
     def fail_task(self, task_id: str, error_message: str, duration_ms: int | None = None):
         data = {
@@ -106,23 +106,23 @@ class TaskRepository(BaseRepository[Task]):
         }
         if duration_ms is not None:
             data["duration_ms"] = duration_ms
-        result = self.session.execute(
+        rowcount = self._execute_rowcount(
             update(Task)
             .where(Task.id == task_id, Task.status.notin_(("success", "failed", "cancelled")))
             .values(**data)
             .execution_options(synchronize_session="fetch")
         )
-        return bool(result.rowcount)
+        return bool(rowcount)
 
     def cancel_task(self, task_id: str):
         """取消任务：仅当任务仍处于活动状态时生效，避免把已完成任务改写为 cancelled"""
-        result = self.session.execute(
+        rowcount = self._execute_rowcount(
             update(Task)
             .where(Task.id == task_id, Task.status.in_(("pending", "queued", "running")))
             .values(status="cancelled", finished_at=utc_now())
             .execution_options(synchronize_session="fetch")
         )
-        return bool(result.rowcount)
+        return bool(rowcount)
 
     def add_feedback(self, task_id: str, rating: int, comment: str | None = None):
         data = {"feedback_rating": rating}

@@ -829,7 +829,7 @@ class FormulaGenerator:
         service.open(file_path)
 
         if sheet_name is None:
-            sheet_name = service.wb.sheetnames[0]
+            sheet_name = service.workbook.sheetnames[0]
 
         # 分析数据
         if self.profile is None:

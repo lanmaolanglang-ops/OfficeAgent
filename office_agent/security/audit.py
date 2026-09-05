@@ -8,7 +8,9 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import Enum
-from typing import Callable
+from typing import Any, Callable, cast
+
+from sqlalchemy.engine import CursorResult
 
 try:
     from office_agent.logging_system import get_logger
@@ -372,9 +374,9 @@ class AuditLogger:
 
         cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
         with self._get_session_factory()() as session:
-            result = session.execute(
+            result = cast("CursorResult[Any]", session.execute(
                 delete(AuditLogModel).where(AuditLogModel.timestamp < cutoff)
-            )
+            ))
             session.commit()
             return int(result.rowcount or 0)
 
