@@ -294,6 +294,26 @@ class TestRagAnnIntegration:
         assert {item["category"] for item in result["results"]} == {"policy"}
         assert [item["title"] for item in result["results"]] == ["甲政策", "乙政策"]
 
+    def test_sparse_category_uses_exact_path_and_preserves_recall(
+            self, tmp_path, monkeypatch, request):
+        factory = _configure_rag_db(tmp_path, monkeypatch, request)
+        _install_ann_embedder(monkeypatch)
+        monkeypatch.setenv("OFFICE_AGENT_DATA_DIR", str(tmp_path / "data"))
+        from office_agent.task_queue.tasks.rag_tasks import search_knowledge
+
+        _add_knowledge(factory, "甲政策", "甲的归档内容", [1.0, 0.0])
+        _add_knowledge(factory, "乙政策", "乙的普通内容", [0.0, 1.0])
+        for index in range(120):
+            _add_knowledge(
+                factory, f"其他 {index}", "大量其他 category 内容",
+                [0.7071068, 0.7071068], category="other",
+            )
+
+        result = search_knowledge("甲", top_k=2, category="policy")
+        assert result["ann_used"] is False
+        assert result["ann_status"] == "small_dataset"
+        assert [item["title"] for item in result["results"]] == ["甲政策", "乙政策"]
+
     def test_refresh_rebuilds_index_when_large(
             self, tmp_path, monkeypatch, request):
         factory = _configure_rag_db(tmp_path, monkeypatch, request)
