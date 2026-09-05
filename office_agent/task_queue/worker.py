@@ -23,6 +23,10 @@ from .lease_executor import LeaseThreadPool
 
 logger = logging.getLogger("office_agent.queue")
 
+# 自动质量修订链的最大层数：原始任务记第 1 层，最多再自动修订 2 次，
+# 防止"修订产物仍不达标"时无限递归派生子任务。
+MAX_QUALITY_REVISION_DEPTH = 3
+
 
 class TaskCancelledError(RuntimeError):
     """任务在协作式取消点中止。"""
@@ -536,7 +540,7 @@ class LocalWorker:
             cancel_event = self._cancel_events.get(task_id)
         if cancel_event is not None and cancel_event.is_set():
             return None
-        if not task or (task.revision_number or 1) >= 3:
+        if not task or (task.revision_number or 1) >= MAX_QUALITY_REVISION_DEPTH:
             return None
         try:
             options = json.loads(task.options_json or "{}")
