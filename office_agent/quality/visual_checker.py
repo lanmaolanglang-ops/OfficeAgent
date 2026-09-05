@@ -12,20 +12,23 @@ Word Visual Checker - Word 文档视觉质量检查器
 """
 import os
 import json
+import logging
 import re
 import tempfile
 import subprocess
 import shutil
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict
 from enum import Enum
 
 from ..vision_gateway import (
-    VisionGateway, VisionRequest, VisionResponse,
-    ImageInput, DocumentPage, DocumentVisionResult,
-    VisionTaskType, StructuredVisionResult,
+    VisionGateway, VisionRequest,
+    ImageInput, DocumentPage,
+    VisionTaskType,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class VisualCategory(Enum):
@@ -615,27 +618,67 @@ category 取值：heading, paragraph, page_break, table, whitespace, alignment, 
         if not soffice:
             return None
 
+        out_pdf = os.path.join(
+            self._temp_dir,
+            Path(docx_path).stem + ".pdf"
+        )
+        # 独立 UserInstallation profile：即使超时后整树强杀残留了 soffice
+        # 进程，也不会锁住共享默认 profile 导致后续所有转换失败。
+        profile_dir = tempfile.mkdtemp(prefix="lo-profile-")
+        cmd = [
+            soffice, "--headless",
+            f"-env:UserInstallation={Path(profile_dir).resolve().as_uri()}",
+            "--convert-to", "pdf",
+            "--outdir", self._temp_dir,
+            docx_path
+        ]
+        creation_flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        proc = None
         try:
-            out_pdf = os.path.join(
-                self._temp_dir,
-                Path(docx_path).stem + ".pdf"
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                creationflags=creation_flags,
             )
-            cmd = [
-                soffice, "--headless", "--convert-to", "pdf",
-                "--outdir", self._temp_dir,
-                docx_path
-            ]
-            creation_flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-            result = subprocess.run(
-                cmd, capture_output=True, timeout=120,
-                creationflags=creation_flags
-            )
-            if result.returncode == 0 and os.path.exists(out_pdf):
+            proc.communicate(timeout=120)
+            if proc.returncode == 0 and os.path.exists(out_pdf):
                 return out_pdf
+            logger.warning(
+                "LibreOffice docx 转换失败（returncode=%s），降级为非视觉检查",
+                proc.returncode,
+            )
+        except subprocess.TimeoutExpired:
+            # Windows 上 soffice.exe 只是启动器，真实进程是 soffice.bin；
+            # subprocess 的 timeout kill 只杀直接子进程，必须整树终止并
+            # reap，否则孤儿进程常驻且持有 profile 锁。
+            if proc is not None:
+                self._kill_process_tree(proc)
+                try:
+                    proc.communicate(timeout=10)
+                except Exception:
+                    pass
+            logger.warning("LibreOffice docx 转换超时，已终止进程树，降级为非视觉检查")
         except Exception:
-            pass
+            logger.warning("LibreOffice docx 转换异常，降级为非视觉检查", exc_info=True)
+        finally:
+            shutil.rmtree(profile_dir, ignore_errors=True)
 
         return None
+
+    @staticmethod
+    def _kill_process_tree(proc) -> None:
+        """终止进程及其整棵子进程树（Windows 上 soffice.exe 只是启动器）。"""
+        try:
+            if os.name == "nt":
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                    capture_output=True, timeout=10,
+                )
+            else:
+                proc.kill()
+        except Exception:
+            logger.warning("终止 LibreOffice 进程树失败", exc_info=True)
 
     def _generate_summary(self, report: VisualCheckReport) -> str:
         """生成总体评价"""

@@ -1,5 +1,6 @@
 """Bounded background writer used by database log handlers."""
 import atexit
+import logging
 import queue
 import threading
 from typing import Callable
@@ -10,6 +11,8 @@ _sentinel = object()
 _worker = None
 _worker_lock = threading.Lock()
 
+_logger = logging.getLogger("office_agent.logging.background")
+
 
 def _run():
     while True:
@@ -18,7 +21,13 @@ def _run():
             if job is _sentinel:
                 return
             func, args, kwargs = job
-            func(*args, **kwargs)
+            try:
+                func(*args, **kwargs)
+            except Exception:
+                # 单个写任务失败不得杀死唯一写线程：未捕获的异常会让线程
+                # 静默退出（frozen 应用 stderr 为空流，异常完全不可见），
+                # 队列中后续日志全部滞留。记录后继续消费，保持线程存活。
+                _logger.exception("后台日志写任务失败，已跳过该任务")
         finally:
             _jobs.task_done()
 
