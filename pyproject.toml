@@ -39,7 +39,35 @@ dev = [
     "pytest-cov>=4.1.0",
     "pytest-asyncio>=0.21.0",
     "ruff>=0.1.0",
+    "mypy>=1.5,<2",
 ]
+
+# mypy baseline config (2026-09-05 census: 736 errors / 91 files — 见外部清单
+# "缺少类型检查在 CI 中拦截" 条目)。本配置不做任何错误抑制：
+# 无 disable_error_code、无全局 ignore_missing_imports、不排除任何项目模块。
+# 唯一豁免：下列第三方库无高质量 stubs，仅豁免其 import 解析（narrowly scoped）。
+# 在存量 typing debt 收敛前，本配置不接入 CI（接入即永久失败）；
+# 修复批次可直接以 `mypy` 无参运行复现 baseline。
+[tool.mypy]
+# 固定 3.12：numpy 新版 stubs 使用 3.12 `type` 语句语法，3.10/3.11 解析即 syntax error
+# 阻断全部检查；与 CI 矩阵最高版本一致。被检查代码语法兼容由 requires-python>=3.10 约束。
+python_version = "3.12"
+packages = ["office_agent", "desktop"]
+warn_unused_ignores = true
+warn_redundant_casts = true
+
+[[tool.mypy.overrides]]
+module = [
+    "pptx.*",
+    "openpyxl.*",
+    "docx.*",
+    "PIL.*",
+    "fitz.*",
+    "yaml.*",
+    "pandas.*",
+    "psutil.*",
+]
+ignore_missing_imports = true
 
 [tool.setuptools.packages.find]
 include = ["office_agent*"]
