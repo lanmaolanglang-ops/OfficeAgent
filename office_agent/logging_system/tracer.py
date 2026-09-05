@@ -4,15 +4,14 @@
 记录 API → Task Queue → Workflow → Agent → Tool → Model → Storage 的完整调用链。
 """
 import time
-import json
 import contextvars
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 from contextlib import contextmanager
 
 from .context import (
-    get_trace_id, set_trace_id, get_request_id, get_task_id,
-    generate_span_id, get_context_dict,
+    get_trace_id, get_request_id, get_task_id,
+    generate_span_id,
 )
 from .logger import get_logger
 
@@ -23,8 +22,8 @@ class Span:
     """追踪 Span"""
 
     def __init__(self, name: str, span_type: str = "operation",
-                 span_id: str = None, parent_id: str = None,
-                 trace_id: str = None, attributes: dict = None):
+                 span_id: str | None = None, parent_id: str | None = None,
+                 trace_id: str | None = None, attributes: dict | None = None):
         self.name = name
         self.span_type = span_type  # api/task/workflow/agent/tool/model/storage
         self.span_id = span_id or generate_span_id()
@@ -90,7 +89,7 @@ class TraceContext:
         self._current_stack: List[str] = []
 
     def start_span(self, name: str, span_type: str = "operation",
-                   attributes: dict = None) -> Span:
+                   attributes: dict | None = None) -> Span:
         parent_id = self._current_stack[-1] if self._current_stack else None
         span = Span(
             name=name,
@@ -118,7 +117,7 @@ class TraceContext:
         )
         return span
 
-    def end_span(self, span: Span, error: Exception = None):
+    def end_span(self, span: Span, error: Exception | None = None):
         if error:
             span.set_error(error)
         span.end()
@@ -220,7 +219,7 @@ def trace_agent(agent_name: str, action: str):
 
 
 @contextmanager
-def trace_model(model_name: str, provider: str = None):
+def trace_model(model_name: str, provider: str | None = None):
     """追踪模型调用"""
     with trace_span(f"model:{model_name}", "model",
                     model=model_name, provider=provider) as span:

@@ -128,9 +128,9 @@ def _csv_to_xlsx(csv_path: str) -> str:
     return tmp
 
 
-def analyze_excel(input_path: str, output_path: str = None,
-                  instruction: str = "", options: dict = None,
-                  progress=None, _task_id: str = None, **kwargs) -> dict:
+def analyze_excel(input_path: str, output_path: str | None = None,
+                  instruction: str = "", options: dict | None = None,
+                  progress=None, _task_id: str | None = None, **kwargs) -> dict:
     """
     Excel 数据分析任务
     """
@@ -243,9 +243,9 @@ def analyze_excel(input_path: str, output_path: str = None,
     return result
 
 
-def generate_chart(input_path: str, output_path: str = None,
-                   chart_type: str = "bar", options: dict = None,
-                   progress=None, _task_id: str = None, **kwargs) -> dict:
+def generate_chart(input_path: str, output_path: str | None = None,
+                   chart_type: str = "bar", options: dict | None = None,
+                   progress=None, _task_id: str | None = None, **kwargs) -> dict:
     """图表生成任务"""
     return analyze_excel(
         input_path=input_path,

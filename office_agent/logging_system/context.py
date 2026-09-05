@@ -5,7 +5,6 @@
 """
 import contextvars
 import uuid
-from typing import Optional
 
 # 请求级上下文
 _request_id_var: contextvars.ContextVar[str] = contextvars.ContextVar(
@@ -40,7 +39,7 @@ def generate_span_id() -> str:
     return f"span_{uuid.uuid4().hex[:12]}"
 
 
-def set_request_id(request_id: str = None) -> contextvars.Token:
+def set_request_id(request_id: str | None = None) -> contextvars.Token:
     """设置当前请求ID"""
     rid = request_id or generate_request_id()
     return _request_id_var.set(rid)
@@ -75,7 +74,7 @@ def get_user_id() -> str:
     return _user_id_var.get()
 
 
-def set_trace_id(trace_id: str = None) -> contextvars.Token:
+def set_trace_id(trace_id: str | None = None) -> contextvars.Token:
     tid = trace_id or generate_trace_id()
     return _trace_id_var.set(tid)
 
@@ -104,9 +103,9 @@ class LogContext:
             logger.info("processing...")
     """
 
-    def __init__(self, request_id: str = None, task_id: str = None,
-                 agent_name: str = None, user_id: str = None,
-                 trace_id: str = None):
+    def __init__(self, request_id: str | None = None, task_id: str | None = None,
+                 agent_name: str | None = None, user_id: str | None = None,
+                 trace_id: str | None = None):
         self.request_id = request_id
         self.task_id = task_id
         self.agent_name = agent_name

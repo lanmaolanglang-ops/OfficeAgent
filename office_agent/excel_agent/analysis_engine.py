@@ -55,7 +55,7 @@ class AnalysisEngine:
         self.schema: Optional[DataSchema] = None
 
     def analyze_file(self, file_path: str,
-                     sheet_name: str = None) -> AnalysisReport:
+                     sheet_name: str | None = None) -> AnalysisReport:
         """分析 Excel 文件，生成完整报告"""
         # 1. 使用公式缓存值读取数据。data_only=False 会把公式字符串当文本，
         # 使包含公式的数值列被静默排除。
@@ -124,7 +124,7 @@ class AnalysisEngine:
         )
         return combined
 
-    def analyze_data(self, data: List[List], headers: List[str] = None,
+    def analyze_data(self, data: List[List], headers: List[str] | None = None,
                      sheet_name: str = "Sheet1",
                      file_name: str = "data.xlsx") -> AnalysisReport:
         """直接从数据（二维列表）分析"""
@@ -835,13 +835,13 @@ class AnalysisEngine:
 # 便捷函数
 # ==========================================
 
-def analyze_excel(file_path: str, sheet_name: str = None) -> AnalysisReport:
+def analyze_excel(file_path: str, sheet_name: str | None = None) -> AnalysisReport:
     """分析 Excel 文件"""
     engine = AnalysisEngine()
     return engine.analyze_file(file_path, sheet_name)
 
 
-def analyze_data(data: List[List], headers: List[str] = None,
+def analyze_data(data: List[List], headers: List[str] | None = None,
                  sheet_name: str = "Sheet1") -> AnalysisReport:
     """分析数据（二维列表）"""
     engine = AnalysisEngine()

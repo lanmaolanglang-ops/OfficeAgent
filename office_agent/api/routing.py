@@ -106,7 +106,7 @@ def route_by_file_path(path: str):
     return None
 
 
-def resolve_route(message: str, input_path: str = None) -> tuple:
+def resolve_route(message: str, input_path: str | None = None) -> tuple:
     """单一权威路由裁决：chat 层与 worker 层必须调用本函数，禁止各自拼装。
 
     优先级（两层历史行为已一致，此处固化为唯一实现）：

@@ -1,6 +1,5 @@
 """Agent配置 Repository"""
 from typing import Optional, List
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .base import BaseRepository
@@ -21,9 +20,9 @@ class AgentRepository(BaseRepository[AgentConfig]):
         return self.find(agent_type=agent_type)
 
     def create_agent(self, agent_id: str, name: str, agent_type: str,
-                     description: str = None, version: str = "1.0.0",
-                     capabilities: str = None, model_config: str = None,
-                     prompt_template: str = None, config_json: str = None) -> AgentConfig:
+                     description: str | None = None, version: str = "1.0.0",
+                     capabilities: str | None = None, model_config: str | None = None,
+                     prompt_template: str | None = None, config_json: str | None = None) -> AgentConfig:
         agent = AgentConfig(
             agent_id=agent_id,
             name=name,

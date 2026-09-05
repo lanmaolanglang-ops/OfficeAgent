@@ -382,7 +382,7 @@ class LocalSemanticEmbedder(BaseEmbedder):
 
     DEFAULT_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"
 
-    def __init__(self, model_name: str = None, cache_dir: str = None):
+    def __init__(self, model_name: str | None = None, cache_dir: str | None = None):
         try:
             from sentence_transformers import SentenceTransformer
         except Exception as exc:
@@ -432,10 +432,10 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def create_semantic_embedder(backend: str = None,
-                             model: str = None,
-                             api_key: str = None,
-                             base_url: str = None) -> BaseEmbedder:
+def create_semantic_embedder(backend: str | None = None,
+                             model: str | None = None,
+                             api_key: str | None = None,
+                             base_url: str | None = None) -> BaseEmbedder:
     """Create the best available true semantic embedder.
 
     Resolution order:

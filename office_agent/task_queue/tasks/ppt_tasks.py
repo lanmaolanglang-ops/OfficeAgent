@@ -54,7 +54,7 @@ def _image_failure_summary(error: str) -> tuple[str, str]:
     return "unknown", "生图失败，请在设置中测试生图配置"
 
 
-def _display_stem(input_path: str, options: dict) -> str:
+def _display_stem(input_path: str | None, options: dict | None) -> str:
     """输出文件名应基于用户上传时的原始文件名，而非内部 file_id 路径。"""
     stem = os.path.splitext(os.path.basename(input_path or ""))[0]
     input_ids = (options or {}).get("input_file_ids") or []
@@ -70,7 +70,7 @@ def _display_stem(input_path: str, options: dict) -> str:
     return stem or "output"
 
 
-def _make_registered_name(input_path: str, output_path: str, options: dict) -> str:
+def _make_registered_name(input_path: str | None, output_path: str, options: dict | None) -> str:
     """Build the registered output filename for Storage (does not change task-internal naming)."""
     if options and options.get("output_filename"):
         return str(options["output_filename"])
@@ -132,10 +132,10 @@ def _understand_ppt_request(instruction: str, options: dict,
     return instruction
 
 
-def generate_ppt(outline: str = None, input_path: str = None,
-                 output_path: str = None, template_type: str = "business",
-                 instruction: str = None, options: dict = None,
-                 progress=None, _task_id: str = None, **kwargs) -> dict:
+def generate_ppt(outline: str | None = None, input_path: str | None = None,
+                 output_path: str | None = None, template_type: str = "business",
+                 instruction: str | None = None, options: dict | None = None,
+                 progress=None, _task_id: str | None = None, **kwargs) -> dict:
     """
     PPT 生成任务
 
@@ -349,9 +349,9 @@ def generate_ppt(outline: str = None, input_path: str = None,
     return result
 
 
-def design_ppt(content: str, output_path: str = None,
-               style: str = "modern", options: dict = None,
-               progress=None, _task_id: str = None, **kwargs) -> dict:
+def design_ppt(content: str, output_path: str | None = None,
+               style: str = "modern", options: dict | None = None,
+               progress=None, _task_id: str | None = None, **kwargs) -> dict:
     """PPT 设计任务（已有内容，只做设计）"""
     return generate_ppt(
         outline=content,

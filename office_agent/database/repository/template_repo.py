@@ -1,5 +1,5 @@
 """模板 Repository"""
-from typing import Optional, List
+from typing import List
 from sqlalchemy.orm import Session
 
 from .base import BaseRepository
@@ -20,9 +20,9 @@ class TemplateRepository(BaseRepository[Template]):
         return self.find(is_builtin=True)
 
     def create_template(self, name: str, template_type: str,
-                        file_path: str = None, config_json: str = None,
-                        description: str = None, category: str = None,
-                        tags: str = None, is_builtin: bool = False) -> Template:
+                        file_path: str | None = None, config_json: str | None = None,
+                        description: str | None = None, category: str | None = None,
+                        tags: str | None = None, is_builtin: bool = False) -> Template:
         tpl = Template(
             name=name, template_type=template_type, file_path=file_path,
             config_json=config_json, description=description,

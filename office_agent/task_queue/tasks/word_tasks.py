@@ -104,9 +104,9 @@ def _llm_format_config(instruction: str, input_path: str, options: dict,
         return None
 
 
-def process_word(input_path: str, output_path: str = None,
-                 instruction: str = "", options: dict = None,
-                 progress=None, _task_id: str = None, **kwargs) -> dict:
+def process_word(input_path: str, output_path: str | None = None,
+                 instruction: str = "", options: dict | None = None,
+                 progress=None, _task_id: str | None = None, **kwargs) -> dict:
     """
     Word 文档处理主任务
 
@@ -222,10 +222,10 @@ def process_word(input_path: str, output_path: str = None,
     return result
 
 
-def format_document(input_path: str, output_path: str = None,
-                    template_type: str = None, instruction: str = "",
-                    options: dict = None,
-                    progress=None, _task_id: str = None, **kwargs) -> dict:
+def format_document(input_path: str, output_path: str | None = None,
+                    template_type: str | None = None, instruction: str = "",
+                    options: dict | None = None,
+                    progress=None, _task_id: str | None = None, **kwargs) -> dict:
     """文档格式排版"""
     return process_word(
         input_path=input_path,

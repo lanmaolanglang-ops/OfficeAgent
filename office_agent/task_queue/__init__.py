@@ -31,10 +31,10 @@ DEFAULT_PRIORITY = "normal"
 VALID_PRIORITIES = ("high", "normal", "low")
 PRIORITY_TO_INT = {"high": 2, "normal": 1, "low": 0}
 
-def submit_task(task_name: str, args: tuple = (), kwargs: dict = None,
-                priority: str = "normal", task_id: str = None,
-                task_type: str = None, instruction: str = None,
-                user_id: str = None) -> str:
+def submit_task(task_name: str, args: tuple = (), kwargs: dict | None = None,
+                priority: str = "normal", task_id: str | None = None,
+                task_type: str | None = None, instruction: str | None = None,
+                user_id: str | None = None) -> str:
     """
     提交任务到队列
 

@@ -90,7 +90,7 @@ class EnvLoader:
 class YamlLoader:
     """从 YAML 文件加载配置"""
 
-    def __init__(self, config_dir: str = None):
+    def __init__(self, config_dir: str | None = None):
         self.config_dir = Path(config_dir or os.environ.get(
             "CONFIG_DIR",
             str(get_data_root() / "config"),

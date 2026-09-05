@@ -17,17 +17,14 @@ Excel Template Analyzer - Excel 模板分析器
 然后将新数据按模板格式自动填充。
 """
 import re
-import copy
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Tuple
 from dataclasses import dataclass, field
 
 from openpyxl import load_workbook
 from openpyxl.cell.cell import MergedCell
-from openpyxl.styles import Font, PatternFill, Alignment, Border, Side, numbers
-from openpyxl.utils import get_column_letter, column_index_from_string
-from openpyxl.formatting.rule import Rule
-from openpyxl.worksheet.datavalidation import DataValidation
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
 
 from .models import FormatSpec
 
@@ -175,7 +172,7 @@ class ExcelTemplateConfig:
     name: str = ""
     sheets: List[SheetTemplate] = field(default_factory=list)
 
-    def get_sheet(self, name: str = None) -> Optional[SheetTemplate]:
+    def get_sheet(self, name: str | None = None) -> Optional[SheetTemplate]:
         if name is None:
             return self.sheets[0] if self.sheets else None
         for s in self.sheets:
@@ -542,7 +539,7 @@ class ExcelTemplateAnalyzer:
                     return True
         return False
 
-    def _detect_zebra(self, ws, data_start_row: int = None) -> Tuple[bool, str]:
+    def _detect_zebra(self, ws, data_start_row: int | None = None) -> Tuple[bool, str]:
         """检测斑马纹（交替行背景色）"""
         bg_colors = []
         max_check = min(20, ws.max_row or 1)
@@ -612,8 +609,8 @@ class ExcelTemplateAnalyzer:
     # ==========================================
 
     def get_format_specs(self, config: ExcelTemplateConfig,
-                         sheet_name: str = None,
-                         data_rows: int = None) -> List[FormatSpec]:
+                         sheet_name: str | None = None,
+                         data_rows: int | None = None) -> List[FormatSpec]:
         """从模板配置生成 FormatSpec 列表"""
         specs = []
         sheet = config.get_sheet(sheet_name)
@@ -645,8 +642,8 @@ class ExcelTemplateAnalyzer:
     def fill_template(self, template_path: str,
                       data: List[List],
                       output_path: str,
-                      sheet_name: str = None,
-                      headers: List[str] = None,
+                      sheet_name: str | None = None,
+                      headers: List[str] | None = None,
                       keep_template_data: bool = False) -> str:
         """
         用新数据填充模板
@@ -734,7 +731,7 @@ class ExcelTemplateAnalyzer:
     def fill_with_dict(self, template_path: str,
                        data: List[Dict[str, Any]],
                        output_path: str,
-                       sheet_name: str = None) -> str:
+                       sheet_name: str | None = None) -> str:
         """
         用字典列表填充模板（按列名匹配）
 
@@ -762,7 +759,7 @@ class ExcelTemplateAnalyzer:
         return self.fill_template(template_path, rows, output_path, sheet_name)
 
     def apply_to_service(self, service, config: ExcelTemplateConfig,
-                         sheet_name: str = None, data_rows: int = None):
+                         sheet_name: str | None = None, data_rows: int | None = None):
         """将模板格式应用到 ExcelService"""
         specs = self.get_format_specs(config, sheet_name, data_rows)
         for spec in specs:
@@ -859,8 +856,8 @@ def analyze_excel_template(file_path: str) -> ExcelTemplateConfig:
 
 
 def fill_template(template_path: str, data: List[List],
-                  output_path: str, sheet_name: str = None,
-                  headers: List[str] = None) -> str:
+                  output_path: str, sheet_name: str | None = None,
+                  headers: List[str] | None = None) -> str:
     """用新数据填充模板"""
     return ExcelTemplateAnalyzer().fill_template(
         template_path, data, output_path, sheet_name, headers

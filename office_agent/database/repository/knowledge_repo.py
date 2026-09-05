@@ -27,11 +27,11 @@ class KnowledgeRepository(BaseRepository[Knowledge]):
         ).limit(limit)
         return list(self.session.scalars(stmt))
 
-    def add_knowledge(self, title: str, content: str, source: str = None,
-                      source_type: str = None, category: str = None,
-                      tags: str = None, embedding: str = None,
-                      embedding_model: str = None,
-                      metadata_json: str = None,
+    def add_knowledge(self, title: str, content: str, source: str | None = None,
+                      source_type: str | None = None, category: str | None = None,
+                      tags: str | None = None, embedding: str | None = None,
+                      embedding_model: str | None = None,
+                      metadata_json: str | None = None,
                       chunk_index: int = 0, total_chunks: int = 1) -> Knowledge:
         kb = Knowledge(
             title=title, content=content, source=source,

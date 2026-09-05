@@ -35,8 +35,8 @@ def _synchronized(lock):
 
 @_synchronized(_setup_lock)
 def setup_logging(
-    log_level: str = None,
-    log_dir: str = None,
+    log_level: str | None = None,
+    log_dir: str | None = None,
     enable_db_logging: bool = True,
     enable_file_logging: bool = True,
     service_name: str = "office-agent",
@@ -96,7 +96,7 @@ def setup_logging(
     return root
 
 
-def get_logger(name: str = None) -> logging.Logger:
+def get_logger(name: str | None = None) -> logging.Logger:
     """
     获取 logger
 
@@ -116,9 +116,9 @@ def get_logger(name: str = None) -> logging.Logger:
 
 
 # 便捷函数
-def log_agent_execution(agent_name: str, action: str, task_id: str = None,
-                        input_summary: str = None, output_summary: str = None,
-                        duration_ms: float = None, status: str = "success",
+def log_agent_execution(agent_name: str, action: str, task_id: str | None = None,
+                        input_summary: str | None = None, output_summary: str | None = None,
+                        duration_ms: float | None = None, status: str = "success",
                         **extra):
     """记录 Agent 执行日志"""
     logger = get_logger(f"agent.{agent_name.lower()}")
@@ -139,7 +139,7 @@ def log_agent_execution(agent_name: str, action: str, task_id: str = None,
     logger.log(level, f"[{agent_name}] {action} {status}", extra=extra_data)
 
 
-def log_model_call(model_name: str, provider: str = None,
+def log_model_call(model_name: str, provider: str | None = None,
                    input_tokens: int = 0, output_tokens: int = 0,
                    latency_ms: float = 0, cost_estimate: float = 0.0,
                    status: str = "success", error_message: str = "",
@@ -171,7 +171,7 @@ def log_model_call(model_name: str, provider: str = None,
 
 
 def log_task_event(task_id: str, event: str, status: str = "running",
-                   details: dict = None):
+                   details: dict | None = None):
     """记录任务事件"""
     logger = get_logger("task")
     logger.info(
@@ -195,7 +195,7 @@ class TimedOperation:
         # 自动记录耗时
     """
 
-    def __init__(self, operation: str, logger: logging.Logger = None,
+    def __init__(self, operation: str, logger: logging.Logger | None = None,
                  level: int = logging.INFO, **extra):
         self.operation = operation
         self.logger = logger or get_logger("operation")

@@ -71,7 +71,7 @@ class OfficeKnowledgeBase:
         print(ctx.to_text())
     """
 
-    def __init__(self, storage_dir: str = None,
+    def __init__(self, storage_dir: str | None = None,
                  embedder: Optional[BaseEmbedder] = None,
                  chunk_config: Optional[ChunkConfig] = None):
         storage_dir = storage_dir or _default_kb_storage_dir()
@@ -93,7 +93,7 @@ class OfficeKnowledgeBase:
     @_locked
     def import_document(self, file_path: str,
                         doc_type: str = "",
-                        tags: List[str] = None,
+                        tags: List[str] | None = None,
                         title: str = "") -> KnowledgeDocument:
         """
         导入规范文档
@@ -148,7 +148,7 @@ class OfficeKnowledgeBase:
     @_locked
     def add_text(self, text: str, title: str = "",
                  doc_type: str = "general",
-                 tags: List[str] = None) -> KnowledgeDocument:
+                 tags: List[str] | None = None) -> KnowledgeDocument:
         """
         直接添加文本规则
 
@@ -286,7 +286,7 @@ class OfficeKnowledgeBase:
 
     @_locked
     def update_text(self, doc_id: str, text: str, title: str = "",
-                    doc_type: str = "", tags: List[str] = None) -> Optional[KnowledgeDocument]:
+                    doc_type: str = "", tags: List[str] | None = None) -> Optional[KnowledgeDocument]:
         """按 doc_id 增量替换文档文本，旧 postings 立即失效。"""
         old_doc = self.documents.get(doc_id)
         if old_doc is None:
@@ -503,7 +503,7 @@ class OfficeKnowledgeBase:
         return "\n".join(lines)
 
 
-def create_default_kb(storage_dir: str = None) -> OfficeKnowledgeBase:
+def create_default_kb(storage_dir: str | None = None) -> OfficeKnowledgeBase:
     """
     创建带内置知识的默认知识库
 

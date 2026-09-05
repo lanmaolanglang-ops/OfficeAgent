@@ -141,8 +141,8 @@ def create_app() -> FastAPI:
 
     # 日志查询端点
     @app.get("/api/logs/executions", summary="查询执行日志", tags=["监控"])
-    def get_execution_logs(task_id: str = None, request_id: str = None,
-                           agent: str = None,
+    def get_execution_logs(task_id: str | None = None, request_id: str | None = None,
+                           agent: str | None = None,
                            limit: int = limit_query(),
                            session=Depends(get_db_session)):
         from office_agent.database.repository import ExecutionLogRepository
@@ -161,7 +161,7 @@ def create_app() -> FastAPI:
         })
 
     @app.get("/api/logs/models", summary="查询模型调用日志", tags=["监控"])
-    def get_model_logs(task_id: str = None, model: str = None,
+    def get_model_logs(task_id: str | None = None, model: str | None = None,
                        limit: int = limit_query(),
                        session=Depends(get_db_session)):
         from office_agent.database.repository import ModelCallLogRepository
@@ -179,7 +179,7 @@ def create_app() -> FastAPI:
 
     @app.get("/api/logs/errors", summary="查询错误日志", tags=["监控"])
     def get_error_logs(limit: int = limit_query(),
-                       resolved: bool = None,
+                       resolved: bool | None = None,
                        session=Depends(get_db_session)):
         from office_agent.database.repository import ErrorLogRepository
         repo = ErrorLogRepository(session)

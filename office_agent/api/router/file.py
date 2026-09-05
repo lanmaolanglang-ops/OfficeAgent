@@ -123,7 +123,7 @@ def init_multipart(filename: str,
                          expected_size: int = Query(..., ge=1),
                          expected_parts: int = Query(..., ge=1),
                          expected_sha256: str = Query(..., min_length=64, max_length=64),
-                         content_type: str = None, request: Request = None):
+                         content_type: str | None = None, request: Request = None):
     """
     初始化大文件分片上传
 
@@ -208,7 +208,7 @@ def abort_multipart(file_id: str, upload_id: str):
 
 
 @router.get("/trash", response_model=BaseResponse, summary="回收站文件列表")
-def list_deleted_files(file_type: str = None, owner_id: str = None,
+def list_deleted_files(file_type: str | None = None, owner_id: str | None = None,
                              page: int = page_query(),
                              page_size: int = page_size_query(default=50),
                              request: Request = None):
@@ -367,7 +367,7 @@ def delete_file(file_id: str, permanent: bool = Query(default=False)):
 
 
 @router.get("/", response_model=BaseResponse, summary="文件列表")
-def list_files(file_type: str = None, owner_id: str = None,
+def list_files(file_type: str | None = None, owner_id: str | None = None,
                      page: int = page_query(),
                      page_size: int = page_size_query(default=50),
                      request: Request = None):

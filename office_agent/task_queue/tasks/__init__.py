@@ -24,8 +24,8 @@ from .rag_tasks import (
 logger = logging.getLogger("office_agent.tasks.general")
 
 
-def process_general(instruction: str = "", input_path: str = None,
-                    options: dict = None, progress=None, _task_id: str = None,
+def process_general(instruction: str = "", input_path: str | None = None,
+                    options: dict | None = None, progress=None, _task_id: str | None = None,
                     **kwargs) -> dict:
     """
     通用任务处理 - 由 orchestrator 路由

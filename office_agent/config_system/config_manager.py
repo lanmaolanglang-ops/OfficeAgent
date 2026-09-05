@@ -82,7 +82,7 @@ class ConfigManager:
                     cls._instance = super().__new__(cls)
         return cls._instance
 
-    def __init__(self, session_factory=None, config_dir: str = None):
+    def __init__(self, session_factory=None, config_dir: str | None = None):
         if hasattr(self, "_initialized") and self._initialized:
             # 允许更新 session_factory
             if session_factory is not None:
@@ -283,7 +283,7 @@ class ConfigManager:
                     return versions[0]["content"]
         return ""
 
-    def get_prompt(self, name: str, version: str = None) -> Optional[Dict]:
+    def get_prompt(self, name: str, version: str | None = None) -> Optional[Dict]:
         """获取 Prompt"""
         versions = self._prompts.get(name, [])
         if not versions:
@@ -294,8 +294,8 @@ class ConfigManager:
         default = next((v for v in versions if v.get("is_default")), None)
         return default or versions[0]
 
-    def get_prompt_content(self, name: str, version: str = None,
-                           variables: Dict[str, str] = None) -> Optional[str]:
+    def get_prompt_content(self, name: str, version: str | None = None,
+                           variables: Dict[str, str] | None = None) -> Optional[str]:
         """获取 Prompt 内容并渲染变量"""
         prompt = self.get_prompt(name, version)
         if not prompt:
@@ -354,7 +354,7 @@ class ConfigManager:
         self._notify_listeners("agent", agent_name)
         return self._agents[agent_name]
 
-    def update_prompt(self, name: str, content: str, version: str = None,
+    def update_prompt(self, name: str, content: str, version: str | None = None,
                       set_default: bool = False) -> Dict:
         """更新/新增 Prompt 版本"""
         import uuid

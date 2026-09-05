@@ -11,14 +11,15 @@ from ...runtime_config import get_data_root
 logger = logging.getLogger("office_agent.tasks.file")
 
 
-def process_upload(file_path: str, file_id: str = None,
-                   file_type: str = None, options: dict = None,
-                   progress=None, _task_id: str = None, **kwargs) -> dict:
+def process_upload(file_path: str, file_id: str | None = None,
+                   file_type: str | None = None, options: dict | None = None,
+                   progress=None, _task_id: str | None = None, **kwargs) -> dict:
     """
     上传后处理任务（验证、提取元数据、生成预览等）
     """
     options = options or {}
-    result = {"status": "success", "file_id": file_id, "metadata": {}}
+    metadata: dict = {}
+    result = {"status": "success", "file_id": file_id, "metadata": metadata}
 
     try:
         if progress:
@@ -28,7 +29,7 @@ def process_upload(file_path: str, file_id: str = None,
             raise FileNotFoundError(f"文件不存在: {file_path}")
 
         file_size = os.path.getsize(file_path)
-        result["metadata"]["size"] = file_size
+        metadata["size"] = file_size
 
         if progress:
             progress.update(30, "提取文件元数据")
@@ -54,8 +55,8 @@ def process_upload(file_path: str, file_id: str = None,
             try:
                 from docx import Document
                 doc = Document(file_path)
-                result["metadata"]["paragraphs"] = len(doc.paragraphs)
-                result["metadata"]["tables"] = len(doc.tables)
+                metadata["paragraphs"] = len(doc.paragraphs)
+                metadata["tables"] = len(doc.tables)
             except Exception as exc:
                 logger.warning("提取 Word 元数据失败 %s: %s", file_path, exc)
 
@@ -64,7 +65,7 @@ def process_upload(file_path: str, file_id: str = None,
             try:
                 from pptx import Presentation
                 prs = Presentation(file_path)
-                result["metadata"]["slides"] = len(prs.slides)
+                metadata["slides"] = len(prs.slides)
             except Exception as exc:
                 logger.warning("提取 PPT 元数据失败 %s: %s", file_path, exc)
 
@@ -74,7 +75,7 @@ def process_upload(file_path: str, file_id: str = None,
                 import openpyxl
                 wb = openpyxl.load_workbook(file_path, read_only=True)
                 try:
-                    result["metadata"]["sheets"] = wb.sheetnames
+                    metadata["sheets"] = wb.sheetnames
                 finally:
                     # read_only 工作簿持有文件句柄，不 close 会泄漏到 GC
                     wb.close()
@@ -86,7 +87,7 @@ def process_upload(file_path: str, file_id: str = None,
             try:
                 import pymupdf
                 doc = pymupdf.open(file_path)
-                result["metadata"]["pages"] = len(doc)
+                metadata["pages"] = len(doc)
                 doc.close()
             except Exception as exc:
                 logger.warning("提取 PDF 元数据失败 %s: %s", file_path, exc)
@@ -109,8 +110,8 @@ def process_upload(file_path: str, file_id: str = None,
 
 
 def convert_format(input_path: str, output_path: str,
-                   target_format: str, options: dict = None,
-                   progress=None, _task_id: str = None, **kwargs) -> dict:
+                   target_format: str, options: dict | None = None,
+                   progress=None, _task_id: str | None = None, **kwargs) -> dict:
     """
     文件格式转换
     """
@@ -142,7 +143,7 @@ def convert_format(input_path: str, output_path: str,
     return result
 
 
-def cleanup_old_logs(days: int = None, progress=None, _task_id: str = None, **kwargs) -> dict:
+def cleanup_old_logs(days: int | None = None, progress=None, _task_id: str | None = None, **kwargs) -> dict:
     """清理超过保留期的执行/模型调用/错误日志（防 SQLite 无限膨胀）"""
     import os
     if not days or days <= 0:
@@ -171,7 +172,7 @@ def cleanup_old_logs(days: int = None, progress=None, _task_id: str = None, **kw
         return {"days": days, "error": sanitize_error(exc, "清理失败")}
 
 
-def cleanup_temp_files(progress=None, _task_id: str = None, **kwargs) -> dict:
+def cleanup_temp_files(progress=None, _task_id: str | None = None, **kwargs) -> dict:
     """
     清理临时文件（定时任务，每天执行）
 
@@ -248,7 +249,7 @@ def cleanup_temp_files(progress=None, _task_id: str = None, **kwargs) -> dict:
     return result
 
 
-def system_health_check(progress=None, _task_id: str = None, **kwargs) -> dict:
+def system_health_check(progress=None, _task_id: str | None = None, **kwargs) -> dict:
     """
     系统健康检查（定时任务，每小时执行）
     """

@@ -96,8 +96,8 @@ class ConfigValidator:
         return self.issues
 
     def validate_agents(self, agents: List[Dict[str, Any]],
-                        models: List[Dict[str, Any]] = None,
-                        prompts: List[Dict[str, Any]] = None) -> List[ValidationIssue]:
+                        models: List[Dict[str, Any]] | None = None,
+                        prompts: List[Dict[str, Any]] | None = None) -> List[ValidationIssue]:
         """校验 Agent 配置"""
         model_ids = {normalize_model_id(m.get("model_id")) for m in (models or [])}
 
@@ -153,7 +153,7 @@ class ConfigValidator:
         return self.issues
 
     def validate_workflows(self, workflows: List[Dict[str, Any]],
-                           agents: List[Dict[str, Any]] = None) -> List[ValidationIssue]:
+                           agents: List[Dict[str, Any]] | None = None) -> List[ValidationIssue]:
         """校验工作流配置"""
         agent_names = {a.get("agent_name") for a in (agents or [])}
 
@@ -198,8 +198,8 @@ def validate_all(global_config: GlobalConfig,
                  models: List[Dict],
                  agents: List[Dict],
                  prompts: List[Dict],
-                 skills: List[Dict] = None,
-                 workflows: List[Dict] = None,
+                 skills: List[Dict] | None = None,
+                 workflows: List[Dict] | None = None,
                  strict: bool = False) -> Tuple[bool, List[ValidationIssue]]:
     """
     校验所有配置

@@ -375,7 +375,7 @@ async def get_task(task_id: str):
 
 @router.get("/", response_model=BaseResponse[TaskListResponse],
             summary="任务列表")
-async def list_tasks(status: str = None, agent: str = None,
+async def list_tasks(status: str | None = None, agent: str | None = None,
                      page: int = page_query(),
                      page_size: int = page_size_query(),
                      request: Request = None):

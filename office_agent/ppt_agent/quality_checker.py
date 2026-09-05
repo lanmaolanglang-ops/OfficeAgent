@@ -181,7 +181,7 @@ class PPTQualityChecker:
         """
         self.template_config = template_config
 
-    def check(self, file_path: str, expected_slides: int = None) -> PPTQualityReport:
+    def check(self, file_path: str, expected_slides: int | None = None) -> PPTQualityReport:
         """
         检查已生成的 PPT 文件
 
@@ -285,7 +285,7 @@ class PPTQualityChecker:
         return report
 
     def check_outline(self, outline: PPTOutline,
-                      expected_slides: int = None) -> PPTQualityReport:
+                      expected_slides: int | None = None) -> PPTQualityReport:
         """
         生成前检查 PPTOutline（在生成 .pptx 之前发现问题）
 
@@ -695,13 +695,13 @@ class PPTQualityChecker:
 # 便捷函数
 # ==========================================
 
-def check_ppt(file_path: str, expected_slides: int = None) -> PPTQualityReport:
+def check_ppt(file_path: str, expected_slides: int | None = None) -> PPTQualityReport:
     """便捷函数：检查 PPT 质量"""
     return PPTQualityChecker().check(file_path, expected_slides)
 
 
 def check_and_fix_outline(outline: PPTOutline,
-                          expected_slides: int = None) -> Tuple[PPTOutline, PPTQualityReport]:
+                          expected_slides: int | None = None) -> Tuple[PPTOutline, PPTQualityReport]:
     """
     检查并自动修正 Outline
 

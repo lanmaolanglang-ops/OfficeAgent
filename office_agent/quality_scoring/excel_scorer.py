@@ -72,9 +72,9 @@ class ExcelQualityScorer:
     }
 
     def score(self, file_path: str,
-             expected_formulas: List[str] = None,
-             expected_charts: List[str] = None,
-             expected_sheets: List[str] = None) -> ExcelScoreResult:
+             expected_formulas: List[str] | None = None,
+             expected_charts: List[str] | None = None,
+             expected_sheets: List[str] | None = None) -> ExcelScoreResult:
         """
         评分Excel
 
@@ -278,7 +278,7 @@ class ExcelQualityScorer:
         return None
 
     def _score_formulas(self, analysis: Dict,
-                       expected: List[str] = None) -> float:
+                       expected: List[str] | None = None) -> float:
         """公式正确率评分"""
         score = 40  # 基础分
 
@@ -320,7 +320,7 @@ class ExcelQualityScorer:
         return min(100, score)
 
     def _score_analysis(self, analysis: Dict,
-                       expected_sheets: List[str] = None) -> float:
+                       expected_sheets: List[str] | None = None) -> float:
         """数据分析准确率评分"""
         score = 40
 
@@ -358,7 +358,7 @@ class ExcelQualityScorer:
         return min(100, score)
 
     def _score_charts(self, analysis: Dict,
-                     expected_charts: List[str] = None) -> float:
+                     expected_charts: List[str] | None = None) -> float:
         """图表合理性评分"""
         score = 30
 

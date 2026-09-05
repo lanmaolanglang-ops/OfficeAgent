@@ -1,6 +1,5 @@
 """技能 Repository"""
-from typing import Optional, List
-from sqlalchemy import select
+from typing import List
 from sqlalchemy.orm import Session
 
 from .base import BaseRepository
@@ -17,10 +16,10 @@ class SkillRepository(BaseRepository[Skill]):
     def get_by_category(self, category: str) -> List[Skill]:
         return self.find(category=category)
 
-    def create_skill(self, name: str, skill_type: str = None,
-                     description: str = None, prompt: str = None,
-                     version: str = "1.0.0", category: str = None,
-                     tags: str = None, config_json: str = None) -> Skill:
+    def create_skill(self, name: str, skill_type: str | None = None,
+                     description: str | None = None, prompt: str | None = None,
+                     version: str = "1.0.0", category: str | None = None,
+                     tags: str | None = None, config_json: str | None = None) -> Skill:
         skill = Skill(
             name=name, skill_type=skill_type, description=description,
             prompt=prompt, version=version, category=category,
