@@ -45,16 +45,16 @@ class ExecutionLogRepository(BaseRepository[ExecutionLog]):
         ).order_by(ExecutionLog.created_at.desc()).limit(limit)
         return list(self.session.execute(stmt).scalars().all())
 
-    def log_execution(self, agent: str, action: str = None,
-                      task_id: str = None, request_id: str = None,
-                      trace_id: str = None, span_id: str = None,
-                      parent_span_id: str = None,
-                      input_summary: str = None, output_summary: str = None,
+    def log_execution(self, agent: str, action: str | None = None,
+                      task_id: str | None = None, request_id: str | None = None,
+                      trace_id: str | None = None, span_id: str | None = None,
+                      parent_span_id: str | None = None,
+                      input_summary: str | None = None, output_summary: str | None = None,
                       prompt_tokens: int = 0, completion_tokens: int = 0,
                       total_tokens: int = 0, cost: float = 0.0,
                       duration_ms: int = 0, status: str = "success",
-                      error_message: str = None, metadata: dict = None,
-                      start_time: datetime = None, end_time: datetime = None) -> ExecutionLog:
+                      error_message: str | None = None, metadata: dict = None,
+                      start_time: datetime | None = None, end_time: datetime | None = None) -> ExecutionLog:
         started_at = start_time or datetime.now(timezone.utc)
         terminal_statuses = {"success", "error", "failed", "cancelled", "completed"}
         finished_at = end_time
@@ -143,14 +143,14 @@ class ModelCallLogRepository(BaseRepository[ModelCallLog]):
         ).order_by(ModelCallLog.created_at.desc()).limit(limit)
         return list(self.session.execute(stmt).scalars().all())
 
-    def log_model_call(self, model_name: str, provider: str = None,
-                       task_id: str = None, request_id: str = None,
-                       trace_id: str = None,
+    def log_model_call(self, model_name: str, provider: str | None = None,
+                       task_id: str | None = None, request_id: str | None = None,
+                       trace_id: str | None = None,
                        input_tokens: int = 0, output_tokens: int = 0,
                        latency_ms: int = 0, cost_estimate: float = 0.0,
-                       status: str = "success", error_message: str = None,
+                       status: str = "success", error_message: str | None = None,
                        retry_count: int = 0, is_retry: bool = False,
-                       extra: dict = None) -> ModelCallLog:
+                       extra: dict | None = None) -> ModelCallLog:
         log = ModelCallLog(
             model_name=model_name, provider=provider,
             task_id=task_id, request_id=request_id, trace_id=trace_id,
@@ -225,7 +225,7 @@ class ErrorLogRepository(BaseRepository[ErrorLog]):
     def __init__(self, session: Session):
         super().__init__(session, ErrorLog)
 
-    def get_recent(self, limit: int = 100, resolved: bool = None) -> List[ErrorLog]:
+    def get_recent(self, limit: int = 100, resolved: bool | None = None) -> List[ErrorLog]:
         limit = self._bounded_limit(limit)
         stmt = select(ErrorLog)
         if resolved is not None:
@@ -240,12 +240,12 @@ class ErrorLogRepository(BaseRepository[ErrorLog]):
         ).order_by(ErrorLog.created_at.desc()).limit(limit)
         return list(self.session.execute(stmt).scalars().all())
 
-    def log_error(self, error_type: str, error_message: str = None,
-                  stack_trace: str = None, request_id: str = None,
-                  task_id: str = None, trace_id: str = None,
-                  agent: str = None, user_id: str = None,
-                  level: str = "ERROR", logger_name: str = None,
-                  extra: dict = None) -> ErrorLog:
+    def log_error(self, error_type: str, error_message: str | None = None,
+                  stack_trace: str | None = None, request_id: str | None = None,
+                  task_id: str | None = None, trace_id: str | None = None,
+                  agent: str | None = None, user_id: str | None = None,
+                  level: str = "ERROR", logger_name: str | None = None,
+                  extra: dict | None = None) -> ErrorLog:
         log = ErrorLog(
             error_type=(error_type or "UnknownError")[:128],
             error_message=(error_message or "")[:2000],
@@ -257,7 +257,7 @@ class ErrorLogRepository(BaseRepository[ErrorLog]):
         )
         return self.create(log)
 
-    def mark_resolved(self, error_id: str, note: str = None):
+    def mark_resolved(self, error_id: str, note: str | None = None):
         self.update(error_id, {"resolved": True, "resolution_note": note})
 
     def get_stats(self, hours: int = 24) -> dict:

@@ -4,7 +4,7 @@
 所有存储实现（本地文件系统）必须实现此接口。
 """
 import abc
-from typing import BinaryIO, Optional, Iterator
+from typing import BinaryIO
 
 
 class StorageBackend(abc.ABC):
@@ -16,7 +16,7 @@ class StorageBackend(abc.ABC):
 
     @abc.abstractmethod
     def upload(self, storage_path: str, content: bytes,
-               content_type: str = None) -> dict:
+               content_type: str | None = None) -> dict:
         """
         上传文件
 
@@ -32,7 +32,7 @@ class StorageBackend(abc.ABC):
 
     @abc.abstractmethod
     def upload_fileobj(self, storage_path: str, fileobj: BinaryIO,
-                       content_type: str = None) -> dict:
+                       content_type: str | None = None) -> dict:
         """
         从文件对象上传（用于大文件/流式上传）
         """
@@ -111,7 +111,7 @@ class StorageBackend(abc.ABC):
 
     @abc.abstractmethod
     def init_multipart_upload(self, storage_path: str,
-                               content_type: str = None) -> str:
+                               content_type: str | None = None) -> str:
         """
         初始化分片上传
 

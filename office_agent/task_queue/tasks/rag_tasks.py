@@ -313,10 +313,10 @@ def _prepare_ann_index(embedder, repo, indexable_by_id):
     return index, "rebuilt"
 
 
-def index_document(file_path: str, title: str = None,
-                   category: str = None, source: str = None,
-                   options: dict = None, progress=None,
-                   _task_id: str = None, **kwargs) -> dict:
+def index_document(file_path: str, title: str | None = None,
+                   category: str | None = None, source: str | None = None,
+                   options: dict | None = None, progress=None,
+                   _task_id: str | None = None, **kwargs) -> dict:
     """解析、切片、向量化并持久化一个文档。"""
     result = {"status": "success", "chunks": 0, "title": title}
     try:
@@ -339,9 +339,9 @@ def index_document(file_path: str, title: str = None,
     return result
 
 
-def chunk_and_embed(text: str, title: str = None,
-                    category: str = None, progress=None,
-                    _task_id: str = None, **kwargs) -> dict:
+def chunk_and_embed(text: str, title: str | None = None,
+                    category: str | None = None, progress=None,
+                    _task_id: str | None = None, **kwargs) -> dict:
     """切片、向量化并持久化直接输入的文本。"""
     result = {"status": "success", "chunks": 0, "title": title}
     try:
@@ -358,10 +358,10 @@ def chunk_and_embed(text: str, title: str = None,
 
 
 def search_knowledge(query: str, top_k: int = 5,
-                     category: str = None, max_candidates: int = 10000,
+                     category: str | None = None, max_candidates: int = 10000,
                      progress=None,
-                     _task_id: str = None, *,
-                     min_ann_candidates: int = None, **kwargs) -> dict:
+                     _task_id: str | None = None, *,
+                     min_ann_candidates: int | None = None, **kwargs) -> dict:
     """使用持久化向量执行余弦检索，并回退到文本匹配。
 
     候选集达到 :data:`ANN_MIN_CANDIDATES` 时优先使用持久化 usearch ANN
@@ -498,7 +498,7 @@ def search_knowledge(query: str, top_k: int = 5,
     return result
 
 
-def refresh_knowledge_base(progress=None, _task_id: str = None, **kwargs) -> dict:
+def refresh_knowledge_base(progress=None, _task_id: str | None = None, **kwargs) -> dict:
     """幂等重算全部持久化向量。"""
     result = {"status": "success", "refreshed": 0, "total": 0}
     try:

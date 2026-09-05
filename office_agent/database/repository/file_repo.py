@@ -36,12 +36,12 @@ class FileRepository(BaseRepository[File]):
     def create_file(self, original_name: str, file_type: str,
                     extension: str, storage_path: str, file_size: int,
                     bucket: str = "uploads", storage_backend: str = "local",
-                    owner_id: str = None, file_hash: str = None,
-                    mime_type: str = None, metadata: dict = None,
-                    version: int = 1, parent_file_id: str = None,
-                    change_description: str = None,
-                    expires_at: datetime = None,
-                    file_id: str = None) -> File:
+                    owner_id: str | None = None, file_hash: str | None = None,
+                    mime_type: str | None = None, metadata: dict | None = None,
+                    version: int = 1, parent_file_id: str | None = None,
+                    change_description: str | None = None,
+                    expires_at: datetime | None = None,
+                    file_id: str | None = None) -> File:
         # 只写权威字段：original_name / storage_path。
         # legacy 兼容列 filename / file_path 由 models/file.py 的
         # before_insert delegate 自动派生，任何调用方不得独立写入。
@@ -174,8 +174,8 @@ class FileVersionRepository(BaseRepository[FileVersion]):
 
     def create_version(self, parent_file_id: str, version_number: int,
                        storage_path: str, file_size: int,
-                       file_hash: str = None, change_description: str = None,
-                       changed_by: str = None, metadata: dict = None) -> FileVersion:
+                       file_hash: str | None = None, change_description: str | None = None,
+                       changed_by: str | None = None, metadata: dict | None = None) -> FileVersion:
         v = FileVersion(
             parent_file_id=parent_file_id,
             version_number=version_number,

@@ -40,8 +40,8 @@ def normalize_task_status(status: str | TaskStatus) -> str:
 class Task:
     """任务对象"""
     def __init__(self, task_type: str, instruction: str,
-                 agent: str = "", file_ids: List[str] = None,
-                 options: Dict = None):
+                 agent: str = "", file_ids: List[str] | None = None,
+                 options: Dict | None = None):
         self.task_id = f"task_{uuid.uuid4().hex[:12]}"
         self.task_type = task_type
         self.instruction = instruction
@@ -99,8 +99,8 @@ class Task:
         self.started_at = datetime.now(timezone.utc).isoformat()
         self._start_time = time.time()
 
-    def update(self, progress: int = None, step: str = None,
-               status: str = None):
+    def update(self, progress: int | None = None, step: str | None = None,
+               status: str | None = None):
         if progress is not None:
             self.progress = min(100, max(0, progress))
         if step is not None:
@@ -114,8 +114,8 @@ class Task:
         if status is not None:
             self.status = normalize_task_status(status)
 
-    def complete(self, result: Dict = None, output_files: List[str] = None,
-                 quality_score: float = None):
+    def complete(self, result: Dict | None = None, output_files: List[str] | None = None,
+                 quality_score: float | None = None):
         self.status = TaskStatus.SUCCESS.value
         self.progress = 100
         self.current_step = "完成"
@@ -154,7 +154,7 @@ class TaskManager:
     def get_task(self, task_id: str) -> Optional[Task]:
         return self.tasks.get(task_id)
 
-    def list_tasks(self, status: str = None, agent: str = None,
+    def list_tasks(self, status: str | None = None, agent: str | None = None,
                    page: int = 1, page_size: int = 20) -> tuple:
         # 与 API 输入契约（api/core/pagination.py）同语义的防御性校验
         from .pagination import validate_page
@@ -178,10 +178,10 @@ class TaskManager:
                        TaskStatus.RUNNING.value,
                    })
 
-    def create_memory_task(self, task_id: str = None, task_type: str = "unknown",
+    def create_memory_task(self, task_id: str | None = None, task_type: str = "unknown",
                            instruction: str = "", agent: str = "",
-                           file_ids: List[str] = None, options: Dict = None,
-                           user_id: str = None, status: str = None) -> Task:
+                           file_ids: List[str] | None = None, options: Dict | None = None,
+                           user_id: str | None = None, status: str | None = None) -> Task:
         """Create or refresh a process-local degraded task snapshot.
 
         This is deliberately not a general-purpose task factory. It is only
@@ -232,8 +232,8 @@ class TaskManager:
             task.completed_at = datetime.now(timezone.utc).isoformat()
             return True
 
-    def snapshot_tasks(self, status: str = None, agent: str = None,
-                       user_id: str = None) -> List[Task]:
+    def snapshot_tasks(self, status: str | None = None, agent: str | None = None,
+                       user_id: str | None = None) -> List[Task]:
         """Return filtered degraded snapshots without pagination."""
         with self._lock:
             tasks = list(self.tasks.values())
@@ -248,7 +248,7 @@ class TaskManager:
         return tasks
 
 
-def normalize_db_failure_category(exc: BaseException) -> str:
+def normalize_db_failure_category(exc: BaseException | None) -> str:
     """Return a stable, non-sensitive category for DB fallback logs."""
     if isinstance(exc, OperationalError):
         return "operational_error"
@@ -259,8 +259,8 @@ def normalize_db_failure_category(exc: BaseException) -> str:
     return type(exc).__name__
 
 
-def log_db_fallback(operation: str, task_id: str = None,
-                    exc: BaseException = None) -> None:
+def log_db_fallback(operation: str, task_id: str | None = None,
+                    exc: BaseException | None = None) -> None:
     """Emit the one structured fallback log used by task management paths."""
     logger.warning(
         "TaskManager database fallback",

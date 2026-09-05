@@ -38,13 +38,13 @@ logger = logging.getLogger("office_agent.storage")
 class StorageConfig:
     """存储配置"""
     def __init__(self, storage_type: str = "local",
-                 local_path: str = None,
-                 minio_endpoint: str = None, minio_access_key: str = None,
-                 minio_secret_key: str = None, minio_bucket: str = "office-agent",
+                 local_path: str | None = None,
+                 minio_endpoint: str | None = None, minio_access_key: str | None = None,
+                 minio_secret_key: str | None = None, minio_bucket: str = "office-agent",
                  minio_secure: bool = False,
-                 s3_bucket: str = None, s3_access_key: str = None,
-                 s3_secret_key: str = None, s3_region: str = None,
-                 s3_endpoint_url: str = None,
+                 s3_bucket: str | None = None, s3_access_key: str | None = None,
+                 s3_secret_key: str | None = None, s3_region: str | None = None,
+                 s3_endpoint_url: str | None = None,
                  max_file_size: int = DEFAULT_MAX_SIZE,
                  temp_expire_hours: int = 24,
                  max_versions: int = 10):
@@ -98,12 +98,12 @@ class FileInfo:
     """文件信息（业务对象）"""
     def __init__(self, file_id: str, original_name: str, storage_path: str,
                  file_type: str, extension: str, mime_type: str,
-                 size: int, file_hash: str = None, bucket: str = "uploads",
+                 size: int, file_hash: str | None = None, bucket: str = "uploads",
                  version: int = 1, status: str = "ready",
-                 owner_id: str = None, parent_file_id: str = None,
-                 change_description: str = None,
-                 created_at: datetime = None, deleted_at: datetime = None,
-                 metadata: dict = None):
+                 owner_id: str | None = None, parent_file_id: str | None = None,
+                 change_description: str | None = None,
+                 created_at: datetime | None = None, deleted_at: datetime | None = None,
+                 metadata: dict | None = None):
         self.file_id = file_id
         self.original_name = original_name
         self.storage_path = storage_path
@@ -150,7 +150,7 @@ class StorageService:
     Agent 和 API 的统一文件访问入口。
     """
 
-    def __init__(self, config: StorageConfig = None, backend: StorageBackend = None):
+    def __init__(self, config: StorageConfig | None = None, backend: StorageBackend | None = None):
         self.config = config or StorageConfig.from_env()
         self.backend = backend or create_storage_backend(self.config)
         self._version_locks: Dict[str, tuple[threading.RLock, int]] = {}
@@ -187,8 +187,8 @@ class StorageService:
     # ===== 上传 =====
 
     def upload(self, filename: str, content: bytes,
-               owner_id: str = None, bucket: str = BUCKET_UPLOADS,
-               metadata: dict = None) -> FileInfo:
+               owner_id: str | None = None, bucket: str = BUCKET_UPLOADS,
+               metadata: dict | None = None) -> FileInfo:
         """
         上传文件
 
@@ -263,8 +263,8 @@ class StorageService:
             session.close()
 
     def upload_fileobj(self, filename: str, fileobj: BinaryIO,
-                       owner_id: str = None, bucket: str = BUCKET_UPLOADS,
-                       metadata: dict = None) -> FileInfo:
+                       owner_id: str | None = None, bucket: str = BUCKET_UPLOADS,
+                       metadata: dict | None = None) -> FileInfo:
         """从可 seek 文件对象流式校验并上传，避免复制整份内容到内存。"""
         info = validate_fileobj(filename, fileobj, self.config.max_file_size)
         file_id = generate_file_id()
@@ -320,9 +320,9 @@ class StorageService:
         finally:
             session.close()
 
-    def save_output(self, source_path: str, original_name: str = None,
-                    owner_id: str = None, change_description: str = None,
-                    parent_file_id: str = None) -> FileInfo:
+    def save_output(self, source_path: str, original_name: str | None = None,
+                    owner_id: str | None = None, change_description: str | None = None,
+                    parent_file_id: str | None = None) -> FileInfo:
         """
         保存 Agent 生成的输出文件
 
@@ -358,8 +358,8 @@ class StorageService:
             metadata={"source": "agent_output", "change_description": change_description},
         )
 
-    def save_new_output(self, source_path: str, original_name: str = None,
-                        owner_id: str = None, change_description: str = None) -> FileInfo:
+    def save_new_output(self, source_path: str, original_name: str | None = None,
+                        owner_id: str | None = None, change_description: str | None = None) -> FileInfo:
         """
         保存 Agent 生成的独立输出文件（不发生版本覆盖）。
 
@@ -554,8 +554,8 @@ class StorageService:
         finally:
             session.close()
 
-    def list_files(self, owner_id: str = None, file_type: str = None,
-                   bucket: str = None, offset: int = 0, limit: int = 100) -> List[FileInfo]:
+    def list_files(self, owner_id: str | None = None, file_type: str | None = None,
+                   bucket: str | None = None, offset: int = 0, limit: int = 100) -> List[FileInfo]:
         """列出文件"""
         from sqlalchemy import select, and_
         session = self._get_session()
@@ -584,8 +584,8 @@ class StorageService:
         finally:
             session.close()
 
-    def count_files(self, owner_id: str = None, file_type: str = None,
-                    bucket: str = None) -> int:
+    def count_files(self, owner_id: str | None = None, file_type: str | None = None,
+                    bucket: str | None = None) -> int:
         """统计与 ``list_files`` 相同筛选条件下的未删除文件数。"""
         from sqlalchemy import select, and_, func
         session = self._get_session()
@@ -603,7 +603,7 @@ class StorageService:
         finally:
             session.close()
 
-    def list_deleted_files(self, owner_id: str = None, file_type: str = None,
+    def list_deleted_files(self, owner_id: str | None = None, file_type: str | None = None,
                            offset: int = 0, limit: int = 100) -> List[FileInfo]:
         """列出仍可恢复的软删除文件。永久删除中的 tombstone 不对用户展示。"""
         from sqlalchemy import select, and_
@@ -632,8 +632,8 @@ class StorageService:
         finally:
             session.close()
 
-    def count_deleted_files(self, owner_id: str = None,
-                            file_type: str = None) -> int:
+    def count_deleted_files(self, owner_id: str | None = None,
+                            file_type: str | None = None) -> int:
         """统计仍可恢复的软删除文件。"""
         from sqlalchemy import select, and_, func
         session = self._get_session()
@@ -739,7 +739,7 @@ class StorageService:
     # ===== 版本管理 =====
 
     def create_version(self, parent_file_id: str, content: bytes,
-                       change_description: str = None,
+                       change_description: str | None = None,
                        changed_by: str = "agent") -> FileInfo:
         with self._version_lock(parent_file_id):
             return self._create_version_unlocked(
@@ -747,7 +747,7 @@ class StorageService:
             )
 
     def _create_version_unlocked(self, parent_file_id: str, content: bytes,
-                                 change_description: str = None,
+                                 change_description: str | None = None,
                                  changed_by: str = "agent") -> FileInfo:
         """
         创建文件新版本
@@ -923,11 +923,11 @@ class StorageService:
 
     # ===== 分片上传 =====
 
-    def init_multipart_upload(self, filename: str, owner_id: str = None,
-                               content_type: str = None,
-                               expected_size: int = None,
-                               expected_parts: int = None,
-                               expected_sha256: str = None) -> dict:
+    def init_multipart_upload(self, filename: str, owner_id: str | None = None,
+                               content_type: str | None = None,
+                               expected_size: int | None = None,
+                               expected_parts: int | None = None,
+                               expected_sha256: str | None = None) -> dict:
         """初始化分片上传"""
         ext = validate_extension(filename)
         if not isinstance(expected_size, int) or expected_size < 1:
@@ -1131,7 +1131,7 @@ class StorageService:
 
     # ===== 生命周期管理 =====
 
-    def cleanup_temp_files(self, hours: int = None) -> dict:
+    def cleanup_temp_files(self, hours: int | None = None) -> dict:
         """清理过期临时文件"""
         if not hours or hours <= 0:
             hours = self.config.temp_expire_hours
@@ -1157,7 +1157,7 @@ class StorageService:
         finally:
             session.close()
 
-    def archive_old_versions(self, keep: int = None) -> dict:
+    def archive_old_versions(self, keep: int | None = None) -> dict:
         """归档旧版本（保留最近 N 个）"""
         keep = keep or self.config.max_versions
         if keep < 1:

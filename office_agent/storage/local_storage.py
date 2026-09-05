@@ -6,7 +6,7 @@ import uuid
 import shutil
 import hashlib
 from datetime import datetime
-from typing import BinaryIO, Optional
+from typing import BinaryIO
 from pathlib import Path
 
 from .storage_backend import StorageBackend
@@ -76,7 +76,7 @@ class LocalStorage(StorageBackend):
             raise
 
     def upload(self, storage_path: str, content: bytes,
-               content_type: str = None) -> dict:
+               content_type: str | None = None) -> dict:
         full_path = self._full_path(storage_path)
         self._atomic_write(full_path, lambda f: f.write(content))
         return {
@@ -86,7 +86,7 @@ class LocalStorage(StorageBackend):
         }
 
     def upload_fileobj(self, storage_path: str, fileobj: BinaryIO,
-                       content_type: str = None) -> dict:
+                       content_type: str | None = None) -> dict:
         full_path = self._full_path(storage_path)
         size = 0
         md5 = hashlib.md5()
@@ -200,7 +200,7 @@ class LocalStorage(StorageBackend):
         return os.path.join(self.root_path, "multipart", upload_id)
 
     def init_multipart_upload(self, storage_path: str,
-                               content_type: str = None) -> str:
+                               content_type: str | None = None) -> str:
         import uuid
         upload_id = f"mp_{uuid.uuid4().hex[:16]}"
         mp_dir = self._multipart_dir(upload_id)

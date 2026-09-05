@@ -237,7 +237,7 @@ class FormulaGenerator:
         gen.apply_to_file("data.xlsx", "计算销售合计和平均", output_path="result.xlsx")
     """
 
-    def __init__(self, profile: DataProfile = None):
+    def __init__(self, profile: DataProfile | None = None):
         self.profile = profile
 
     def set_profile(self, profile: DataProfile):
@@ -248,7 +248,7 @@ class FormulaGenerator:
     # ==========================================
 
     def generate_from_text(self, text: str,
-                           sheet_name: str = None,
+                           sheet_name: str | None = None,
                            data_start_row: int = 2) -> List[FormulaSpec]:
         """
         从自然语言生成公式列表
@@ -705,9 +705,9 @@ class FormulaGenerator:
     # ==========================================
 
     def generate_summary_row(self, sheet: SheetInfo,
-                              sum_cols: List[int] = None,
+                              sum_cols: List[int] | None = None,
                               data_start_row: int = 2,
-                              summary_row: int = None) -> List[FormulaSpec]:
+                              summary_row: int | None = None) -> List[FormulaSpec]:
         """生成汇总行（合计/平均/最大/最小）"""
         formulas = []
         end_row = data_start_row + sheet.row_count - 1
@@ -815,8 +815,8 @@ class FormulaGenerator:
         return count
 
     def apply_to_file(self, file_path: str, text: str,
-                       sheet_name: str = None,
-                       output_path: str = None) -> Tuple[str, List[FormulaSpec]]:
+                       sheet_name: str | None = None,
+                       output_path: str | None = None) -> Tuple[str, List[FormulaSpec]]:
         """
         从自然语言生成公式并写入 Excel 文件
 
@@ -889,7 +889,7 @@ class FormulaGenerator:
         return detected if detected else ["sum", "average"]
 
     def _detect_target_columns(self, text: str,
-                                sheet: SheetInfo = None) -> List[ColumnInfo]:
+                                sheet: SheetInfo | None = None) -> List[ColumnInfo]:
         """识别目标列（要计算的列）"""
         if not sheet:
             return []
@@ -920,7 +920,7 @@ class FormulaGenerator:
         return unique
 
     def _detect_condition_column(self, text: str,
-                                  sheet: SheetInfo = None) -> Optional[ColumnInfo]:
+                                  sheet: SheetInfo | None = None) -> Optional[ColumnInfo]:
         """识别条件列（按XX统计）"""
         if not sheet:
             return None
@@ -944,7 +944,7 @@ class FormulaGenerator:
         return None
 
     def _detect_lookup_info(self, text: str,
-                             sheet: SheetInfo = None) -> dict:
+                             sheet: SheetInfo | None = None) -> dict:
         """识别查找相关信息"""
         if not sheet:
             return {}
@@ -1051,16 +1051,16 @@ class FormulaGenerator:
 # 便捷函数
 # ==========================================
 
-def generate_formulas(text: str, profile: DataProfile = None,
-                      sheet_name: str = None) -> List[FormulaSpec]:
+def generate_formulas(text: str, profile: DataProfile | None = None,
+                      sheet_name: str | None = None) -> List[FormulaSpec]:
     """便捷函数：从自然语言生成公式"""
     gen = FormulaGenerator(profile)
     return gen.generate_from_text(text, sheet_name)
 
 
 def apply_formulas(file_path: str, text: str,
-                    sheet_name: str = None,
-                    output_path: str = None) -> Tuple[str, List[FormulaSpec]]:
+                    sheet_name: str | None = None,
+                    output_path: str | None = None) -> Tuple[str, List[FormulaSpec]]:
     """便捷函数：生成公式并写入文件"""
     gen = FormulaGenerator()
     return gen.apply_to_file(file_path, text, sheet_name, output_path)

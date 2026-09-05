@@ -39,7 +39,7 @@ class TaskProgress:
     """任务进度回调"""
 
     def __init__(self, task_id: str, session_factory=None,
-                 cancel_event: threading.Event = None):
+                 cancel_event: threading.Event | None = None):
         self.task_id = task_id
         self.session_factory = session_factory
         self.cancel_event = cancel_event
@@ -51,7 +51,7 @@ class TaskProgress:
         if self.cancel_event is not None and self.cancel_event.is_set():
             raise TaskCancelledError(f"任务已取消: {self.task_id}")
 
-    def update(self, progress: int, step: str = None):
+    def update(self, progress: int, step: str | None = None):
         """更新进度到数据库"""
         self.check_cancelled()
         progress = max(0, min(100, int(progress)))
@@ -99,7 +99,7 @@ class LocalWorker:
     支持优先级（通过不同的线程池）、重试、状态持久化。
     """
 
-    def __init__(self, max_workers: int = None):
+    def __init__(self, max_workers: int | None = None):
         # 三个优先级的线程池，并发数取自 TASK_QUEUES 配置（默认 high=2/normal=4/low=2）。
         # 使用 LeaseThreadPool：任务线程进入 failover 正常退避等可中断长等待时
         # 通过租约 park 让出并发额度（有界替补线程接管排队任务），唤醒后额度回落；
@@ -145,8 +145,8 @@ class LocalWorker:
         self._tasks[name] = func
         logger.debug(f"注册任务: {name}")
 
-    def submit(self, task_name: str, args: tuple = (), kwargs: dict = None,
-               priority: str = "normal", task_id: str = None) -> str:
+    def submit(self, task_name: str, args: tuple = (), kwargs: dict | None = None,
+               priority: str = "normal", task_id: str | None = None) -> str:
         """提交任务"""
         with self._lock:
             task_exists = task_name in self._tasks
@@ -334,9 +334,9 @@ class LocalWorker:
     # 终态集合：一旦写入，不允许被软超时/取消等回调改写
     _TERMINAL_STATUSES = ("success", "failed", "cancelled")
 
-    def _update_status(self, task_id: str, status: str, progress: int = None,
-                       step: str = None, error: str = None,
-                       duration_ms: int = None):
+    def _update_status(self, task_id: str, status: str, progress: int | None = None,
+                       step: str | None = None, error: str | None = None,
+                       duration_ms: int | None = None):
         """更新任务状态到数据库"""
         if not self._session_factory:
             self._fallback_update_status(
@@ -426,9 +426,9 @@ class LocalWorker:
         }
 
     def _fallback_update_status(self, task_id: str, status: str,
-                                progress: int = None, step: str = None,
-                                error: str = None, duration_ms: int = None,
-                                snapshot: dict = None):
+                                progress: int | None = None, step: str | None = None,
+                                error: str | None = None, duration_ms: int | None = None,
+                                snapshot: dict | None = None):
         """Maintain the process-local degraded snapshot when DB writes fail."""
         from ..api.core.task_manager import task_manager
 
@@ -467,7 +467,7 @@ class LocalWorker:
 
     @staticmethod
     def _audit_task_transition(task_id: str, status: str, task,
-                               error: str = None, duration_ms: int = None):
+                               error: str | None = None, duration_ms: int | None = None):
         """任务终态安全审计；审计自身失败不得改变业务结果（fail-open）。"""
         try:
             from ..security.audit import get_audit_logger
@@ -538,7 +538,7 @@ class LocalWorker:
         finally:
             registry.gauge("tasks_active").dec(task_type=task_name)
 
-    def _complete(self, task_id: str, result: Any, duration_ms: int = None):
+    def _complete(self, task_id: str, result: Any, duration_ms: int | None = None):
         """任务完成"""
         result_json = None
         output_file_ids = None
@@ -645,8 +645,8 @@ class LocalWorker:
                     session.close()
 
     def _fallback_complete(self, task_id: str, result: Any,
-                           output_file_ids: list, quality_score: float = None,
-                           duration_ms: int = None, snapshot: dict = None):
+                           output_file_ids: list, quality_score: float | None = None,
+                           duration_ms: int | None = None, snapshot: dict | None = None):
         """Keep a completed artifact/result in the degraded memory snapshot."""
         from ..api.core.task_manager import task_manager
 
@@ -753,7 +753,7 @@ class LocalWorker:
                     instruction=instruction)
         return child_id
 
-    def _fail(self, task_id: str, error: str, duration_ms: int = None):
+    def _fail(self, task_id: str, error: str, duration_ms: int | None = None):
         """任务失败"""
         self._update_status(task_id, "failed", progress=100,
                             step="处理失败", error=error,

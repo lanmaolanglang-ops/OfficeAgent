@@ -169,7 +169,7 @@ class ExcelService:
     # 工作表操作
     # ==========================================
 
-    def get_sheet(self, name: str = None):
+    def get_sheet(self, name: str | None = None):
         """获取工作表"""
         if name is None:
             return self.wb.active
@@ -177,7 +177,7 @@ class ExcelService:
             return self.wb[name]
         return None
 
-    def create_sheet(self, name: str, index: int = None):
+    def create_sheet(self, name: str, index: int | None = None):
         """创建新工作表"""
         if name in self.wb.sheetnames:
             return self.wb[name]
@@ -260,9 +260,9 @@ class ExcelService:
         data = [list(df.columns)] + df.values.tolist()
         self.write_data(sheet_name, data, start_row, start_col, has_header=True)
 
-    def read_data(self, sheet_name: str = None,
+    def read_data(self, sheet_name: str | None = None,
                   start_row: int = 1, start_col: int = 1,
-                  max_rows: int = None, max_cols: int = None) -> list:
+                  max_rows: int | None = None, max_cols: int | None = None) -> list:
         """读取数据为二维列表"""
         ws = self.get_sheet(sheet_name)
         if ws is None:
@@ -279,7 +279,7 @@ class ExcelService:
             rows.append(row_data)
         return rows
 
-    def read_dataframe(self, sheet_name: str = None) -> pd.DataFrame:
+    def read_dataframe(self, sheet_name: str | None = None) -> pd.DataFrame:
         """读取为 pandas DataFrame"""
         ws = self.get_sheet(sheet_name)
         if ws is None:
@@ -306,7 +306,7 @@ class ExcelService:
     # 公式
     # ==========================================
 
-    def add_formula(self, spec: FormulaSpec, sheet_name: str = None):
+    def add_formula(self, spec: FormulaSpec, sheet_name: str | None = None):
         """写入公式"""
         ws = self.get_sheet(sheet_name)
         if ws is None or not spec.target_cell:
@@ -340,7 +340,7 @@ class ExcelService:
         cell.font = Font(name="微软雅黑", size=10, bold=True, color="1F4E79")
         self.changes.append(f"添加公式 {spec.target_cell}: {formula}")
 
-    def add_formulas(self, specs: List[FormulaSpec], sheet_name: str = None):
+    def add_formulas(self, specs: List[FormulaSpec], sheet_name: str | None = None):
         """批量添加公式"""
         for spec in specs:
             self.add_formula(spec, sheet_name)
@@ -349,7 +349,7 @@ class ExcelService:
     # 格式化
     # ==========================================
 
-    def apply_format(self, spec: FormatSpec, sheet_name: str = None):
+    def apply_format(self, spec: FormatSpec, sheet_name: str | None = None):
         """应用格式"""
         ws = self.get_sheet(sheet_name)
         if ws is None or not spec.range_str:
@@ -418,7 +418,7 @@ class ExcelService:
             alignment="center", border=True,
         ), sheet_name)
 
-    def auto_width(self, sheet_name: str = None):
+    def auto_width(self, sheet_name: str | None = None):
         """自动调整列宽"""
         ws = self.get_sheet(sheet_name)
         if ws is None:
@@ -439,7 +439,7 @@ class ExcelService:
             ws.column_dimensions[col_letter].width = min(max(max_len * 0.8 + 2, 8), 50)
 
     def set_column_width(self, col_letter: str, width: float,
-                         sheet_name: str = None):
+                         sheet_name: str | None = None):
         """设置单列列宽"""
         ws = self.get_sheet(sheet_name)
         if ws is None or not col_letter:
@@ -449,14 +449,14 @@ class ExcelService:
         except (TypeError, ValueError):
             pass
 
-    def freeze_header(self, sheet_name: str = None):
+    def freeze_header(self, sheet_name: str | None = None):
         """冻结首行"""
         ws = self.get_sheet(sheet_name)
         if ws:
             ws.freeze_panes = "A2"
             self.changes.append(f"冻结首行: {ws.title}")
 
-    def add_filter(self, sheet_name: str = None, range_str: str = ""):
+    def add_filter(self, sheet_name: str | None = None, range_str: str = ""):
         """添加自动筛选"""
         ws = self.get_sheet(sheet_name)
         if ws is None:
@@ -473,12 +473,12 @@ class ExcelService:
     # 图表
     # ==========================================
 
-    def add_chart(self, spec: ChartSpec, sheet_name: str = None):
+    def add_chart(self, spec: ChartSpec, sheet_name: str | None = None):
         """添加图表，并完整应用 ChartSpec 的类型、堆积、图例和组合图字段。"""
         from .chart_generator import ChartGenerator
         ChartGenerator()._render_chart(self, spec, sheet_name)
 
-    def add_charts(self, specs: List[ChartSpec], sheet_name: str = None):
+    def add_charts(self, specs: List[ChartSpec], sheet_name: str | None = None):
         """批量添加图表"""
         for spec in specs:
             self.add_chart(spec, sheet_name)
@@ -569,7 +569,7 @@ class ExcelService:
         self.changes.append(f"排序: {sheet_name} 第{sort_col+1}列 {'升序' if ascending else '降序'}")
 
     def add_summary_row(self, sheet_name: str, label: str = "合计",
-                        sum_cols: List[int] = None, data_start_row: int | None = None):
+                        sum_cols: List[int] | None = None, data_start_row: int | None = None):
         """添加汇总行"""
         ws = self.get_sheet(sheet_name)
         if ws is None:
@@ -635,14 +635,14 @@ class ExcelService:
     # 工具方法
     # ==========================================
 
-    def get_dimensions(self, sheet_name: str = None) -> Tuple[int, int]:
+    def get_dimensions(self, sheet_name: str | None = None) -> Tuple[int, int]:
         """获取数据维度 (行数, 列数)"""
         ws = self.get_sheet(sheet_name)
         if ws is None:
             return (0, 0)
         return (ws.max_row, ws.max_column)
 
-    def get_preview(self, sheet_name: str = None, rows: int = 10) -> dict:
+    def get_preview(self, sheet_name: str | None = None, rows: int = 10) -> dict:
         """获取数据预览"""
         ws = self.get_sheet(sheet_name)
         if ws is None:

@@ -128,7 +128,7 @@ class ChartGenerator:
         spec = gen.create_chart("line", title="趋势", data_range="A1:B13")
     """
 
-    def __init__(self, profile: DataProfile = None):
+    def __init__(self, profile: DataProfile | None = None):
         self.profile = profile
         self.palette = DEFAULT_PALETTE
 
@@ -140,8 +140,8 @@ class ChartGenerator:
     # ==========================================
 
     def generate_to_file(self, file_path: str, text: str = "",
-                         output_path: str = None,
-                         sheet_name: str = None) -> Tuple[str, List[ChartSpec]]:
+                         output_path: str | None = None,
+                         sheet_name: str | None = None) -> Tuple[str, List[ChartSpec]]:
         """从自然语言生成图表并写入 Excel"""
         from .excel_service import ExcelService, _derive_output_path
 
@@ -180,8 +180,8 @@ class ChartGenerator:
         return output_path, specs
 
     def auto_generate_to_file(self, file_path: str,
-                               output_path: str = None,
-                               sheet_name: str = None) -> Tuple[str, List[ChartSpec]]:
+                               output_path: str | None = None,
+                               sheet_name: str | None = None) -> Tuple[str, List[ChartSpec]]:
         """自动分析数据并生成推荐图表"""
         return self.generate_to_file(file_path, "", output_path, sheet_name)
 
@@ -190,7 +190,7 @@ class ChartGenerator:
     # ==========================================
 
     def generate_from_text(self, text: str,
-                           sheet_name: str = None,
+                           sheet_name: str | None = None,
                            chart_type: str = "") -> List[ChartSpec]:
         """从自然语言生成图表规格；chart_type 显式给定时优先"""
         charts = []
@@ -277,7 +277,7 @@ class ChartGenerator:
     # 智能推荐图表
     # ==========================================
 
-    def auto_charts(self, sheet_name: str = None) -> List[ChartSpec]:
+    def auto_charts(self, sheet_name: str | None = None) -> List[ChartSpec]:
         """根据数据特征自动推荐图表"""
         charts = []
         sheet = self.profile.get_sheet(sheet_name) if self.profile else None
@@ -408,7 +408,7 @@ class ChartGenerator:
     # 图表渲染（openpyxl）
     # ==========================================
 
-    def _render_chart(self, service, spec: ChartSpec, sheet_name: str = None):
+    def _render_chart(self, service, spec: ChartSpec, sheet_name: str | None = None):
         """将 ChartSpec 渲染到 Excel"""
         ws = service.get_sheet(sheet_name)
         if ws is None or not spec.data_range or not self._range_has_data_rows(spec.data_range):
@@ -752,7 +752,7 @@ class ChartGenerator:
             return matches[0][1]
         return "column"
 
-    def _detect_columns(self, text: str, sheet: SheetInfo = None) -> List[ColumnInfo]:
+    def _detect_columns(self, text: str, sheet: SheetInfo | None = None) -> List[ColumnInfo]:
         """识别目标列"""
         if not sheet:
             return []
@@ -781,7 +781,7 @@ class ChartGenerator:
                 return col
         return None
 
-    def _is_time_like(self, col: ColumnInfo = None) -> bool:
+    def _is_time_like(self, col: ColumnInfo | None = None) -> bool:
         """判断列是否像时间序列"""
         if col is None:
             return False
@@ -818,15 +818,15 @@ class ChartGenerator:
 # 便捷函数
 # ==========================================
 
-def generate_charts(text: str, profile: DataProfile = None,
-                    sheet_name: str = None) -> List[ChartSpec]:
+def generate_charts(text: str, profile: DataProfile | None = None,
+                    sheet_name: str | None = None) -> List[ChartSpec]:
     """从自然语言生成图表规格"""
     gen = ChartGenerator(profile)
     return gen.generate_from_text(text, sheet_name)
 
 
 def auto_charts_from_file(file_path: str,
-                          sheet_name: str = None) -> List[ChartSpec]:
+                          sheet_name: str | None = None) -> List[ChartSpec]:
     """从文件自动推荐图表"""
     from .data_analyzer import DataAnalyzer
     gen = ChartGenerator()
@@ -835,8 +835,8 @@ def auto_charts_from_file(file_path: str,
 
 
 def generate_charts_to_file(file_path: str, text: str = "",
-                            output_path: str = None,
-                            sheet_name: str = None) -> Tuple[str, List[ChartSpec]]:
+                            output_path: str | None = None,
+                            sheet_name: str | None = None) -> Tuple[str, List[ChartSpec]]:
     """生成图表并写入 Excel"""
     gen = ChartGenerator()
     return gen.generate_to_file(file_path, text, output_path, sheet_name)

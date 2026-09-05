@@ -34,10 +34,10 @@ class TaskRepository(BaseRepository[Task]):
         stmt = select(Task).where(Task.status.in_(["pending", "running"]))
         return list(self.session.scalars(stmt))
 
-    def create_task(self, task_type: str, instruction: str, agent_name: str = None,
-                    user_id: str = None, input_file_ids: str = None,
-                    options_json: str = None, priority: int = 0,
-                    callback_url: str = None, parent_task_id: str = None,
+    def create_task(self, task_type: str, instruction: str, agent_name: str | None = None,
+                    user_id: str | None = None, input_file_ids: str | None = None,
+                    options_json: str | None = None, priority: int = 0,
+                    callback_url: str | None = None, parent_task_id: str | None = None,
                     revision_number: int = 1) -> Task:
         task = Task(
             task_type=task_type,
@@ -66,15 +66,15 @@ class TaskRepository(BaseRepository[Task]):
         )
         return bool(result.rowcount)
 
-    def update_progress(self, task_id: str, progress: int, current_step: str = None):
+    def update_progress(self, task_id: str, progress: int, current_step: str | None = None):
         data = {"progress": progress}
         if current_step is not None:
             data["current_step"] = current_step
         self.update(task_id, data)
 
-    def complete_task(self, task_id: str, result_json: str = None,
-                      output_file_ids: str = None, quality_score: float = None,
-                      duration_ms: int = None):
+    def complete_task(self, task_id: str, result_json: str | None = None,
+                      output_file_ids: str | None = None, quality_score: float | None = None,
+                      duration_ms: int | None = None):
         data = {
             "status": "success",
             "progress": 100,
@@ -96,7 +96,7 @@ class TaskRepository(BaseRepository[Task]):
         )
         return bool(result.rowcount)
 
-    def fail_task(self, task_id: str, error_message: str, duration_ms: int = None):
+    def fail_task(self, task_id: str, error_message: str, duration_ms: int | None = None):
         data = {
             "status": "failed",
             "progress": 100,
@@ -124,7 +124,7 @@ class TaskRepository(BaseRepository[Task]):
         )
         return bool(result.rowcount)
 
-    def add_feedback(self, task_id: str, rating: int, comment: str = None):
+    def add_feedback(self, task_id: str, rating: int, comment: str | None = None):
         data = {"feedback_rating": rating}
         if comment:
             data["feedback_comment"] = comment

@@ -152,7 +152,7 @@ class DataProfile:
     total_sheets: int = 0
     summary: str = ""
 
-    def get_sheet(self, name: str = None) -> Optional[SheetInfo]:
+    def get_sheet(self, name: str | None = None) -> Optional[SheetInfo]:
         if name is None:
             return self.sheets[0] if self.sheets else None
         for s in self.sheets:
@@ -338,7 +338,7 @@ class DataSchema:
     total_sheets: int = 0
     summary: str = ""
 
-    def get_sheet(self, name: str = None) -> Optional[SheetSchema]:
+    def get_sheet(self, name: str | None = None) -> Optional[SheetSchema]:
         if name is None:
             return self.sheets[0] if self.sheets else None
         for s in self.sheets:
