@@ -127,7 +127,9 @@ class ApplicationRuntimeManager:
             try:
                 cb(status, self.state)
             except Exception:
-                pass
+                # 回调（桌面 GUI 等）边界无法穷举异常类型，保持 broad catch，
+                # 但失败必须留痕而非静默。
+                logger.warning("状态回调执行失败", exc_info=True)
         logger.info(f"Status: {old.value} -> {status.value}" + (f" ({error})" if error else ""))
 
     def is_port_in_use(self) -> bool:

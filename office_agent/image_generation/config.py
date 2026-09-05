@@ -8,9 +8,12 @@ Key 使用与语言模型相同的 Fernet 加密（兼容旧 XOR 数据）。
 OpenAI 兼容的 /images/generations 端点，或通过 mcp_url 走 MCP 网关。
 """
 import json
+import logging
 from typing import Optional
 
 from ..model_gateway.model_manager import ApiKeyCrypto, resolve_model_config_dir
+
+logger = logging.getLogger(__name__)
 
 AGNES_DEFAULT_BASE_URL = "https://apihub.agnes-ai.com/v1"
 AGNES_DEFAULT_MODEL = "agnes-image-2.0-flash"
@@ -64,7 +67,12 @@ class ImageModelConfigManager:
                     "mcp_url": data.get("mcp_url", ""),
                 })
             except Exception:
-                pass
+                # 解密边界异常类型不可穷举（Fernet/旧 XOR 双格式），保持 broad catch，
+                # 但配置丢失必须留痕而非静默回退；日志不含 Key 内容。
+                logger.warning(
+                    f"生图配置加载失败，回退默认配置: {self.config_file}",
+                    exc_info=True,
+                )
         return normalize_image_model_config({"provider": "agnes", "api_key": ""})
 
     def get_config(self) -> dict:

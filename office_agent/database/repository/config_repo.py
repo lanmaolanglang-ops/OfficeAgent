@@ -1,6 +1,7 @@
 """配置管理 Repository"""
 import json
-from typing import Optional, List, Dict, Any
+import logging
+from typing import Optional, List
 from sqlalchemy import select, and_
 
 from .base import BaseRepository
@@ -9,13 +10,18 @@ from ..models.config import (
     SkillConfigModel, WorkflowConfig, FileRuleConfig,
 )
 
+logger = logging.getLogger(__name__)
+
 
 def _loads(s, default=None):
     if not s:
         return default if default is not None else {}
     try:
         return json.loads(s)
-    except Exception:
+    except (json.JSONDecodeError, TypeError):
+        # 损坏的存储 JSON 回退默认值，但必须留痕；
+        # 不记录字段内容本身（可能包含敏感配置）。
+        logger.warning("配置 JSON 字段解析失败，回退默认值", exc_info=True)
         return default if default is not None else {}
 
 

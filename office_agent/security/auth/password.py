@@ -6,9 +6,12 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import logging
 import secrets
 import base64
 from typing import Tuple
+
+logger = logging.getLogger(__name__)
 
 
 # PBKDF2 参数
@@ -44,6 +47,8 @@ def hash_password(password: str, salt: bytes | None = None) -> str:
 
 def verify_password(password: str, password_hash: str) -> bool:
     """验证密码"""
+    if not isinstance(password, str) or not isinstance(password_hash, str):
+        return False
     try:
         parts = password_hash.split("$")
         if len(parts) != 4:
@@ -60,7 +65,11 @@ def verify_password(password: str, password_hash: str) -> bool:
             dklen=len(expected),
         )
         return hmac.compare_digest(dk, expected)
-    except Exception:
+    except (ValueError, TypeError) as exc:
+        # 仅容忍畸形的存储哈希（fail-closed 返回 False）；
+        # AttributeError 等编程错误必须传播，不得伪装成"密码错误"。
+        # 日志只记录异常类型，绝不包含密码或哈希内容。
+        logger.warning("拒绝畸形的存储密码哈希: %s", type(exc).__name__)
         return False
 
 

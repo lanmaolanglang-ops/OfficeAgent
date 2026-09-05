@@ -112,7 +112,14 @@ class YamlLoader:
         except ImportError:
             logger.warning("PyYAML 未安装，无法加载 YAML 配置")
             return {}
-        except Exception as e:
+        except (OSError, ValueError) as e:
+            # 文件 IO / 编码错误 / JSON 系解析错误（UnicodeDecodeError、
+            # JSONDecodeError 均为 ValueError 子类）的明确收窄
+            logger.error(f"加载配置文件失败: {e}")
+            return {}
+        except yaml.YAMLError as e:
+            # PyYAML 的 YAMLError 直接继承 Exception，需单列；
+            # 此分支只在 import yaml 成功后才会被求值，不会 NameError
             logger.error(f"加载配置文件失败: {e}")
             return {}
 

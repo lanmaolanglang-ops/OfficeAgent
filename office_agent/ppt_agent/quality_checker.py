@@ -14,6 +14,7 @@ PPT Quality Checker - PPT 质量检查与自动修正
 - 调用 fix() 方法自动修正并重新生成
 """
 import copy
+import logging
 import math
 from pathlib import Path
 from typing import Optional, List, Tuple
@@ -23,6 +24,8 @@ from pptx import Presentation
 
 from .models import PPTOutline, SlideContent
 from ..quality.checker import IssueSeverity
+
+logger = logging.getLogger(__name__)
 
 
 # ==========================================
@@ -549,8 +552,13 @@ class PPTQualityChecker:
                            f"页面: {slide_w:.1f}x{slide_h:.1f}",
                     fixable=False,
                 ))
-        except Exception:
-            pass
+        except (AttributeError, TypeError, ValueError):
+            # python-pptx 异形元素坐标不可读时跳过该元素，但必须留痕；
+            # KeyError/NameError 等编程错误不再被静默吞掉。
+            logger.debug(
+                f"元素边界检查跳过（坐标不可读）: slide={slide_idx}",
+                exc_info=True,
+            )
 
     def _check_text_overflow(self, shape, slide_idx: int, report: PPTQualityReport):
         """检查文字是否溢出文本框（估算）"""
@@ -613,8 +621,13 @@ class PPTQualityChecker:
                         fixable=True,
                         fix_action={"type": "reduce_font", "slide": slide_idx},
                     ))
-        except Exception:
-            pass
+        except (AttributeError, TypeError, ValueError):
+            # python-pptx 异形文本框不可估算时跳过，但必须留痕；
+            # KeyError/NameError 等编程错误不再被静默吞掉。
+            logger.debug(
+                f"文字溢出估算跳过（文本框不可读）: slide={slide_idx}",
+                exc_info=True,
+            )
 
     def _check_content_completeness(self, slide_idx: int, has_content: bool,
                                      has_title: bool, slide_text: str,

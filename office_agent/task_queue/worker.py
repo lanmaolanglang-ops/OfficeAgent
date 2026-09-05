@@ -124,8 +124,9 @@ class LocalWorker:
         try:
             from ..database.session import SessionLocal
             self._session_factory = SessionLocal
-        except Exception:
-            pass
+        except ImportError:
+            # 仅容忍数据库模块缺失；import 期其他错误必须传播而非静默降级。
+            logger.warning("数据库会话工厂不可用，任务持久化降级", exc_info=True)
 
         logger.info(f"LocalWorker 初始化完成，总并发数: {sum(q['concurrency'] for q in config.TASK_QUEUES.values())}")
 

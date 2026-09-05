@@ -4,10 +4,14 @@
 默认使用 SQLite（零配置），可通过 DATABASE_URL 切换到 PostgreSQL：
     postgresql://user:password@localhost/office_agent
 """
+import logging
 import os
+import sqlite3
 import threading
 from sqlalchemy import create_engine, Engine, event, inspect, text
 from ..runtime_config import get_data_root
+
+logger = logging.getLogger(__name__)
 
 # 默认数据目录（桌面启动器通过 OFFICE_AGENT_DATA_DIR 重定向到 %APPDATA%/OfficeAgent）
 DATA_DIR = get_data_root() / "db"
@@ -44,8 +48,9 @@ def _register_sqlite_pragmas(target: Engine) -> Engine:
                 cursor.execute("PRAGMA synchronous=NORMAL")
             finally:
                 cursor.close()
-        except Exception:
-            pass
+        except sqlite3.Error:
+            # :memory: 库不支持 WAL 等情况按设计跳过，但留痕便于排查。
+            logger.debug("SQLite PRAGMA 设置失败，使用连接默认参数", exc_info=True)
     return target
 
 

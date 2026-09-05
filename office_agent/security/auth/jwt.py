@@ -253,7 +253,9 @@ class JWTManager:
             return payload
         except ValueError:
             raise
-        except Exception as e:
+        except (KeyError, TypeError) as e:
+            # base64/JSON 解析错误均为 ValueError 子类，已由上一分支处理；
+            # 这里只兜住 payload 结构缺字段/类型错误，编程错误直接传播。
             raise ValueError(f"Token无效: {e}")
 
     def refresh_access_token(self, refresh_token: str) -> str:

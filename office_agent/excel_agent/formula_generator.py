@@ -11,9 +11,12 @@ Formula Generator - Excel 公式生成器
 - 数学：增长率(环比/同比), 占比, 排名, 累计, 去重计数
 - 日期：YEAR, MONTH, DAY, DATEDIF, TODAY, EOMONTH
 """
+import logging
 import re
 from typing import Optional, List, Dict, Tuple
 from .models import FormulaSpec, DataProfile, ColumnInfo, SheetInfo
+
+logger = logging.getLogger(__name__)
 
 
 # ==========================================
@@ -830,13 +833,20 @@ class FormulaGenerator:
 
         # 分析数据
         if self.profile is None:
-            analyzer = None
             try:
                 from .data_analyzer import DataAnalyzer
-                analyzer = DataAnalyzer()
-                self.profile = analyzer.analyze(file_path)
-            except Exception:
-                pass
+            except ImportError:
+                logger.debug("DataAnalyzer 不可用，按无画像继续", exc_info=True)
+            else:
+                try:
+                    self.profile = DataAnalyzer().analyze(file_path)
+                except Exception:
+                    # pandas/openpyxl 第三方边界：画像失败不阻塞公式生成，
+                    # 但必须留痕（此前静默 pass 会吞掉编程错误）。
+                    logger.warning(
+                        f"数据画像分析失败，按无画像继续: {file_path}",
+                        exc_info=True,
+                    )
 
         # 生成公式
         formulas = self.generate_from_text(text, sheet_name)
