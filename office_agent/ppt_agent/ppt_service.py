@@ -207,47 +207,8 @@ class PPTService:
             )
 
     # ==========================================
-    # 模板位置支持
+    # 单页渲染
     # ==========================================
-
-    def _tpos(self, layout_type: str, region: str = "title"):
-        """
-        从模板配置获取位置（模板优先，无模板则用默认值）
-
-        Args:
-            layout_type: 版式类型 (cover/content/section/...)
-            region: 区域 (title/content/picture)
-
-        Returns:
-            (left, top, width, height) 元组（英寸）
-        """
-        if not self.template_config:
-            return None
-
-        # 查找匹配的版式
-        layout_info = self.template_config.find_layout(layout_type)
-        if not layout_info:
-            # 尝试模糊匹配
-            for li in self.template_config.layouts:
-                if layout_type in li.name.lower() or li.layout_type == layout_type:
-                    layout_info = li
-                    break
-
-        if not layout_info:
-            return None
-
-        if region == "title" and layout_info.has_title:
-            return (layout_info.title_left, layout_info.title_top,
-                    layout_info.title_width, layout_info.title_height)
-        elif region == "content" and layout_info.has_content:
-            return (layout_info.content_left, layout_info.content_top,
-                    layout_info.content_width, layout_info.content_height)
-        elif region == "picture" and layout_info.has_picture:
-            for ph in layout_info.placeholders:
-                if ph.ph_type == "pic":
-                    return (ph.left, ph.top, ph.width, ph.height)
-
-        return None
 
     def _render_slide(self, content: SlideContent):
         """根据版式渲染单页"""
