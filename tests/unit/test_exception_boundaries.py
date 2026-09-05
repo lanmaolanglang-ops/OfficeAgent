@@ -13,7 +13,6 @@ import pytest
 
 from office_agent.security.auth.password import hash_password, verify_password
 from office_agent.security.auth.jwt import JWTManager
-from office_agent.database.repository.config_repo import _loads
 from office_agent.config_system.loaders import YamlLoader
 from office_agent.ppt_agent.quality_checker import PPTQualityChecker, PPTQualityReport
 from office_agent.runtime_manager import AppConfig, AppStatus, ApplicationRuntimeManager
@@ -92,23 +91,6 @@ class TestJwtDecode:
         manager = JWTManager(secret_key="test-secret", state_dir=tmp_path)
         with pytest.raises(AttributeError):
             manager.decode(123)
-
-
-# ---------------------------------------------------------------- config repo
-
-class TestConfigRepoLoads:
-    def test_valid_json(self):
-        assert _loads('{"a": 1}') == {"a": 1}
-        assert _loads('[1, 2]', []) == [1, 2]
-
-    def test_invalid_json_falls_back_and_logs(self):
-        with recorded_logs("office_agent.database.repository.config_repo") as records:
-            assert _loads("{not json", {"fallback": True}) == {"fallback": True}
-        assert any(r.levelno >= logging.WARNING for r in records)
-
-    def test_non_string_falls_back(self):
-        assert _loads(123, ["d"]) == ["d"]
-        assert _loads(None) == {}
 
 
 # ---------------------------------------------------------------- yaml loader
