@@ -2,7 +2,6 @@
 pytest 共享 fixtures
 """
 import sys
-import os
 import tempfile
 import shutil
 from pathlib import Path
@@ -73,7 +72,6 @@ def sample_xlsx(temp_dir):
 def sample_pptx(temp_dir):
     """创建测试用 PPT 文件"""
     from pptx import Presentation
-    from pptx.util import Inches
     prs = Presentation()
     slide_layout = prs.slide_layouts[0]
     slide = prs.slides.add_slide(slide_layout)
@@ -96,3 +94,30 @@ def security_config():
         max_file_size=10 * 1024 * 1024,
         sandbox_timeout=10,
     )
+
+
+class _FakeSemanticEmbedder:
+    """Deterministic semantic backend used by RAG regression tests."""
+
+    model_id = "semantic-test-v1"
+    version = "test"
+    semantic = True
+    dimension = 4
+
+    def embed(self, texts):
+        return [[0.1, 0.2, 0.3, 0.4] for _ in texts]
+
+    def embed_query(self, text):
+        return [0.1, 0.2, 0.3, 0.4]
+
+
+@pytest.fixture
+def fake_semantic_embedder(monkeypatch):
+    """Replace the RAG semantic factory with a deterministic backend."""
+    from office_agent.knowledge_base import embeddings as embeddings_module
+
+    embedder = _FakeSemanticEmbedder()
+    monkeypatch.setattr(
+        embeddings_module, "create_semantic_embedder", lambda *a, **kw: embedder,
+    )
+    return embedder

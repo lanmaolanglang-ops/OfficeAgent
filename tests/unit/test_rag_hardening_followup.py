@@ -15,7 +15,8 @@ def _configure_database(tmp_path, monkeypatch, request):
     return factory
 
 
-def test_repeated_manual_index_is_idempotent(tmp_path, monkeypatch, request):
+def test_repeated_manual_index_is_idempotent(
+        tmp_path, monkeypatch, request, fake_semantic_embedder):
     from office_agent.database.repository import KnowledgeRepository
     from office_agent.task_queue.tasks.rag_tasks import chunk_and_embed
 
@@ -31,7 +32,7 @@ def test_repeated_manual_index_is_idempotent(tmp_path, monkeypatch, request):
 
 
 def test_category_search_pages_and_reports_candidate_truncation(
-        tmp_path, monkeypatch, request):
+        tmp_path, monkeypatch, request, fake_semantic_embedder):
     from office_agent.database.repository import KnowledgeRepository
     from office_agent.task_queue.tasks.rag_tasks import search_knowledge
 

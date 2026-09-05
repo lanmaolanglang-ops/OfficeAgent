@@ -195,7 +195,8 @@ def test_hashing_embedder_is_restart_stable():
     assert len(first) == 512
 
 
-def test_registered_rag_tasks_work_against_real_database(tmp_path, monkeypatch, request):
+def test_registered_rag_tasks_work_against_real_database(
+        tmp_path, monkeypatch, request, fake_semantic_embedder):
     from office_agent.database.base import Base
     import office_agent.database.models  # noqa: F401
     from office_agent.database import session as session_module
