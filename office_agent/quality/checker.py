@@ -77,22 +77,22 @@ class QualityReport:
 
     def add_issue(self, issue: QualityIssue):
         self.issues.append(issue)
-        if issue.severity == "error":
+        if issue.severity == IssueSeverity.ERROR.value:
             self.passed = False
 
     def compute_score(self):
-        error_count = sum(1 for i in self.issues if i.severity == "error")
-        warning_count = sum(1 for i in self.issues if i.severity == "warning")
-        info_count = sum(1 for i in self.issues if i.severity == "info")
+        error_count = sum(1 for i in self.issues if i.severity == IssueSeverity.ERROR.value)
+        warning_count = sum(1 for i in self.issues if i.severity == IssueSeverity.WARNING.value)
+        info_count = sum(1 for i in self.issues if i.severity == IssueSeverity.INFO.value)
         score = 100.0 - error_count * 10 - warning_count * 3 - info_count * 1
         self.score = max(0.0, min(100.0, score))
         self.passed = error_count == 0
 
     def errors(self) -> list:
-        return [i for i in self.issues if i.severity == "error"]
+        return [i for i in self.issues if i.severity == IssueSeverity.ERROR.value]
 
     def warnings(self) -> list:
-        return [i for i in self.issues if i.severity == "warning"]
+        return [i for i in self.issues if i.severity == IssueSeverity.WARNING.value]
 
     def fixable_issues(self) -> list:
         return [i for i in self.issues if i.fixable]
@@ -129,7 +129,9 @@ class QualityReport:
             lines.append("✓ 未发现问题，文档质量良好！")
         else:
             for severity_name, severity_label in [
-                ("error", "错误"), ("warning", "警告"), ("info", "提示")
+                (IssueSeverity.ERROR.value, "错误"),
+                (IssueSeverity.WARNING.value, "警告"),
+                (IssueSeverity.INFO.value, "提示"),
             ]:
                 items = [i for i in self.issues if i.severity == severity_name]
                 if items:
@@ -149,11 +151,11 @@ class QualityReport:
         for issue in self.issues:
             if not issue.fixable:
                 continue
-            if issue.type == "font" and "正文" in issue.message:
+            if issue.type == IssueType.FONT.value and "正文" in issue.message:
                 fix["font"] = issue.expected
-            elif issue.type == "font_size" and "正文" in issue.message:
+            elif issue.type == IssueType.FONT_SIZE.value and "正文" in issue.message:
                 fix["size"] = issue.expected
-            elif issue.type == "line_spacing":
+            elif issue.type == IssueType.LINE_SPACING.value:
                 match = re.search(r"\d+(?:\.\d+)?", issue.expected or "")
                 if match:
                     fix["line_spacing"] = float(match.group())
@@ -254,8 +256,8 @@ class QualityChecker:
                         font_errors += 1
                         if font_errors <= 3:  # 只报告前3个
                             report.add_issue(QualityIssue(
-                                type="font",
-                                severity="warning",
+                                type=IssueType.FONT.value,
+                                severity=IssueSeverity.WARNING.value,
                                 message=f"第{idx+1}段正文字体为「{cn_font}」，期望「{expected_cn}」",
                                 paragraph_index=idx,
                                 paragraph_text=text[:40],
@@ -268,8 +270,8 @@ class QualityChecker:
 
         if font_errors > 3:
             report.add_issue(QualityIssue(
-                type="font",
-                severity="warning",
+                type=IssueType.FONT.value,
+                severity=IssueSeverity.WARNING.value,
                 message=f"另有{font_errors - 3}段正文字体不符",
                 expected=expected_cn,
                 fixable=True,
@@ -298,8 +300,8 @@ class QualityChecker:
                         size_errors += 1
                         if size_errors <= 3:
                             report.add_issue(QualityIssue(
-                                type="font_size",
-                                severity="warning",
+                                type=IssueType.FONT_SIZE.value,
+                                severity=IssueSeverity.WARNING.value,
                                 message=f"第{idx+1}段正文字号为{actual_size}pt，期望{expected_size}pt",
                                 paragraph_index=idx,
                                 paragraph_text=text[:40],
@@ -312,8 +314,8 @@ class QualityChecker:
 
         if size_errors > 3:
             report.add_issue(QualityIssue(
-                type="font_size",
-                severity="warning",
+                type=IssueType.FONT_SIZE.value,
+                severity=IssueSeverity.WARNING.value,
                 message=f"另有{size_errors - 3}段正文字号不符",
                 expected=f"{expected_size}pt",
                 fixable=True,
@@ -340,8 +342,8 @@ class QualityChecker:
 
         if spacing_errors > 0:
             report.add_issue(QualityIssue(
-                type="line_spacing",
-                severity="warning" if spacing_errors <= 3 else "info",
+                type=IssueType.LINE_SPACING.value,
+                severity=IssueSeverity.WARNING.value if spacing_errors <= 3 else IssueSeverity.INFO.value,
                 message=f"有{spacing_errors}段正文行距为非{expected_spacing}倍",
                 expected=f"{expected_spacing}倍",
                 actual=f"{spacing_errors}段不符",
@@ -356,8 +358,8 @@ class QualityChecker:
         for level, text in headings:
             if prev_level > 0 and level > prev_level + 1:
                 report.add_issue(QualityIssue(
-                    type="heading_level",
-                    severity="warning",
+                    type=IssueType.HEADING_LEVEL.value,
+                    severity=IssueSeverity.WARNING.value,
                     message=f"标题层级跳跃：「{text[:30]}」从{prev_level}级跳到{level}级",
                     paragraph_text=text[:50],
                     expected=f"不超过{prev_level + 1}级",
@@ -408,8 +410,8 @@ class QualityChecker:
 
             if actual_last != expected_last:
                 report.add_issue(QualityIssue(
-                    type="numbering",
-                    severity="error",
+                    type=IssueType.NUMBERING.value,
+                    severity=IssueSeverity.ERROR.value,
                     message=f"标题编号不连续：「{text[:30]}」编号为{actual_last}，期望{expected_last}",
                     paragraph_text=text[:50],
                     expected=str(expected_last),
@@ -428,8 +430,8 @@ class QualityChecker:
         for i, (num, text) in enumerate(table_nums, 1):
             if num != i:
                 report.add_issue(QualityIssue(
-                    type="numbering",
-                    severity="error",
+                    type=IssueType.NUMBERING.value,
+                    severity=IssueSeverity.ERROR.value,
                     message=f"表编号不连续：「{text[:30]}」编号为{num}，期望{i}",
                     paragraph_text=text[:50],
                     expected=str(i),
@@ -452,8 +454,8 @@ class QualityChecker:
                     if not tc.show_left_right:
                         if borders.get("left", 0) > 0 or borders.get("right", 0) > 0:
                             report.add_issue(QualityIssue(
-                                type="table_format",
-                                severity="warning",
+                                type=IssueType.TABLE_FORMAT.value,
+                                severity=IssueSeverity.WARNING.value,
                                 message=f"表{t_idx+1}有左右边框，三线表应无左右边框",
                                 expected="无左右边框",
                                 actual=f"左{borders.get('left',0)}磅，右{borders.get('right',0)}磅",
@@ -487,8 +489,8 @@ class QualityChecker:
 
         if mismatch > 3:
             report.add_issue(QualityIssue(
-                type="indent",
-                severity="info",
+                type=IssueType.INDENT.value,
+                severity=IssueSeverity.INFO.value,
                 message=f"有{mismatch}段正文首行缩进不符（期望{expected_indent}pt）",
                 expected=f"{expected_indent}pt",
                 actual=f"{mismatch}段不符",
@@ -510,8 +512,8 @@ class QualityChecker:
                 matches = pattern.findall(text)
                 if matches:
                     report.add_issue(QualityIssue(
-                        type="garbled",
-                        severity="error",
+                        type=IssueType.GARBLED.value,
+                        severity=IssueSeverity.ERROR.value,
                         message=f"第{idx+1}段发现乱码字符（{len(matches)}个）",
                         paragraph_index=idx,
                         paragraph_text=text[:50],
@@ -524,8 +526,8 @@ class QualityChecker:
 
             if re.search(r"(.)\1{6,}", text):
                 report.add_issue(QualityIssue(
-                    type="garbled",
-                    severity="warning",
+                    type=IssueType.GARBLED.value,
+                    severity=IssueSeverity.WARNING.value,
                     message=f"第{idx+1}段存在连续重复字符",
                     paragraph_index=idx,
                     paragraph_text=text[:50],
@@ -537,8 +539,8 @@ class QualityChecker:
         total = len(doc.paragraphs)
         if total > 0 and empty_count > total * 0.3:
             report.add_issue(QualityIssue(
-                type="empty_paragraph",
-                severity="info",
+                type=IssueType.EMPTY_PARAGRAPH.value,
+                severity=IssueSeverity.INFO.value,
                 message=f"空段落过多（{empty_count}/{total}），建议清理",
                 expected="少量空段落",
                 actual=f"{empty_count}个空段落",
@@ -567,8 +569,8 @@ class QualityChecker:
 
             if missing:
                 report.add_issue(QualityIssue(
-                    type="missing_text",
-                    severity="error",
+                    type=IssueType.MISSING_TEXT.value,
+                    severity=IssueSeverity.ERROR.value,
                     message=f"可能遗漏{len(missing)}处原文内容",
                     expected="完整保留原文",
                     actual=f"缺失{len(missing)}处",
@@ -578,7 +580,7 @@ class QualityChecker:
         except Exception as exc:
             logger.exception("原文保留检查失败: %s", original_path)
             report.add_issue(QualityIssue(
-                type="missing_text", severity="info",
+                type=IssueType.MISSING_TEXT.value, severity=IssueSeverity.INFO.value,
                 message=f"原文保留检查未完成：{exc}", fixable=False,
                 fix_suggestion="确认原文文件可读取后重新检查",
             ))
