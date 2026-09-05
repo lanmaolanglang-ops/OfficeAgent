@@ -15,8 +15,11 @@ import traceback
 import threading
 import logging
 import time
+from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, Future
 from typing import Any, Callable, Dict
+
+from sqlalchemy.exc import SQLAlchemyError
 
 from .config import config
 from .lease_executor import LeaseThreadPool
@@ -72,9 +75,16 @@ class TaskProgress:
                 repo = TaskRepository(session)
                 repo.update_progress(self.task_id, progress, step)
                 session.commit()
-            except Exception as e:
-                # 进度更新失败会让前端进度条卡住，必须可见而不是吞成 debug
-                logger.warning("任务 %s 进度更新失败: %s", self.task_id, e)
+            except SQLAlchemyError as e:
+                from ..api.core.task_manager import (
+                    log_db_fallback, task_manager,
+                )
+                if session is not None:
+                    session.rollback()
+                log_db_fallback("update_progress", self.task_id, e)
+                task_manager.update_memory_task(
+                    self.task_id, progress=progress, current_step=step,
+                )
             finally:
                 if session is not None:
                     session.close()
@@ -329,13 +339,19 @@ class LocalWorker:
                        duration_ms: int = None):
         """更新任务状态到数据库"""
         if not self._session_factory:
+            self._fallback_update_status(
+                task_id, status, progress, step, error, duration_ms,
+            )
             return
         session = None
+        current = None
+        snapshot = None
         try:
             session = self._session_factory()
             from ..database.repository import TaskRepository
             repo = TaskRepository(session)
             current = repo.get_by_id(task_id)
+            snapshot = self._snapshot_task(current)
             if current is not None and current.status in self._TERMINAL_STATUSES:
                 if current.status != status:
                     # 终态不可覆盖：防止软超时回调把已成功的任务改写为 failed
@@ -374,11 +390,80 @@ class LocalWorker:
                 # 竞争下的重复回调不会产生重复审计事件
                 self._audit_task_transition(
                     task_id, status, current, error, duration_ms)
-        except Exception as e:
-            logger.warning("任务 %s 状态更新为 %s 失败: %s", task_id, status, e)
+        except SQLAlchemyError as e:
+            if session is not None:
+                session.rollback()
+            from ..api.core.task_manager import log_db_fallback
+            log_db_fallback("update_status", task_id, e)
+            self._fallback_update_status(
+                task_id, status, progress, step, error, duration_ms,
+                snapshot=snapshot,
+            )
         finally:
             if session is not None:
                 session.close()
+
+    @staticmethod
+    def _snapshot_task(task) -> dict:
+        """Copy safe task metadata before a possible DB failure detaches it."""
+        if task is None:
+            return None
+        try:
+            input_file_ids = json.loads(task.input_file_ids or "[]")
+        except (TypeError, ValueError):
+            input_file_ids = []
+        try:
+            options = json.loads(task.options_json or "{}")
+        except (TypeError, ValueError):
+            options = {}
+        return {
+            "task_type": getattr(task, "task_type", None) or "unknown",
+            "instruction": getattr(task, "instruction", None) or "",
+            "agent": getattr(task, "agent_name", None) or "",
+            "user_id": getattr(task, "user_id", None),
+            "file_ids": input_file_ids if isinstance(input_file_ids, list) else [],
+            "options": options if isinstance(options, dict) else {},
+        }
+
+    def _fallback_update_status(self, task_id: str, status: str,
+                                progress: int = None, step: str = None,
+                                error: str = None, duration_ms: int = None,
+                                snapshot: dict = None):
+        """Maintain the process-local degraded snapshot when DB writes fail."""
+        from ..api.core.task_manager import task_manager
+
+        task = task_manager.get_task(task_id)
+        if task is None:
+            snapshot = snapshot or {}
+            task = task_manager.create_memory_task(
+                task_id=task_id,
+                task_type=snapshot.get("task_type", "unknown"),
+                instruction=snapshot.get("instruction", ""),
+                agent=snapshot.get("agent", ""),
+                file_ids=snapshot.get("file_ids", []),
+                options=snapshot.get("options", {}),
+                user_id=snapshot.get("user_id"),
+                status="pending",
+            )
+        # 终态守卫同样适用于内存快照，避免迟到的 failed/cancelled 覆盖 success。
+        if task.status in self._TERMINAL_STATUSES and status != task.status:
+            return
+        if status in self._TERMINAL_STATUSES:
+            task.status = status
+            if status in ("success", "failed"):
+                task.progress = 100
+            task.completed_at = datetime.now(timezone.utc).isoformat()
+            if error is not None:
+                task.error = error
+        else:
+            task.update(progress=progress, step=step, status=status)
+            if error is not None:
+                task.error = error
+        if duration_ms is not None:
+            task.duration_ms = duration_ms
+        task.storage = "memory"
+        task.degraded = True
+        return task
 
     @staticmethod
     def _audit_task_transition(task_id: str, status: str, task,
@@ -458,6 +543,7 @@ class LocalWorker:
         result_json = None
         output_file_ids = None
         quality_score = None
+        valid_ids = []
         if isinstance(result, dict):
             result_json = json.dumps(result, ensure_ascii=False, default=str)
             valid_ids, skipped = self._valid_output_file_ids(result.get("output_files"))
@@ -490,11 +576,28 @@ class LocalWorker:
 
         if self._session_factory:
             session = None
+            current_task = None
+            snapshot = None
             try:
                 session = self._session_factory()
                 from ..database.repository import TaskRepository
+                from ..api.core.task_manager import task_manager
                 repo = TaskRepository(session)
                 current_task = repo.get_by_id(task_id)
+                snapshot = self._snapshot_task(current_task)
+                memory_task = task_manager.get_task(task_id)
+                if memory_task is not None and memory_task.degraded:
+                    # 该任务已在降级期间拥有内存权威快照。数据库即使已恢复
+                    # 也不应把旧记录覆盖到新的内存状态上；本批不做可靠
+                    # reconcile，degraded task 保持进程内内存权威。
+                    if session is not None:
+                        session.close()
+                        session = None
+                    self._fallback_complete(
+                        task_id, result, valid_ids, quality_score, duration_ms,
+                        snapshot=snapshot,
+                    )
+                    return
                 if current_task is not None and current_task.status in self._TERMINAL_STATUSES:
                     # 已被软超时/取消回调标记为终态：不覆盖结果，也不再派发修订
                     logger.info("任务 %s 已处于终态 %s，跳过完成写入",
@@ -528,11 +631,54 @@ class LocalWorker:
                                        quality_score=quality_score,
                                        duration_ms=duration_ms)
                     session.commit()
-            except Exception:
-                logger.exception("failed to persist task completion metadata: %s", task_id)
+            except SQLAlchemyError as e:
+                if session is not None:
+                    session.rollback()
+                from ..api.core.task_manager import log_db_fallback
+                log_db_fallback("complete_task", task_id, e)
+                self._fallback_complete(
+                    task_id, result, valid_ids, quality_score, duration_ms,
+                    snapshot=snapshot,
+                )
             finally:
                 if session is not None:
                     session.close()
+
+    def _fallback_complete(self, task_id: str, result: Any,
+                           output_file_ids: list, quality_score: float = None,
+                           duration_ms: int = None, snapshot: dict = None):
+        """Keep a completed artifact/result in the degraded memory snapshot."""
+        from ..api.core.task_manager import task_manager
+
+        task = task_manager.get_task(task_id)
+        if task is None:
+            snapshot = snapshot or {}
+            task = task_manager.create_memory_task(
+                task_id=task_id,
+                task_type=snapshot.get("task_type", "unknown"),
+                instruction=snapshot.get("instruction", ""),
+                agent=snapshot.get("agent", ""),
+                file_ids=snapshot.get("file_ids", []),
+                options=snapshot.get("options", {}),
+                user_id=snapshot.get("user_id"),
+            )
+        # 取消/失败等终态不应被迟到的成功收尾覆盖。
+        if task.status in self._TERMINAL_STATUSES and task.status != "success":
+            return
+        task.status = "success"
+        task.progress = 100
+        task.current_step = "完成"
+        task.result = result if isinstance(result, dict) else {}
+        if output_file_ids:
+            task.output_files = list(output_file_ids)
+        if quality_score is not None:
+            task.quality_score = quality_score
+        if duration_ms is not None:
+            task.duration_ms = duration_ms
+        task.completed_at = datetime.now(timezone.utc).isoformat()
+        task.storage = "memory"
+        task.degraded = True
+        return task
 
     def _schedule_quality_revision(self, task_id: str, task, result: dict,
                                    output_ids: list):

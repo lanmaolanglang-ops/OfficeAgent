@@ -106,6 +106,8 @@ class TaskInfo(BaseModel):
     quality_score: Optional[float] = None
     parent_task_id: Optional[str] = None
     revision_number: int = 1
+    storage: str = "persisted"
+    degraded: bool = False
 
 
 class TaskListResponse(BaseModel):
