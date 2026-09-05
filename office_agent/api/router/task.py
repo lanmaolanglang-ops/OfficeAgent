@@ -77,7 +77,9 @@ def _file_id_list_to_infos(file_id_list, file_repo) -> list:
             continue
         infos.append({
             "file_id": db_file.id,
-            "filename": db_file.original_name or db_file.filename,
+            # original_name 是用户可见文件名的唯一权威字段；
+            # 响应 key 仍叫 filename 属外部 API 兼容契约。
+            "filename": db_file.original_name,
             "download_url": f"/api/file/download/{db_file.id}",
         })
     return infos

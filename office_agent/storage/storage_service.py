@@ -797,7 +797,6 @@ class StorageService:
                 uploaded_new = True
                 repo.update(parent_file_id, {
                     "storage_path": new_storage_path,
-                    "file_path": new_storage_path,
                     "file_size": len(content),
                     "file_hash": new_hash,
                     "version": new_version_num,
@@ -902,7 +901,6 @@ class StorageService:
                 new_version = parent.version + 1
                 repo.update(file_id, {
                     "storage_path": new_storage_path,
-                    "file_path": new_storage_path,
                     "file_size": target.file_size,
                     "file_hash": target.file_hash,
                     "version": new_version,

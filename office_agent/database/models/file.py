@@ -1,7 +1,21 @@
-"""文件模型"""
+"""文件模型
+
+Authoritative file identity/path contract（唯一权威契约）：
+
+- ``original_name`` 是用户可见原始文件名的**唯一权威字段**。
+  ``filename`` 是 001 时代遗留的兼容列，只保留给旧客户端/旧数据读取，
+  其值永远由 ``original_name`` delegate 派生，禁止独立写入。
+- ``storage_path`` 是持久化存储相对路径的**唯一权威字段**。
+  ``file_path`` 是 001 时代遗留的兼容列（004 起 nullable），
+  其值永远由 ``storage_path`` delegate 派生，禁止独立写入。
+
+delegate 由本模块底部的 before_insert/before_update 事件监听统一执行，
+任何写入路径（Repository、StorageService、直接 ORM）都无法造成两列漂移。
+上传文件与生成的 artifact 共用本契约（仅 bucket 不同）。
+"""
 import uuid
 from datetime import datetime
-from sqlalchemy import String, Integer, BigInteger, ForeignKey, Text, DateTime, UniqueConstraint
+from sqlalchemy import String, Integer, BigInteger, ForeignKey, Text, DateTime, UniqueConstraint, event
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from ..base import Base, TimestampMixin
@@ -36,9 +50,9 @@ class File(Base, TimestampMixin):
     extension: Mapped[str] = mapped_column(String(16), nullable=False)
     mime_type: Mapped[str] = mapped_column(String(128), nullable=True)
 
-    # 存储信息
+    # 存储信息：storage_path 为唯一权威字段；file_path 为 delegate-only 兼容列
     storage_path: Mapped[str] = mapped_column(String(512), nullable=False)
-    # 兼容旧字段 file_path
+    # 兼容旧字段 file_path（deprecated，见模块 docstring 的权威契约）
     file_path: Mapped[str] = mapped_column(String(512), nullable=True)
     bucket: Mapped[str] = mapped_column(String(32), default="uploads")
     storage_backend: Mapped[str] = mapped_column(String(32), default="local")
@@ -125,3 +139,23 @@ class FileVersion(Base, TimestampMixin):
 
     def __repr__(self):
         return f"<FileVersion {self.parent_file_id} v{self.version_number}>"
+
+
+def _delegate_file_compat_columns(target: "File") -> None:
+    """兼容列只允许 delegate：从权威字段派生，拒绝任何独立写入值。
+
+    - ``filename`` 永远等于 ``original_name``（用户可见原始文件名权威）
+    - ``file_path`` 永远等于 ``storage_path``（持久化存储相对路径权威）
+    """
+    target.filename = target.original_name
+    target.file_path = target.storage_path
+
+
+@event.listens_for(File, "before_insert")
+def _file_before_insert(mapper, connection, target):  # noqa: ANN001, ANN202
+    _delegate_file_compat_columns(target)
+
+
+@event.listens_for(File, "before_update")
+def _file_before_update(mapper, connection, target):  # noqa: ANN001, ANN202
+    _delegate_file_compat_columns(target)

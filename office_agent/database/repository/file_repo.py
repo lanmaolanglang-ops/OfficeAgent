@@ -42,15 +42,15 @@ class FileRepository(BaseRepository[File]):
                     change_description: str = None,
                     expires_at: datetime = None,
                     file_id: str = None) -> File:
-        filename = original_name  # filename 字段存原始名
+        # 只写权威字段：original_name / storage_path。
+        # legacy 兼容列 filename / file_path 由 models/file.py 的
+        # before_insert delegate 自动派生，任何调用方不得独立写入。
         f = File(
             id=file_id,
-            filename=filename,
             original_name=original_name,
             file_type=file_type,
             extension=extension,
             storage_path=storage_path,
-            file_path=storage_path,  # 兼容
             bucket=bucket,
             storage_backend=storage_backend,
             file_size=file_size,
