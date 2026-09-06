@@ -30,6 +30,8 @@ dependencies = [
     "PyMuPDF>=1.24.0",
     "Pillow>=10.0.0",
     "usearch>=2.26.0,<3",
+    # 安全（API Key 本地加密）
+    "cryptography>=41.0.0",
     # 工具
     "psutil>=5.9.0",
 ]
@@ -46,16 +48,18 @@ semantic = [
     "sentence-transformers>=2.7.0",
 ]
 
-# mypy baseline config (2026-09-05 census: 736 errors / 91 files — 见外部清单
-# "缺少类型检查在 CI 中拦截" 条目)。本配置不做任何错误抑制：
-# 无 disable_error_code、无全局 ignore_missing_imports、不排除任何项目模块。
-# 唯一豁免：下列第三方库无高质量 stubs，仅豁免其 import 解析（narrowly scoped）。
-# 在存量 typing debt 收敛前，本配置不接入 CI（接入即永久失败）；
-# 修复批次可直接以 `mypy` 无参运行复现 baseline。
+# mypy config（2026-09-06 typing debt 已全量收敛至 0 errors，正式接入阻断式 CI）。
+# 本配置不做任何错误抑制：无 disable_error_code、无全局 ignore_missing_imports、
+# 不排除任何项目模块。唯一豁免：下列第三方库无高质量 stubs，仅豁免其 import 解析
+# （narrowly scoped）。
 [tool.mypy]
-# 固定 3.12：numpy 新版 stubs 使用 3.12 `type` 语句语法，3.10/3.11 解析即 syntax error
-# 阻断全部检查；与 CI 矩阵最高版本一致。被检查代码语法兼容由 requires-python>=3.10 约束。
+# python_version 固定 3.12：numpy 新版 stubs 使用 3.12 `type` 语句语法，3.10/3.11
+# 解析即 syntax error 阻断全部检查；与 CI 矩阵最高版本一致。被检查代码语法兼容由
+# requires-python>=3.10 约束。platform 固定 win32：Office Agent 为 Windows 桌面项目，
+# ctypes.windll / msvcrt / subprocess.CREATE_NO_WINDOW 等为合法 Windows API，Linux CI
+# 下须固定目标平台以与本地基线口径一致（否则出现 9 处平台误报）。
 python_version = "3.12"
+platform = "win32"
 packages = ["office_agent", "desktop"]
 warn_unused_ignores = true
 warn_redundant_casts = true
