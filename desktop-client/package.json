@@ -6,10 +6,12 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 5173",
     "build": "vite build",
+    "build:release": "python ../desktop/release_manifest.py verify --artifact-dir ../dist/OfficeAgent && vite build",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "tauri:build": "tauri build"
   },
   "dependencies": {
     "@fontsource-variable/manrope": "5.3.0",

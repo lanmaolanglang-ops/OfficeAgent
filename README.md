@@ -35,15 +35,18 @@ python -m pytest tests/
 ## 打包
 
 ```bash
-# 1) 后端 → dist/OfficeAgent/（PyInstaller）
-python -m pip install -r requirements-production.txt pyinstaller
-pyinstaller office_agent.spec --clean --noconfirm
-
-# 2) 桌面安装包（Tauri NSIS）
-cd desktop-client
-pnpm install
-npm run tauri:build
+# 一次性 Windows 发布构建（后端 + manifest 校验 + Tauri）
+python -m pip install -r requirements-production.txt
+pnpm --dir desktop-client install --frozen-lockfile
+desktop\build_windows.bat
 ```
+
+发布入口要求已跟踪工作区干净。它从同一个 Git HEAD 构建
+dist/OfficeAgent/，生成覆盖整个后端目录的 release-manifest.json
+（完整源码 SHA、文件大小和 SHA-256），并在 Tauri 打包前再次阻断式校验。
+manifest 缺失、源码 SHA 不一致、文件被篡改或出现未记录文件时均会失败。
+pnpm --dir desktop-client run tauri:build 是内部 Tauri 入口，只接受已经由
+上述统一入口生成且通过校验的后端产物。
 
 ## 版本
 

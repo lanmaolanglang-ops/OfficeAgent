@@ -1,1 +1,1 @@
-{"build": {"beforeBuildCommand": ""}}
+{"build": {"beforeBuildCommand": "pnpm run build:release"}}

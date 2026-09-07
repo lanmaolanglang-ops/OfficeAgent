@@ -29,3 +29,6 @@ cryptography==43.0.1
 # 系统工具
 psutil==6.0.0
 pywin32==306; sys_platform == "win32"
+
+# Windows 发布构建
+pyinstaller==6.21.0
