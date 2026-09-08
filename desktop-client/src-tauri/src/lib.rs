@@ -245,14 +245,8 @@ fn health_response_is_ready(response: &str) -> bool {
     };
     serde_json::from_str::<serde_json::Value>(body)
         .ok()
-        .and_then(|payload| {
-            payload
-                .get("status")
-                .and_then(|status| status.as_str())
-                .map(str::to_owned)
-        })
-        .as_deref()
-        == Some("healthy")
+        .and_then(|payload| payload.get("ready").and_then(|ready| ready.as_bool()))
+        == Some(true)
 }
 
 fn backend_is_healthy() -> bool {
@@ -292,20 +286,23 @@ mod tests {
     #[test]
     fn health_contract_accepts_only_ready_backend_state() {
         assert!(health_response_is_ready(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\r\n{\"ready\":true,\"checks\":{\"database\":{\"status\":\"healthy\"}}}"
+        ));
+        assert!(!health_response_is_ready(
+            "HTTP/1.1 200 OK\r\n\r\n{\"ready\":false}"
+        ));
+        assert!(!health_response_is_ready(
+            "HTTP/1.1 200 OK\r\n\r\n{\"ready\":false,\"checks\":{\"database\":{\"status\":\"healthy\"}}}"
+        ));
+        assert!(!health_response_is_ready(
             "HTTP/1.1 200 OK\r\n\r\n{\"status\":\"healthy\"}"
-        ));
-        assert!(!health_response_is_ready(
-            "HTTP/1.1 200 OK\r\n\r\n{\"status\":\"degraded\"}"
-        ));
-        assert!(!health_response_is_ready(
-            "HTTP/1.1 200 OK\r\n\r\n{\"status\":\"degraded\",\"checks\":{\"api\":{\"status\":\"healthy\"}}}"
         ));
     }
 
     #[test]
     fn health_contract_rejects_wrong_status_or_http_code() {
         assert!(!health_response_is_ready(
-            "HTTP/1.1 503 Service Unavailable\r\n\r\n{\"status\":\"healthy\"}"
+            "HTTP/1.1 503 Service Unavailable\r\n\r\n{\"ready\":true}"
         ));
         assert!(!health_response_is_ready(
             "HTTP/1.1 200 OK\r\n\r\n{\"status\":\"failed\"}"
