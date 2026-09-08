@@ -70,6 +70,69 @@ def test_runtime_migration_adopts_complete_unversioned_legacy_database(tmp_path)
         engine.dispose()
 
 
+def test_runtime_migration_seeds_rbac_when_legacy_timestamps_have_no_default(
+        tmp_path):
+    """Reproduce the schema shipped by the installed 0.51.1 desktop DB."""
+    from office_agent.database.base import Base
+    from office_agent.database import models  # noqa: F401
+    from office_agent.database.runtime_migrations import (
+        migration_head,
+        upgrade_database,
+    )
+
+    url = _database_url(tmp_path, "legacy-rbac-timestamps.db")
+    engine = create_engine(url)
+    Base.metadata.create_all(engine)
+    with engine.begin() as connection:
+        for table in ("security_permissions", "security_roles"):
+            connection.execute(text(f"DROP TABLE {table}"))
+        connection.execute(text("""
+            CREATE TABLE security_permissions (
+                id VARCHAR(32) PRIMARY KEY NOT NULL,
+                name VARCHAR(128) NOT NULL UNIQUE,
+                resource VARCHAR(64) NOT NULL,
+                action VARCHAR(64) NOT NULL,
+                description TEXT,
+                risk_level VARCHAR(16),
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME
+            )
+        """))
+        connection.execute(text("""
+            CREATE TABLE security_roles (
+                id VARCHAR(32) PRIMARY KEY NOT NULL,
+                name VARCHAR(64) NOT NULL UNIQUE,
+                display_name VARCHAR(128),
+                description TEXT,
+                permissions JSON,
+                is_system BOOLEAN,
+                is_active BOOLEAN,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME
+            )
+        """))
+    engine.dispose()
+
+    assert upgrade_database(url) == migration_head()
+
+    engine = create_engine(url)
+    try:
+        with engine.connect() as connection:
+            assert connection.execute(text(
+                "SELECT COUNT(*) FROM security_permissions "
+                "WHERE created_at IS NOT NULL"
+            )).scalar_one() == 20
+            assert connection.execute(text(
+                "SELECT COUNT(*) FROM security_roles "
+                "WHERE created_at IS NOT NULL"
+            )).scalar_one() == 3
+            assert connection.execute(text(
+                "SELECT version_num FROM alembic_version"
+            )).scalar_one() == migration_head()
+    finally:
+        engine.dispose()
+
+
 def test_runtime_migration_rejects_incomplete_unversioned_database(tmp_path):
     from office_agent.database.runtime_migrations import upgrade_database
 

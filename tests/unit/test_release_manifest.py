@@ -2,15 +2,40 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
+
+from office_agent._version import __version__
 
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "desktop" / "release_manifest.py"
 CURRENT_SHA = "a" * 40
 STALE_SHA = "b" * 40
+
+
+def test_release_version_sources_are_synchronized():
+    package = json.loads(
+        (ROOT / "desktop-client" / "package.json").read_text(encoding="utf-8")
+    )
+    tauri = json.loads(
+        (ROOT / "desktop-client" / "src-tauri" / "tauri.conf.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    cargo = (
+        ROOT / "desktop-client" / "src-tauri" / "Cargo.toml"
+    ).read_text(encoding="utf-8")
+    cargo_version = re.search(
+        r'^version\s*=\s*"([^"]+)"\s*$', cargo, re.MULTILINE
+    )
+
+    assert cargo_version is not None
+    assert package["version"] == __version__
+    assert tauri["version"] == __version__
+    assert cargo_version.group(1) == __version__
 
 
 def _run(*args: str) -> subprocess.CompletedProcess[str]:
@@ -57,6 +82,7 @@ def test_manifest_is_deterministic_and_current_sha_verifies(tmp_path: Path):
 
     manifest = json.loads(first_payload)
     assert manifest["source_commit"] == CURRENT_SHA
+    assert manifest["app_version"] == __version__
     assert [item["path"] for item in manifest["files"]] == [
         "OfficeAgent.exe",
         "_internal/runtime.bin",
@@ -95,6 +121,26 @@ def test_stale_source_sha_is_a_blocking_failure(tmp_path: Path):
     )
     assert verify.returncode != 0
     assert "source commit mismatch" in verify.stderr
+
+
+def test_stale_application_version_is_a_blocking_failure(tmp_path: Path):
+    artifact_dir = _artifact_tree(tmp_path)
+    create = _run(
+        "create", "--artifact-dir", str(artifact_dir),
+        "--source-commit", CURRENT_SHA,
+    )
+    assert create.returncode == 0, create.stderr
+    manifest_path = artifact_dir / "release-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["app_version"] = "0.0.0-stale"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    verify = _run(
+        "verify", "--artifact-dir", str(artifact_dir),
+        "--expected-commit", CURRENT_SHA,
+    )
+    assert verify.returncode != 0
+    assert "application version mismatch" in verify.stderr
 
 
 def test_tampered_or_unexpected_backend_files_are_blocking(tmp_path: Path):

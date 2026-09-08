@@ -3,6 +3,8 @@
 Revision ID: 008_seed_database_rbac
 Revises: 007_security_identity_time_fk
 """
+from datetime import datetime, timezone
+
 from alembic import op
 import sqlalchemy as sa
 
@@ -38,11 +40,14 @@ _ROLES = {
 
 def upgrade() -> None:
     bind = op.get_bind()
+    seeded_at = datetime.now(timezone.utc)
     permission_table = sa.table(
         "security_permissions",
         sa.column("id", sa.String), sa.column("name", sa.String),
         sa.column("resource", sa.String), sa.column("action", sa.String),
         sa.column("description", sa.Text), sa.column("risk_level", sa.String),
+        sa.column("created_at", sa.DateTime(timezone=True)),
+        sa.column("updated_at", sa.DateTime(timezone=True)),
     )
     role_table = sa.table(
         "security_roles",
@@ -50,6 +55,8 @@ def upgrade() -> None:
         sa.column("display_name", sa.String), sa.column("description", sa.Text),
         sa.column("permissions", sa.JSON), sa.column("is_system", sa.Boolean),
         sa.column("is_active", sa.Boolean),
+        sa.column("created_at", sa.DateTime(timezone=True)),
+        sa.column("updated_at", sa.DateTime(timezone=True)),
     )
     existing_permissions = set(bind.execute(
         sa.select(permission_table.c.name)
@@ -59,6 +66,10 @@ def upgrade() -> None:
             "id": f"perm_system_{name.replace(':', '_')}", "name": name,
             "resource": resource, "action": action, "description": name,
             "risk_level": "high" if resource == "admin" else "low",
+            # Historical create_all databases made this column NOT NULL but
+            # did not give it a server default. Alembic bulk inserts bypass
+            # ORM defaults, so seed timestamps explicitly for every schema.
+            "created_at": seeded_at, "updated_at": seeded_at,
         }
         for name, (resource, action) in _PERMISSIONS.items()
         if name not in existing_permissions
@@ -71,6 +82,7 @@ def upgrade() -> None:
             "id": f"role_system_{name}", "name": name,
             "display_name": display_name, "description": display_name,
             "permissions": sorted(permissions), "is_system": True, "is_active": True,
+            "created_at": seeded_at, "updated_at": seeded_at,
         }
         for name, (display_name, permissions) in _ROLES.items()
         if name not in existing_roles

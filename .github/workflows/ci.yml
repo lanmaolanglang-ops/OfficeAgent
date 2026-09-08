@@ -2,7 +2,7 @@ name: Office Agent CI
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [ main, develop, 'codex/rc-*' ]
   pull_request:
     branches: [ main ]
 
@@ -54,6 +54,7 @@ jobs:
     name: Blocking Windows release chain
     needs: test
     runs-on: windows-latest
+    timeout-minutes: 120
 
     steps:
     - uses: actions/checkout@v4
@@ -85,6 +86,36 @@ jobs:
     - name: Set up Rust
       uses: dtolnay/rust-toolchain@stable
 
+    - name: Lint desktop frontend
+      run: pnpm --dir desktop-client run lint
+
+    - name: Type-check desktop frontend
+      run: pnpm --dir desktop-client run typecheck
+
+    - name: Test desktop frontend
+      run: pnpm --dir desktop-client run test
+
+    - name: Check Rust formatting
+      working-directory: desktop-client/src-tauri
+      run: cargo fmt -- --check
+
+    - name: Check Rust/Tauri
+      working-directory: desktop-client/src-tauri
+      run: cargo check --locked
+
+    - name: Test Rust/Tauri
+      working-directory: desktop-client/src-tauri
+      run: cargo test --locked
+
     - name: Build and verify Windows release chain
       shell: cmd
       run: desktop\build_windows.bat
+
+    - name: Upload SHA-bound Windows RC artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: officeagent-windows-${{ github.sha }}
+        if-no-files-found: error
+        path: |
+          desktop-client/src-tauri/target/release/bundle/nsis/*-setup.exe
+          dist/OfficeAgent/release-manifest.json

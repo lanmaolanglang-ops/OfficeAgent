@@ -21,8 +21,11 @@ from typing import Any, Sequence
 
 MANIFEST_NAME = "release-manifest.json"
 PRIMARY_ARTIFACT = "OfficeAgent.exe"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 _FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+_VERSION_RE = re.compile(
+    r'^__version__\s*=\s*["\']([^"\']+)["\']\s*$', re.MULTILINE
+)
 
 
 class ManifestError(RuntimeError):
@@ -48,6 +51,20 @@ def _normalize_commit(value: str) -> str:
     if not _FULL_SHA_RE.fullmatch(commit):
         raise ManifestError("source commit must be a full 40-character Git SHA")
     return commit
+
+
+def _source_version(repo_root: Path) -> str:
+    source = repo_root / "office_agent" / "_version.py"
+    try:
+        payload = source.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise ManifestError(
+            f"application version source is unreadable: {exc}"
+        ) from exc
+    match = _VERSION_RE.search(payload)
+    if not match or not match.group(1).strip():
+        raise ManifestError("application version source is invalid")
+    return match.group(1).strip()
 
 
 def _current_commit(repo_root: Path, *, require_clean: bool) -> str:
@@ -94,7 +111,9 @@ def _artifact_files(artifact_dir: Path) -> list[Path]:
     return sorted(files, key=lambda item: item.relative_to(artifact_dir).as_posix())
 
 
-def create_manifest(artifact_dir: Path, source_commit: str) -> dict[str, Any]:
+def create_manifest(
+        artifact_dir: Path, source_commit: str, app_version: str
+) -> dict[str, Any]:
     artifact_dir = artifact_dir.resolve()
     commit = _normalize_commit(source_commit)
     entries = [
@@ -108,6 +127,7 @@ def create_manifest(artifact_dir: Path, source_commit: str) -> dict[str, Any]:
     return {
         "schema_version": SCHEMA_VERSION,
         "source_commit": commit,
+        "app_version": app_version,
         "primary_artifact": PRIMARY_ARTIFACT,
         "files": entries,
     }
@@ -150,7 +170,9 @@ def _load_manifest(artifact_dir: Path) -> dict[str, Any]:
     return value
 
 
-def verify_manifest(artifact_dir: Path, expected_commit: str) -> dict[str, Any]:
+def verify_manifest(
+        artifact_dir: Path, expected_commit: str, expected_version: str
+) -> dict[str, Any]:
     artifact_dir = artifact_dir.resolve()
     expected = _normalize_commit(expected_commit)
     manifest = _load_manifest(artifact_dir)
@@ -161,6 +183,11 @@ def verify_manifest(artifact_dir: Path, expected_commit: str) -> dict[str, Any]:
         raise ManifestError(
             "backend source commit mismatch: "
             f"manifest={manifest.get('source_commit')!r}, expected={expected}"
+        )
+    if manifest.get("app_version") != expected_version:
+        raise ManifestError(
+            "backend application version mismatch: "
+            f"manifest={manifest.get('app_version')!r}, expected={expected_version!r}"
         )
     if manifest.get("primary_artifact") != PRIMARY_ARTIFACT:
         raise ManifestError("release manifest primary artifact is invalid")
@@ -247,12 +274,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             if explicit_commit
             else _current_commit(args.repo_root.resolve(), require_clean=True)
         )
+        version = _source_version(args.repo_root.resolve())
         if args.command == "create":
-            manifest = create_manifest(args.artifact_dir, commit)
+            manifest = create_manifest(args.artifact_dir, commit, version)
             path = write_manifest(args.artifact_dir, manifest)
             print(f"created {path} for {commit} ({len(manifest['files'])} files)")
         else:
-            manifest = verify_manifest(args.artifact_dir, commit)
+            manifest = verify_manifest(args.artifact_dir, commit, version)
             print(
                 f"verified {args.artifact_dir.resolve()} for {commit} "
                 f"({len(manifest['files'])} files)"
