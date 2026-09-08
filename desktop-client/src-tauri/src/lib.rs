@@ -89,7 +89,7 @@ impl BackendManager {
 
         self.stop();
         Err(format!(
-            "Backend在{}秒内未通过健康检查: http://{BACKEND_HOST}:{BACKEND_PORT}/health",
+            "Backend在{}秒内未通过就绪检查: http://{BACKEND_HOST}:{BACKEND_PORT}/ready",
             BACKEND_STARTUP_TIMEOUT.as_secs()
         ))
     }
@@ -232,14 +232,27 @@ fn parse_backend_pid(content: &str) -> Option<String> {
 
 fn health_request() -> String {
     format!(
-        "GET /health HTTP/1.1\r\nHost: {BACKEND_HOST}:{BACKEND_PORT}\r\nConnection: close\r\n\r\n"
+        "GET /ready HTTP/1.1\r\nHost: {BACKEND_HOST}:{BACKEND_PORT}\r\nConnection: close\r\n\r\n"
     )
 }
 
 fn health_response_is_ready(response: &str) -> bool {
-    response.starts_with("HTTP/1.1 200")
-        && (response.contains("\"status\":\"healthy\"")
-            || response.contains("\"status\":\"degraded\""))
+    if !response.starts_with("HTTP/1.1 200") {
+        return false;
+    }
+    let Some((_, body)) = response.split_once("\r\n\r\n") else {
+        return false;
+    };
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|payload| {
+            payload
+                .get("status")
+                .and_then(|status| status.as_str())
+                .map(str::to_owned)
+        })
+        .as_deref()
+        == Some("healthy")
 }
 
 fn backend_is_healthy() -> bool {
@@ -258,9 +271,8 @@ fn backend_is_healthy() -> bool {
         return false;
     }
 
-    // 后端契约：/health 永远返回 200，status 为 healthy 或 degraded。
-    // degraded 只表示某个子系统（如模型未配置）不可用，进程本身在正常运行——
-    // 把 degraded 当成启动失败会误杀后端，陷入"启动失败"死循环。
+    // 启动就绪要求数据库、schema 和 Worker 都可用。存活但 degraded 的
+    // 后端仍可由 /live 诊断，但不能让桌面主界面误以为任务链已经就绪。
     let mut response = String::new();
     stream.read_to_string(&mut response).is_ok() && health_response_is_ready(&response)
 }
@@ -278,12 +290,15 @@ mod tests {
     }
 
     #[test]
-    fn health_contract_accepts_healthy_and_degraded_backend_states() {
+    fn health_contract_accepts_only_ready_backend_state() {
         assert!(health_response_is_ready(
             "HTTP/1.1 200 OK\r\n\r\n{\"status\":\"healthy\"}"
         ));
-        assert!(health_response_is_ready(
+        assert!(!health_response_is_ready(
             "HTTP/1.1 200 OK\r\n\r\n{\"status\":\"degraded\"}"
+        ));
+        assert!(!health_response_is_ready(
+            "HTTP/1.1 200 OK\r\n\r\n{\"status\":\"degraded\",\"checks\":{\"api\":{\"status\":\"healthy\"}}}"
         ));
     }
 
@@ -295,12 +310,13 @@ mod tests {
         assert!(!health_response_is_ready(
             "HTTP/1.1 200 OK\r\n\r\n{\"status\":\"failed\"}"
         ));
+        assert!(!health_response_is_ready("HTTP/1.1 200 OK\r\n\r\nnot-json"));
     }
 
     #[test]
     fn health_request_is_local_and_connection_closing() {
         let request = health_request();
-        assert!(request.starts_with("GET /health HTTP/1.1\r\n"));
+        assert!(request.starts_with("GET /ready HTTP/1.1\r\n"));
         assert!(request.contains("Host: 127.0.0.1:8765\r\n"));
         assert!(request.ends_with("Connection: close\r\n\r\n"));
     }

@@ -128,6 +128,7 @@ class LocalWorker:
         self._timed_out: set = set()
         self._timers: Dict[str, threading.Timer] = {}
         self._lock = threading.RLock()
+        self._shutdown = False
 
         # 数据库 session 工厂
         self._session_factory = None
@@ -330,6 +331,11 @@ class LocalWorker:
             running = sum(1 for future in self._futures.values() if not future.done())
             finalizing = sum(1 for future in self._finalizing.values() if not future.done())
             return running + finalizing
+
+    def is_running(self) -> bool:
+        """Return whether this Worker can still accept and execute tasks."""
+        with self._lock:
+            return not self._shutdown
 
     # 终态集合：一旦写入，不允许被软超时/取消等回调改写
     _TERMINAL_STATUSES = ("success", "failed", "cancelled")
@@ -790,6 +796,10 @@ class LocalWorker:
 
     def shutdown(self, wait: bool = True):
         """关闭所有线程池"""
+        with self._lock:
+            if self._shutdown:
+                return
+            self._shutdown = True
         for executor in self.executors.values():
             executor.shutdown(wait=wait)
         self._finalize_executor.shutdown(wait=wait)
@@ -809,3 +819,9 @@ def get_worker():
             if _worker_instance is None:
                 _worker_instance = LocalWorker()
     return _worker_instance
+
+
+def get_initialized_worker() -> LocalWorker | None:
+    """Return the existing Worker without constructing one for a health probe."""
+    with _worker_lock:
+        return _worker_instance

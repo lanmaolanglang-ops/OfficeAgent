@@ -130,8 +130,15 @@ def upgrade() -> None:
     for table, fields in _JSON_FIELDS.items():
         if table not in inspector.get_table_names():
             continue
+        existing = {
+            item["name"]: item for item in inspector.get_columns(table)
+        }
         with op.batch_alter_table(table) as batch_op:
             for column, _ in fields:
+                # Legacy create_all databases may already use the ORM's native
+                # JSON type even though they have no Alembic version row.
+                if isinstance(existing[column]["type"], sa.JSON):
+                    continue
                 batch_op.alter_column(
                     column,
                     existing_type=sa.Text(),

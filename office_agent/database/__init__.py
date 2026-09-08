@@ -24,6 +24,7 @@ from .connection import (
 )
 from .session import SessionLocal, session_scope, get_db
 from .base import Base
+from .runtime_migrations import migration_head, upgrade_database
 from .._version import __version__
 
 
@@ -39,6 +40,7 @@ __all__ = [
     "__version__",
     "engine", "init_db", "DATABASE_URL",
     "default_engine", "dispose_default_engine",
+    "migration_head", "upgrade_database",
     "SessionLocal", "session_scope", "get_db",
     "Base",
 ]

@@ -1,17 +1,19 @@
 """Provider-neutral image generation gateway for document agents."""
 import base64
 import binascii
+import http.client
 import ipaddress
 import json
 import os
 import socket
+import ssl
 import tempfile
 import time
 import uuid
 from pathlib import Path
 from typing import Optional, cast
-from urllib.parse import urlsplit
-from urllib.request import Request, urlopen, build_opener, HTTPRedirectHandler
+from urllib.parse import SplitResult, urljoin, urlsplit
+from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
 
 from .config import normalize_image_model_config
@@ -27,8 +29,11 @@ MAX_IMAGE_DOWNLOAD_BYTES = 20 * 1024 * 1024
 DEFAULT_IMAGE_SIZE = "1024x768"
 
 
-def _validate_remote_url(url: str) -> None:
-    """只允许解析到公网地址的 HTTP(S) 图片 URL。"""
+_ResolvedEndpoint = tuple[int, int, int, str, tuple]
+
+
+def _validate_remote_url(url: str) -> tuple[SplitResult, tuple[_ResolvedEndpoint, ...]]:
+    """解析 URL 一次，并返回仅含公网地址的固定连接端点。"""
     try:
         parsed = urlsplit(url)
         if parsed.scheme not in {"http", "https"}:
@@ -38,24 +43,154 @@ def _validate_remote_url(url: str) -> None:
         host = parsed.hostname.rstrip(".").lower()
         if host == "localhost" or host.endswith(".localhost"):
             raise ImageGenerationError("拒绝下载内网图像地址")
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        endpoints = tuple(cast(
+            list[_ResolvedEndpoint],
+            socket.getaddrinfo(host, port, type=socket.SOCK_STREAM),
+        ))
+        if not endpoints:
+            raise ImageGenerationError("图像下载主机无法解析")
         addresses = {
             cast(str, item[4][0]).split("%", 1)[0]
-            for item in socket.getaddrinfo(host, parsed.port, type=socket.SOCK_STREAM)
+            for item in endpoints
         }
-        if not addresses:
-            raise ImageGenerationError("图像下载主机无法解析")
         if any(not ipaddress.ip_address(address).is_global for address in addresses):
             raise ImageGenerationError("拒绝下载内网或保留地址上的图像")
+        return parsed, endpoints
     except ImageGenerationError:
         raise
     except (OSError, ValueError) as exc:
         raise ImageGenerationError(f"图像下载 URL 无效: {exc}") from exc
 
 
-class _SafeRedirectHandler(HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        _validate_remote_url(newurl)
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
+def _connect_endpoint(endpoint: _ResolvedEndpoint, timeout: float) -> socket.socket:
+    """Connect directly to an already-validated numeric socket address."""
+    family, socktype, proto, _, sockaddr = endpoint
+    sock = socket.socket(family, socktype, proto)
+    sock.settimeout(timeout)
+    try:
+        sock.connect(sockaddr)
+    except Exception:
+        sock.close()
+        raise
+    return sock
+
+
+class _PinnedHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, host: str, port: int, endpoint: _ResolvedEndpoint,
+                 timeout: float):
+        super().__init__(host, port=port, timeout=timeout)
+        self._endpoint = endpoint
+
+    def connect(self) -> None:
+        self.sock = _connect_endpoint(self._endpoint, cast(float, self.timeout))
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    def __init__(self, host: str, port: int, endpoint: _ResolvedEndpoint,
+                 timeout: float):
+        self._ssl_context = ssl.create_default_context()
+        super().__init__(
+            host, port=port, timeout=timeout, context=self._ssl_context
+        )
+        self._endpoint = endpoint
+
+    def connect(self) -> None:
+        raw_socket = _connect_endpoint(
+            self._endpoint, cast(float, self.timeout)
+        )
+        try:
+            self.sock = self._ssl_context.wrap_socket(
+                raw_socket, server_hostname=self.host
+            )
+        except Exception:
+            raw_socket.close()
+            raise
+
+
+def _ascii_host(host: str) -> str:
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return host.encode("idna").decode("ascii")
+    return host
+
+
+def _host_header(host: str, port: int, scheme: str) -> str:
+    rendered = f"[{host}]" if ":" in host else host
+    default_port = 443 if scheme == "https" else 80
+    return rendered if port == default_port else f"{rendered}:{port}"
+
+
+def _read_limited_response(response: http.client.HTTPResponse,
+                           max_bytes: int) -> bytes:
+    content_length = response.getheader("Content-Length")
+    if content_length:
+        try:
+            if int(content_length) > max_bytes:
+                raise ImageGenerationError("图像下载超过大小限制")
+        except ValueError:
+            pass
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = response.read(min(64 * 1024, max_bytes - total + 1))
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise ImageGenerationError("图像下载超过大小限制")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _download_once(url: str, timeout: float,
+                   max_bytes: int) -> tuple[bytes | None, str | None]:
+    parsed, endpoints = _validate_remote_url(url)
+    host = _ascii_host(cast(str, parsed.hostname).rstrip(".").lower())
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    request_target = parsed.path or "/"
+    if parsed.query:
+        request_target = f"{request_target}?{parsed.query}"
+
+    last_error: BaseException | None = None
+    for endpoint in endpoints:
+        connection: http.client.HTTPConnection
+        if parsed.scheme == "https":
+            connection = _PinnedHTTPSConnection(host, port, endpoint, timeout)
+        else:
+            connection = _PinnedHTTPConnection(host, port, endpoint, timeout)
+        try:
+            connection.request(
+                "GET",
+                request_target,
+                headers={
+                    "Host": _host_header(host, port, parsed.scheme),
+                    "Accept": "image/*",
+                    "User-Agent": "OfficeAgent-image-fetch/1",
+                },
+            )
+            response = connection.getresponse()
+        except (OSError, ssl.SSLError, http.client.HTTPException) as exc:
+            last_error = exc
+            connection.close()
+            continue
+
+        try:
+            if response.status in {301, 302, 303, 307, 308}:
+                location = response.getheader("Location")
+                if not location:
+                    raise ImageGenerationError("图像下载重定向缺少目标地址")
+                return None, urljoin(url, location)
+            if not 200 <= response.status < 300:
+                raise ImageGenerationError(
+                    f"图像下载失败: HTTP {response.status}"
+                )
+            return _read_limited_response(response, max_bytes), None
+        finally:
+            connection.close()
+
+    raise ImageGenerationError(f"图像下载失败: {last_error or '连接失败'}")
 
 
 def _decode_image_b64(value: str) -> bytes:
@@ -102,34 +237,16 @@ def _post_json(url: str, payload: dict, headers: dict, timeout: float = 120.0) -
 
 def _get_bytes(url: str, timeout: float = 120.0,
                max_bytes: int = MAX_IMAGE_DOWNLOAD_BYTES) -> bytes:
-    """GET binary content，限制协议、目标地址和响应大小。"""
-    _validate_remote_url(url)
-    req = Request(url, method="GET")
-    try:
-        opener = build_opener(_SafeRedirectHandler())
-        with opener.open(req, timeout=timeout) as resp:
-            content_length = resp.headers.get("Content-Length")
-            if content_length:
-                try:
-                    if int(content_length) > max_bytes:
-                        raise ImageGenerationError("图像下载超过大小限制")
-                except ValueError:
-                    pass
-            chunks = []
-            total = 0
-            while True:
-                chunk = resp.read(min(64 * 1024, max_bytes - total + 1))
-                if not chunk:
-                    break
-                total += len(chunk)
-                if total > max_bytes:
-                    raise ImageGenerationError("图像下载超过大小限制")
-                chunks.append(chunk)
-            return b"".join(chunks)
-    except ImageGenerationError:
-        raise
-    except (HTTPError, URLError) as exc:
-        raise ImageGenerationError(f"图像下载失败: {exc}") from exc
+    """GET binary content with DNS results pinned to the actual socket."""
+    current_url = url
+    for _ in range(6):
+        content, redirect = _download_once(current_url, timeout, max_bytes)
+        if content is not None:
+            return content
+        if redirect is None:
+            break
+        current_url = redirect
+    raise ImageGenerationError("图像下载重定向次数过多")
 
 
 class ImageGenerationGateway:

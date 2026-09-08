@@ -44,7 +44,16 @@ export default function ChatInput({ onSend, onAttach, placeholder, disabled }: C
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSubmit(); }
+            const nativeEvent = e.nativeEvent as KeyboardEvent;
+            if (
+              e.key === 'Enter'
+              && !e.shiftKey
+              && !nativeEvent.isComposing
+              && nativeEvent.keyCode !== 229
+            ) {
+              e.preventDefault();
+              handleSubmit();
+            }
           }}
           placeholder={placeholder || '描述你的需求，例如：帮我整理这份报告并统一格式'}
           rows={1}

@@ -7,7 +7,7 @@ import time
 import platform
 import asyncio
 import threading
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
@@ -20,29 +20,65 @@ router = APIRouter(tags=["服务状态"])
 _start_time = time.time()
 
 
-def _check_database() -> dict:
-    """检查数据库连接"""
+def _check_database(app_state=None) -> dict:
+    """检查权威数据库连接，不创建或回退到其他数据库。"""
+    if app_state is None or not getattr(app_state, "database_ready", False):
+        return {"status": "unhealthy", "message": "数据库启动迁移未完成"}
     try:
         from office_agent.database.session import SessionLocal
         session = SessionLocal()
         try:
             session.execute(text("SELECT 1"))
-            session.commit()
             return {"status": "healthy", "message": "连接正常"}
         finally:
             session.close()
     except Exception:
-        # 尝试SQLite
+        return {"status": "unhealthy", "message": "数据库连接失败"}
+
+
+def _check_schema(app_state=None) -> dict:
+    """检查 Alembic revision 与任务主链所需的关键列。"""
+    if app_state is None or not getattr(app_state, "database_ready", False):
+        return {"status": "unhealthy", "message": "数据库 schema 未就绪"}
+    try:
+        from office_agent.database import migration_head
+        from office_agent.database.session import SessionLocal
+
+        expected = migration_head()
+        session = SessionLocal()
         try:
-            import sqlite3
-            from office_agent.database.connection import DEFAULT_DB_PATH
-            db_path = os.environ.get("DB_PATH", str(DEFAULT_DB_PATH))
-            conn = sqlite3.connect(db_path)
-            conn.execute("SELECT 1")
-            conn.close()
-            return {"status": "healthy", "message": "SQLite连接正常", "type": "sqlite"}
-        except Exception:
-            return {"status": "unhealthy", "message": "数据库连接失败"}
+            revisions = session.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalars().all()
+            if revisions != [expected]:
+                actual = ",".join(str(item) for item in revisions) or "missing"
+                return {
+                    "status": "unhealthy",
+                    "message": f"数据库 schema 版本不匹配: {actual}",
+                    "expected_revision": expected,
+                }
+            # Zero-row projections fail immediately if an incorrectly-stamped
+            # schema lacks columns used by core task and storage requests.
+            session.execute(text(
+                "SELECT id, status, parent_task_id, revision_number "
+                "FROM task WHERE 1=0"
+            ))
+            session.execute(text(
+                "SELECT id, original_name, storage_path, deleted_at "
+                "FROM file WHERE 1=0"
+            ))
+            session.execute(text(
+                'SELECT id, is_verified, failed_login_count FROM "user" WHERE 1=0'
+            ))
+            return {
+                "status": "healthy",
+                "message": "数据库 schema 已迁移",
+                "revision": expected,
+            }
+        finally:
+            session.close()
+    except Exception:
+        return {"status": "unhealthy", "message": "数据库 schema 检查失败"}
 
 
 def _check_storage() -> dict:
@@ -54,20 +90,24 @@ def _check_storage() -> dict:
         return {"status": "unhealthy", "message": "存储检查失败"}
 
 
-def _check_workers() -> dict:
+def _check_workers(app_state=None) -> dict:
     """检查Worker状态"""
+    if app_state is None or not getattr(app_state, "worker_started", False):
+        return {"status": "unhealthy", "message": "任务 Worker 未启动"}
     try:
-        # 实际任务由 LocalWorker 执行；旧的 API task_manager 仅是数据库不可用时
-        # 的兼容回退，用它统计会永远显示 0。
-        from office_agent.task_queue import get_worker
-        active = get_worker().get_active_count()
+        # 健康探针不得通过 get_worker() 按需构造一个从未启动的实例。
+        from office_agent.task_queue import get_initialized_worker
+        worker = get_initialized_worker()
+        if worker is None or not worker.is_running():
+            return {"status": "unhealthy", "message": "任务 Worker 不可用"}
+        active = worker.get_active_count()
         return {
             "status": "healthy",
             "active_tasks": active,
             "message": f"{active}个活跃任务",
         }
     except Exception:
-        return {"status": "unknown", "message": "任务引擎状态未知"}
+        return {"status": "unhealthy", "message": "任务引擎检查失败"}
 
 
 # ModelGateway() 会构造 ModelManager 并从磁盘读取模型配置与密钥材料。
@@ -156,7 +196,7 @@ def _get_overall_status(checks: dict) -> str:
     statuses = [v.get("status") for v in checks.values() if isinstance(v, dict)]
     if "unhealthy" in statuses:
         return "degraded"
-    if all(s in ("healthy", "configured", "disabled", "unknown", "template") for s in statuses):
+    if all(s in ("healthy", "configured", "disabled", "template") for s in statuses):
         return "healthy"
     return "degraded"
 
@@ -175,26 +215,28 @@ async def root():
 
 
 @router.get("/health", summary="健康检查（Docker/K8s探针）")
-async def health():
+async def health(request: Request):
     """
     健康检查端点 - 用于Docker HEALTHCHECK和K8s liveness/readiness探针
     返回各组件状态和系统资源
 
-    桌面端启动探针只依赖本端点；数据库不可用属于"降级可用"（服务本身可
-    响应），返回 200 + status=degraded，避免一次 DB 故障把整个桌面应用卡死
-    在启动页。
+    数据库、schema 或 Worker 不可用时仍返回可诊断的 200 + degraded；桌面
+    启动门禁只接受 healthy，K8s 就绪门禁则通过 /ready 返回 503。
     """
     uptime = time.time() - _start_time
-    database, storage, workers, models, system = await asyncio.gather(
-        asyncio.to_thread(_check_database),
+    state = request.app.state
+    database, schema, storage, workers, models, system = await asyncio.gather(
+        asyncio.to_thread(_check_database, state),
+        asyncio.to_thread(_check_schema, state),
         asyncio.to_thread(_check_storage),
-        asyncio.to_thread(_check_workers),
+        asyncio.to_thread(_check_workers, state),
         asyncio.to_thread(_check_models),
         asyncio.to_thread(_check_system),
     )
     checks = {
         "api": {"status": "healthy", "message": "API运行中"},
         "database": database,
+        "schema": schema,
         "storage": storage,
         "workers": workers,
         "models": models,
@@ -215,20 +257,23 @@ async def health():
 
 
 @router.get("/api/health", summary="详细健康检查")
-async def health_detail():
+async def health_detail(request: Request):
     """详细健康检查（含认证）"""
     uptime = time.time() - _start_time
     agents = ["word_agent", "ppt_agent", "excel_agent"]
-    database, storage, workers, models, system = await asyncio.gather(
-        asyncio.to_thread(_check_database),
+    state = request.app.state
+    database, schema, storage, workers, models, system = await asyncio.gather(
+        asyncio.to_thread(_check_database, state),
+        asyncio.to_thread(_check_schema, state),
         asyncio.to_thread(_check_storage),
-        asyncio.to_thread(_check_workers),
+        asyncio.to_thread(_check_workers, state),
         asyncio.to_thread(_check_models),
         asyncio.to_thread(_check_system),
     )
     checks = {
         "api": {"status": "healthy"},
         "database": database,
+        "schema": schema,
         "storage": storage,
         "workers": workers,
         "models": models,
@@ -256,9 +301,15 @@ async def version():
 
 
 @router.get("/ready", summary="就绪探针")
-async def readiness():
+async def readiness(request: Request):
     """K8s readiness probe - 服务是否准备好接收流量"""
-    checks = {"database": await asyncio.to_thread(_check_database)}
+    state = request.app.state
+    database, schema, workers = await asyncio.gather(
+        asyncio.to_thread(_check_database, state),
+        asyncio.to_thread(_check_schema, state),
+        asyncio.to_thread(_check_workers, state),
+    )
+    checks = {"database": database, "schema": schema, "workers": workers}
     overall = _get_overall_status(checks)
     status_code = 200 if overall == "healthy" else 503
     return JSONResponse(

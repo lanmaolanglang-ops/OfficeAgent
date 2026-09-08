@@ -36,7 +36,7 @@ from office_agent.api.router import (
     settings_router,
     security_router,
 )
-from office_agent.database import init_db as db_init, DATABASE_URL
+from office_agent.database import upgrade_database, DATABASE_URL
 from office_agent.runtime_config import get_data_root, get_log_dir
 
 # 初始化日志系统（在创建 app 之前）
@@ -231,14 +231,16 @@ def create_app() -> FastAPI:
             except Exception as e:
                 logger.warning(f"PID 文件写入失败: {e}")
 
-        # 初始化数据库
+        # 在任何数据库消费者或 Worker 启动前执行权威 Alembic 迁移。
         try:
-            db_init(drop_all=False)
+            schema_revision = upgrade_database()
             app.state.database_ready = True
-            logger.info(f"数据库: {DATABASE_URL}")
+            app.state.database_schema_revision = schema_revision
+            logger.info("数据库: %s (schema=%s)", DATABASE_URL, schema_revision)
         except Exception as e:
             app.state.database_ready = False
-            logger.error(f"数据库初始化失败，数据访问将不可用: {e}", exc_info=True)
+            app.state.database_schema_revision = None
+            logger.error(f"数据库迁移失败，数据访问将不可用: {e}", exc_info=True)
 
         # 数据库是任务队列与配置系统的前置条件。失败时保持健康端点可用，
         # 但不启动会持续写库失败的 Worker/调度器。
@@ -365,6 +367,7 @@ def create_app() -> FastAPI:
     app.state.startup_handler = on_startup
     app.state.shutdown_handler = on_shutdown
     app.state.database_ready = False
+    app.state.database_schema_revision = None
     app.state.worker_started = False
     app.state.scheduler_started = False
 

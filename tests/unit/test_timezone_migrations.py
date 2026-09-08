@@ -102,7 +102,7 @@ class TestMigrationChainIntegrity:
         engine = sa.create_engine(f"sqlite:///{db_path}")
         with engine.connect() as conn:
             version = conn.execute(sa.text("SELECT version_num FROM alembic_version")).scalar()
-            assert version == "011_file_schema_convergence"
+            assert version == "012_runtime_schema_contract"
             # 链尾可正常写入 aware 时间（ORM 默认值 utc_now）
             conn.execute(sa.text(
                 "INSERT INTO execution_log (id, task_id, agent, action, status, start_time)"
@@ -126,8 +126,8 @@ class TestMigrationChainIntegrity:
         engine = sa.create_engine(f"sqlite:///{db_path}")
         with engine.connect() as conn:
             version = conn.execute(sa.text("SELECT version_num FROM alembic_version")).scalar()
-            assert version == "010_config_json_columns"
+            assert version == "011_file_schema_convergence"
         command.upgrade(cfg, "head")
         with engine.connect() as conn:
             version = conn.execute(sa.text("SELECT version_num FROM alembic_version")).scalar()
-            assert version == "011_file_schema_convergence"
+            assert version == "012_runtime_schema_contract"

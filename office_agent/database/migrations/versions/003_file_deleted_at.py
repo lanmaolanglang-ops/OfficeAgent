@@ -9,8 +9,13 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column("file", sa.Column("deleted_at", sa.DateTime(), nullable=True))
-    op.create_index("ix_file_deleted_at", "file", ["deleted_at"])
+    inspector = sa.inspect(op.get_bind())
+    columns = {item["name"] for item in inspector.get_columns("file")}
+    indexes = {item["name"] for item in inspector.get_indexes("file")}
+    if "deleted_at" not in columns:
+        op.add_column("file", sa.Column("deleted_at", sa.DateTime(), nullable=True))
+    if "ix_file_deleted_at" not in indexes:
+        op.create_index("ix_file_deleted_at", "file", ["deleted_at"])
 
 
 def downgrade() -> None:

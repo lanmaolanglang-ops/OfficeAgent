@@ -20,7 +20,7 @@ Office Agent Task Queue - 异步任务系统
         print(task.status, task.progress)
 """
 from .config import config
-from .worker import get_worker, LocalWorker
+from .worker import get_initialized_worker, get_worker, LocalWorker
 from .tasks import TASK_REGISTRY, TASK_TYPE_TO_QUEUE, queue_name_for_task_type
 from .._version import __version__
 
@@ -106,7 +106,7 @@ def init_worker():
 
 __all__ = [
     "__version__",
-    "config", "get_worker", "LocalWorker",
+    "config", "get_worker", "get_initialized_worker", "LocalWorker",
     "submit_task", "cancel_task", "init_worker", "TASK_REGISTRY",
     "TASK_TYPE_TO_QUEUE", "queue_name_for_task_type",
 ]

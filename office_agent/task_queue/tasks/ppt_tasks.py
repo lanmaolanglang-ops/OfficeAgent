@@ -150,7 +150,8 @@ def generate_ppt(outline: str | None = None, input_path: str | None = None,
         _task_id: 任务ID
     """
     options = options or {}
-    result: dict = {"status": "success", "output_files": [], "slides": 0}
+    # Fail closed until a generated file has been validated and registered.
+    result: dict = {"status": "failed", "output_files": [], "slides": 0}
 
     try:
         if progress:
@@ -263,6 +264,12 @@ def generate_ppt(outline: str | None = None, input_path: str | None = None,
         if progress:
             progress.update(80, "调整样式和布局")
 
+        if not ppt_result:
+            result["error"] = "PPT生成失败：生成器未返回结果"
+            if progress:
+                progress.update(100, "生成失败: 生成器未返回结果")
+            return result
+
         if ppt_result:
             if hasattr(ppt_result, 'success') and not ppt_result.success:
                 error_msg = getattr(ppt_result, 'message', 'PPT生成失败')
@@ -317,6 +324,12 @@ def generate_ppt(outline: str | None = None, input_path: str | None = None,
                 if not file_info or not file_info.file_id:
                     raise RuntimeError("output registration failed: no file_id")
                 result["output_files"].append(file_info.file_id)
+                result["status"] = "success"
+            else:
+                result["error"] = "PPT生成失败：输出文件不存在"
+                if progress:
+                    progress.update(100, "生成失败: 输出文件不存在")
+                return result
             result["slides"] = slides or 0
             if message:
                 result["message"] = message

@@ -11,8 +11,6 @@ import json
 import logging
 from typing import Optional
 
-from ..model_gateway.model_manager import ApiKeyCrypto, resolve_model_config_dir
-
 logger = logging.getLogger(__name__)
 
 AGNES_DEFAULT_BASE_URL = "https://apihub.agnes-ai.com/v1"
@@ -48,6 +46,14 @@ class ImageModelConfigManager:
     """生图模型配置管理器"""
 
     def __init__(self, config_dir: Optional[str] = None):
+        # Keep the lightweight image download gateway importable on its own.
+        # Importing model_gateway at module load enters its package __init__,
+        # which imports the API settings router and cycles back to this module.
+        from ..model_gateway.model_manager import (
+            ApiKeyCrypto,
+            resolve_model_config_dir,
+        )
+
         self.config_dir = resolve_model_config_dir(config_dir)
         self.config_dir.mkdir(parents=True, exist_ok=True)
         self.config_file = self.config_dir / "image_model.json"
