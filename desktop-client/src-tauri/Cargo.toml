@@ -1,6 +1,6 @@
 [package]
 name = "officeagent"
-version = "0.51.2"
+version = "0.51.3"
 description = "OfficeAgent Desktop - AI-powered Office Assistant"
 authors = ["OfficeAgent Team"]
 edition = "2021"

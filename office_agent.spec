@@ -89,6 +89,13 @@ hiddenimports = [
 
 # 数据文件
 datas = []
+# Alembic loads this project's migration environment and revision modules by
+# filesystem path at runtime, so PyInstaller cannot discover them as imports.
+database_dir = project_root / 'office_agent' / 'database'
+datas.extend([
+    (str(database_dir / 'alembic.ini'), 'office_agent/database'),
+    (str(database_dir / 'migrations'), 'office_agent/database/migrations'),
+])
 # 添加配置模板
 config_dir = project_root / 'release' / 'config'
 if config_dir.exists():

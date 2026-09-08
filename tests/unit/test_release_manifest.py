@@ -38,6 +38,14 @@ def test_release_version_sources_are_synchronized():
     assert cargo_version.group(1) == __version__
 
 
+def test_pyinstaller_spec_bundles_alembic_runtime_resources():
+    spec = (ROOT / "office_agent.spec").read_text(encoding="utf-8")
+
+    assert "database_dir / 'alembic.ini'" in spec
+    assert "database_dir / 'migrations'" in spec
+    assert "'office_agent/database/migrations'" in spec
+
+
 def _run(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, str(SCRIPT), *args],
