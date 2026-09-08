@@ -2,8 +2,12 @@ import importlib
 import re
 import subprocess
 import sys
-import tomllib
 from pathlib import Path
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10 compatibility
+    import tomli as tomllib
 
 
 def test_data_root_drives_storage_config_knowledge_and_task_outputs(tmp_path, monkeypatch):

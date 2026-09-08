@@ -43,6 +43,7 @@ dev = [
     "pytest-asyncio>=0.21.0",
     "ruff>=0.1.0",
     "mypy>=1.5,<2",
+    "tomli>=2.0.1; python_version < '3.11'",
 ]
 semantic = [
     "sentence-transformers>=2.7.0",
