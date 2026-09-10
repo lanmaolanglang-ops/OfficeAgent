@@ -46,6 +46,19 @@ def test_pyinstaller_spec_bundles_alembic_runtime_resources():
     assert "'office_agent/database/migrations'" in spec
 
 
+def test_windows_ci_builds_tauri_resources_before_rust_checks():
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
+        encoding="utf-8"
+    )
+
+    build = workflow.index("- name: Build and verify Windows release chain")
+    check = workflow.index("- name: Check Rust/Tauri")
+    test = workflow.index("- name: Test Rust/Tauri")
+    upload = workflow.index("- name: Upload SHA-bound Windows RC artifacts")
+
+    assert build < check < test < upload
+
+
 def _run(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, str(SCRIPT), *args],

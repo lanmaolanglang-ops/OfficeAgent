@@ -99,6 +99,10 @@ jobs:
       working-directory: desktop-client/src-tauri
       run: cargo fmt -- --check
 
+    - name: Build and verify Windows release chain
+      shell: cmd
+      run: desktop\build_windows.bat
+
     - name: Check Rust/Tauri
       working-directory: desktop-client/src-tauri
       run: cargo check --locked
@@ -106,10 +110,6 @@ jobs:
     - name: Test Rust/Tauri
       working-directory: desktop-client/src-tauri
       run: cargo test --locked
-
-    - name: Build and verify Windows release chain
-      shell: cmd
-      run: desktop\build_windows.bat
 
     - name: Upload SHA-bound Windows RC artifacts
       uses: actions/upload-artifact@v4
