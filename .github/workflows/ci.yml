@@ -84,7 +84,7 @@ jobs:
       run: pnpm --dir desktop-client install --frozen-lockfile
 
     - name: Set up Rust
-      uses: dtolnay/rust-toolchain@stable
+      uses: dtolnay/rust-toolchain@1.97.1
 
     - name: Lint desktop frontend
       run: pnpm --dir desktop-client run lint

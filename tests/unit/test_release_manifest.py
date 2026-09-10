@@ -49,7 +49,7 @@ def test_pyinstaller_spec_bundles_alembic_runtime_resources():
     assert "'office_agent/database/migrations'" in spec
 
 
-def test_windows_ci_builds_tauri_resources_before_rust_checks():
+def test_windows_ci_pins_rust_and_builds_resources_before_checks():
     workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
         encoding="utf-8"
     )
@@ -59,6 +59,7 @@ def test_windows_ci_builds_tauri_resources_before_rust_checks():
     test = workflow.index("- name: Test Rust/Tauri")
     upload = workflow.index("- name: Upload SHA-bound Windows RC artifacts")
 
+    assert "uses: dtolnay/rust-toolchain@1.97.1" in workflow
     assert build < check < test < upload
 
 
