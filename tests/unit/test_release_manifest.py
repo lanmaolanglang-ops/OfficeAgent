@@ -7,6 +7,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
+from desktop import release_manifest
 from office_agent._version import __version__
 
 
@@ -59,14 +62,33 @@ def test_windows_ci_builds_tauri_resources_before_rust_checks():
     assert build < check < test < upload
 
 
-def _run(*args: str) -> subprocess.CompletedProcess[str]:
+def test_windows_release_chain_pins_sha_and_rechecks_clean_tree():
+    build_script = (ROOT / "desktop" / "build_windows.bat").read_text(
+        encoding="utf-8"
+    )
+    package = json.loads(
+        (ROOT / "desktop-client" / "package.json").read_text(encoding="utf-8")
+    )
+
+    assert 'set "OFFICEAGENT_SOURCE_COMMIT=%SOURCE_COMMIT%"' in build_script
+    assert "--source-commit %OFFICEAGENT_SOURCE_COMMIT%" in build_script
+    assert "--expected-commit %OFFICEAGENT_SOURCE_COMMIT%" in build_script
+    assert build_script.count(
+        "git status --porcelain^=v1 --untracked-files^=no"
+    ) == 2
+    assert package["scripts"]["tauri:build"] == "tauri build -- --locked"
+
+
+def _run(
+    *args: str, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, str(SCRIPT), *args],
         check=False,
         capture_output=True,
         text=True,
         encoding="utf-8",
-        env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+        env={**os.environ, "PYTHONIOENCODING": "utf-8", **(env or {})},
     )
 
 
@@ -118,6 +140,43 @@ def test_manifest_is_deterministic_and_current_sha_verifies(tmp_path: Path):
     )
     assert verify.returncode == 0, verify.stderr
     assert "verified" in verify.stdout
+
+
+def test_environment_pinned_sha_verifies_without_inspecting_transient_git_state(
+    tmp_path: Path,
+):
+    artifact_dir = _artifact_tree(tmp_path)
+    create = _run(
+        "create",
+        "--artifact-dir",
+        str(artifact_dir),
+        "--source-commit",
+        CURRENT_SHA,
+    )
+    assert create.returncode == 0, create.stderr
+
+    verify = _run(
+        "verify",
+        "--artifact-dir",
+        str(artifact_dir),
+        env={release_manifest.SOURCE_COMMIT_ENV: CURRENT_SHA},
+    )
+    assert verify.returncode == 0, verify.stderr
+
+
+def test_dirty_worktree_error_lists_tracked_paths(monkeypatch: pytest.MonkeyPatch):
+    def fake_run_git(repo_root: Path, *args: str) -> str:
+        del repo_root
+        if args == ("rev-parse", "HEAD"):
+            return CURRENT_SHA
+        return " M desktop-client/src-tauri/Cargo.lock"
+
+    monkeypatch.setattr(release_manifest, "_run_git", fake_run_git)
+
+    with pytest.raises(release_manifest.ManifestError) as exc_info:
+        release_manifest._current_commit(ROOT, require_clean=True)
+
+    assert "desktop-client/src-tauri/Cargo.lock" in str(exc_info.value)
 
 
 def test_stale_source_sha_is_a_blocking_failure(tmp_path: Path):

@@ -22,6 +22,7 @@ from typing import Any, Sequence
 MANIFEST_NAME = "release-manifest.json"
 PRIMARY_ARTIFACT = "OfficeAgent.exe"
 SCHEMA_VERSION = 2
+SOURCE_COMMIT_ENV = "OFFICEAGENT_SOURCE_COMMIT"
 _FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 _VERSION_RE = re.compile(
     r'^__version__\s*=\s*["\']([^"\']+)["\']\s*$', re.MULTILINE
@@ -78,7 +79,8 @@ def _current_commit(repo_root: Path, *, require_clean: bool) -> str:
         )
         if dirty:
             raise ManifestError(
-                "tracked worktree is dirty; commit release inputs before building"
+                "tracked worktree is dirty; commit release inputs before building:\n"
+                f"{dirty}"
             )
     return commit
 
@@ -269,6 +271,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         explicit_commit = (
             args.source_commit if args.command == "create" else args.expected_commit
         )
+        explicit_commit = explicit_commit or os.environ.get(SOURCE_COMMIT_ENV)
         commit = (
             _normalize_commit(explicit_commit)
             if explicit_commit
