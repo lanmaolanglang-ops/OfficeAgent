@@ -60,6 +60,7 @@ def test_windows_ci_pins_rust_and_builds_resources_before_checks():
     upload = workflow.index("- name: Upload SHA-bound Windows RC artifacts")
 
     assert "uses: dtolnay/rust-toolchain@1.97.1" in workflow
+    assert "components: rustfmt" in workflow
     assert build < check < test < upload
 
 
