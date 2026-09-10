@@ -34,6 +34,19 @@ def test_spoofed_office_file_and_legacy_formats_are_rejected():
         validate_file("renamed.docx", b"MZ executable")
 
 
+def test_local_storage_normalizes_legacy_windows_paths_and_blocks_traversal(tmp_path):
+    from office_agent.storage.local_storage import LocalStorage
+
+    backend = LocalStorage(str(tmp_path / "objects"))
+    backend.upload("uploads/legacy/report.txt", b"legacy")
+
+    assert backend.download(r"uploads\legacy\report.txt") == b"legacy"
+    with pytest.raises(ValueError, match="非法路径"):
+        backend._full_path(r"..\outside.txt")
+    with pytest.raises(ValueError, match="非法路径"):
+        backend._full_path(r"C:\outside.txt")
+
+
 def test_valid_ooxml_upload_is_streamed_and_persisted(tmp_path, sample_docx, request):
     service, _ = _storage_service(tmp_path, request)
     with sample_docx.open("rb") as stream:

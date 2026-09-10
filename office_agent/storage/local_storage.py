@@ -7,7 +7,7 @@ import shutil
 import hashlib
 from datetime import datetime
 from typing import BinaryIO
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from .storage_backend import StorageBackend
 from .path_generator import ALL_BUCKETS
@@ -40,8 +40,13 @@ class LocalStorage(StorageBackend):
 
     def _full_path(self, storage_path: str) -> str:
         """将相对路径转为绝对路径，防止路径穿越"""
-        # 规范化路径
-        full = os.path.normpath(os.path.join(self.root_path, storage_path))
+        # 持久化路径统一使用目录分隔语义。旧 Windows 数据中的反斜杠在
+        # Linux CI/恢复环境中不能被当作普通文件名，否则会定位到错误文件。
+        windows_path = PureWindowsPath(storage_path)
+        if windows_path.drive or windows_path.root:
+            raise ValueError(f"非法路径: {storage_path}")
+        portable_path = storage_path.replace("\\", os.sep).replace("/", os.sep)
+        full = os.path.normpath(os.path.join(self.root_path, portable_path))
         root = os.path.normpath(self.root_path)
         # 安全检查：必须在 root_path 下（用 commonpath 防止前缀目录名伪造，
         # 例如 root=...\\storage 时 ...\\storage_evil\\x 不再被放行）
