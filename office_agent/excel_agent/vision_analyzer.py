@@ -16,8 +16,7 @@ from typing import Optional, List, Dict, Any
 from enum import Enum
 
 from ..vision_gateway import (
-    VisionGateway, VisionRequest, VisionResponse,
-    ImageInput, VisionTaskType,
+    VisionGateway, VisionRequest, ImageInput, VisionTaskType,
 )
 
 
@@ -202,7 +201,7 @@ class ExcelVisionResult:
         t = self.table
 
         # 表格识别
-        lines.append(f"\n【表格识别】")
+        lines.append("\n【表格识别】")
         type_names = {
             "sales": "销售报表", "finance": "财务报表", "inventory": "库存表",
             "hr": "人事表", "project": "项目表", "customer": "客户表",
@@ -219,12 +218,12 @@ class ExcelVisionResult:
         lines.append(f"  字段数: {len(t.columns)} 个")
 
         if t.has_total_row:
-            lines.append(f"  备注: 含合计行")
+            lines.append("  备注: 含合计行")
         if t.has_merged_cells:
-            lines.append(f"  备注: 含合并单元格")
+            lines.append("  备注: 含合并单元格")
 
         # 字段详情
-        lines.append(f"\n【字段识别】")
+        lines.append("\n【字段识别】")
         sem_names = {
             "date": "日期", "time": "时间", "datetime": "日期时间",
             "amount": "金额", "currency": "货币", "quantity": "数量",
@@ -251,13 +250,13 @@ class ExcelVisionResult:
 
         # 示例数据
         if t.sample_data:
-            lines.append(f"\n【示例数据】")
+            lines.append("\n【示例数据】")
             for row in t.sample_data[:5]:
                 lines.append(f"  | {' | '.join(str(v) for v in row)} |")
 
         # 分析建议
         if self.suggested_analyses:
-            lines.append(f"\n【推荐分析】")
+            lines.append("\n【推荐分析】")
             for i, a in enumerate(self.suggested_analyses, 1):
                 chart = f" [{a.chart_suggestion}图]" if a.chart_suggestion else ""
                 lines.append(f"  {i}. {a.title}{chart}")
@@ -266,7 +265,7 @@ class ExcelVisionResult:
                     lines.append(f"     涉及字段: {', '.join(a.columns_involved)}")
 
         if self.overall_summary:
-            lines.append(f"\n【总结】")
+            lines.append("\n【总结】")
             lines.append(f"  {self.overall_summary}")
 
         return "\n".join(lines)
@@ -499,24 +498,61 @@ class ExcelVisionAnalyzer:
 
     @staticmethod
     def _extract_json(text: str) -> str:
+        """从模型输出中取出第一个完整且可解析的 JSON 对象。
+
+        朴素括号计数不感知 JSON 字符串状态：正文形如
+        ``{"text": "这里有 {变量} 和 }"}`` 时，字符串内的 ``{``/``}``
+        会被当成结构括号，导致在字符串内部的 ``}`` 处提前收尾，截出一段
+        无法解析的碎片；``\\"`` 与 ``\\\\`` 同理会让引号判定错位。
+
+        这里改为：字符串/转义感知地找配对括号，并对候选做一次 json.loads
+        校验——模型输出前面的说明文字里若也含花括号，能继续往后找真正
+        的 JSON，而不是返回"截出来的第一个平衡片段"。
+        """
         text = re.sub(r'```(?:json)?\s*', '', text)
         text = re.sub(r'\s*```', '', text)
-        start = -1
-        for i, ch in enumerate(text):
-            if ch == '{':
-                start = i
-                break
-        if start < 0:
-            return ""
+        for start in range(len(text)):
+            if text[start] != '{':
+                continue
+            end = ExcelVisionAnalyzer._scan_object(text, start)
+            if end is None:
+                continue
+            candidate = text[start:end + 1]
+            try:
+                json.loads(candidate, strict=False)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            return candidate
+        return ""
+
+    @staticmethod
+    def _scan_object(text: str, start: int) -> Optional[int]:
+        """从 ``start`` 处的 ``{`` 扫描到配对的 ``}``，返回其下标。
+
+        括号计数期间跟踪 JSON 字符串与转义状态；未闭合则返回 None。
+        """
         depth = 0
+        in_string = False
+        escaped = False
         for i in range(start, len(text)):
-            if text[i] == '{':
+            ch = text[i]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif ch == '\\':
+                    escaped = True
+                elif ch == '"':
+                    in_string = False
+                continue
+            if ch == '"':
+                in_string = True
+            elif ch == '{':
                 depth += 1
-            elif text[i] == '}':
+            elif ch == '}':
                 depth -= 1
                 if depth == 0:
-                    return text[start:i+1]
-        return ""
+                    return i
+        return None
 
     @staticmethod
     def _to_int(data: dict, key: str, default: int) -> int:
@@ -578,7 +614,10 @@ class ExcelVisionAnalyzer:
                 description=a_data.get("description", ""),
                 columns_involved=a_data.get("columns_involved", []),
                 chart_suggestion=a_data.get("chart_suggestion", ""),
-                priority=int(a_data.get("priority", 3)),
+                # 不得裸 int()：模型返回 "high" / None / "" / "3.0" 时会抛
+                # ValueError/TypeError，让整段视觉分析一起失败。
+                # 复用同文件 _to_int 的宽容解析，脏值退回默认优先级 3。
+                priority=self._to_int(a_data, "priority", 3),
                 formula_hint=a_data.get("formula_hint", ""),
             )
             analyses.append(analysis)

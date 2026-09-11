@@ -415,13 +415,33 @@ class PPTQualityChecker:
         fixed = copy.deepcopy(outline)
         actions = report.get_fix_actions()
 
+        # action["slide"] 记录的是**检查时**的 0-based 列表下标。
+        # reduce_bullets 会插入续页、insert_cover 会插入封面、remove_slides
+        # 会裁剪中间页，这些都会改变列表长度；后续 action 若继续按原始下标
+        # 取页，就会改到别的页（例如给原第 5 页的修正落到原第 4 页上）。
+        # 这里维护 原始下标 -> 当前下标 的映射（None 表示该页已被删除），
+        # 使每个 action 始终作用到它检查时看到的那一张页，同时保持
+        # action 原有的处理顺序不变。
+        index_map: list = list(range(len(outline.slides)))
+
+        def _current(slide_idx):
+            if isinstance(slide_idx, int) and not isinstance(slide_idx, bool) \
+                    and 0 <= slide_idx < len(index_map):
+                return index_map[slide_idx]
+            return None
+
+        def _shift(after_pos: int, delta: int) -> None:
+            for i, pos in enumerate(index_map):
+                if pos is not None and pos > after_pos:
+                    index_map[i] = pos + delta
+
         for action in actions:
             atype = action.get("type")
 
             if atype == "reduce_bullets":
-                slide_idx = action["slide"]
+                slide_idx = _current(action["slide"])
                 max_bullets = action.get("max", self.MAX_BULLETS)
-                if slide_idx < len(fixed.slides):
+                if slide_idx is not None and slide_idx < len(fixed.slides):
                     slide = fixed.slides[slide_idx]
                     if len(slide.bullets) > max_bullets:
                         overflow = slide.bullets[max_bullets:]
@@ -431,10 +451,11 @@ class PPTQualityChecker:
                         continuation.bullets = overflow
                         fixed.slides.insert(slide_idx + 1, continuation)
                         self._renumber(fixed)
+                        _shift(slide_idx, 1)
 
             elif atype == "reduce_text":
-                slide_idx = action["slide"]
-                if slide_idx < len(fixed.slides):
+                slide_idx = _current(action["slide"])
+                if slide_idx is not None and slide_idx < len(fixed.slides):
                     slide = fixed.slides[slide_idx]
                     slide.body_font_size = max(12, (slide.body_font_size or 18) - 2)
                     slide.notes = (slide.notes or "") + "\n已为高密度内容降低字号，正文未截断。"
@@ -446,11 +467,20 @@ class PPTQualityChecker:
                 except (TypeError, ValueError):
                     count = 0
                 if count > 0 and len(fixed.slides) > 2:
+                    # 被裁掉的是当前位置 1..removed（含）
+                    removed = min(count, len(fixed.slides) - 2)
                     removable = fixed.slides[1:-1]
                     del removable[:count]
                     fixed.slides = [fixed.slides[0]] + removable + [fixed.slides[-1]]
                     for i, s in enumerate(fixed.slides):
                         s.page_number = i + 1
+                    for i, pos in enumerate(index_map):
+                        if pos is None:
+                            continue
+                        if 1 <= pos <= removed:
+                            index_map[i] = None
+                        elif pos > removed:
+                            index_map[i] = pos - removed
                     fixed.changes = getattr(fixed, "changes", [])
                     fixed.changes.append(f"已按页数要求裁剪 {count} 页")
 
@@ -459,8 +489,8 @@ class PPTQualityChecker:
                 continue
 
             elif atype == "unify_font":
-                slide_idx = action.get("slide", -1)
-                if 0 <= slide_idx < len(fixed.slides):
+                slide_idx = _current(action.get("slide", -1))
+                if slide_idx is not None and 0 <= slide_idx < len(fixed.slides):
                     fixed.slides[slide_idx].notes = (
                         (fixed.slides[slide_idx].notes or "")
                         + "\n生成时统一使用大纲字体方案。"
@@ -471,8 +501,8 @@ class PPTQualityChecker:
                     slide.notes = (slide.notes or "") + "\n生成时统一使用大纲字体方案。"
 
             elif atype == "reduce_font":
-                slide_idx = action.get("slide", -1)
-                if 0 <= slide_idx < len(fixed.slides):
+                slide_idx = _current(action.get("slide", -1))
+                if slide_idx is not None and 0 <= slide_idx < len(fixed.slides):
                     slide = fixed.slides[slide_idx]
                     slide.body_font_size = max(12, (slide.body_font_size or 18) - 2)
 
@@ -487,6 +517,7 @@ class PPTQualityChecker:
                     )
                     fixed.slides.insert(0, cover)
                     self._renumber(fixed)
+                    _shift(-1, 1)
 
             elif atype == "append_summary":
                 # 在末尾添加总结页
@@ -500,8 +531,8 @@ class PPTQualityChecker:
                     self._renumber(fixed)
 
             elif atype == "add_title":
-                slide_idx = action["slide"]
-                if slide_idx < len(fixed.slides):
+                slide_idx = _current(action["slide"])
+                if slide_idx is not None and slide_idx < len(fixed.slides):
                     slide = fixed.slides[slide_idx]
                     if not slide.title:
                         slide.title = f"第{slide_idx + 1}页"
