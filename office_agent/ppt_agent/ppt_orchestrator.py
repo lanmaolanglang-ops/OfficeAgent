@@ -165,6 +165,9 @@ class PPTOrchestrator:
 
             outline = self._generate_marked_images(outline)
 
+            # 2.5 生成前质量预检 + 自动修正（与 theme 路径同一道关卡）
+            outline = self._pre_check_and_fix(outline)
+
             # 3. 生成
             if not output_path:
                 output_path = "content_presentation.pptx"
@@ -207,6 +210,9 @@ class PPTOrchestrator:
             outline = designer.design(outline)
 
             outline = self._generate_marked_images(outline)
+
+            # 2.5 生成前质量预检 + 自动修正（与 theme 路径同一道关卡）
+            outline = self._pre_check_and_fix(outline)
 
             # 3. 生成
             if not output_path:
@@ -255,6 +261,9 @@ class PPTOrchestrator:
             outline = designer.design(outline)
 
             outline = self._generate_marked_images(outline)
+
+            # 2.5 生成前质量预检 + 自动修正（与 theme 路径同一道关卡）
+            outline = self._pre_check_and_fix(outline)
 
             # 3. 生成
             if not output_path:
@@ -327,6 +336,9 @@ class PPTOrchestrator:
             )
             outline = designer.design(outline)
 
+            # 生成前质量预检 + 自动修正（与 theme 路径同一道关卡）
+            outline = self._pre_check_and_fix(outline, expected_slides=slide_count)
+
             outline = self._generate_marked_images(outline)
 
             # 生成
@@ -367,17 +379,23 @@ class PPTOrchestrator:
             return outline
         # 优先处理 LLM 明确标记的图文页；若模型没有标记任何页面，则从普通
         # 内容页中确定性选择，避免“配置了生图但规划结果全是文本”。
-        candidates = [
-            slide for slide in outline.slides
+        # 用**列表下标**而不是 slide 对象本身做身份判定：
+        # SlideContent 是 dataclass，`==` 比较的是字段值。两页内容完全相同的
+        # 页面会互相"等于"，`slide not in candidates` 会把后一页误判成已在
+        # 候选里，于是它永远拿不到配图。下标在本次遍历内稳定且唯一。
+        candidate_indices = [
+            idx for idx, slide in enumerate(outline.slides)
             if slide.layout == "content_image" and not slide.image_path
         ]
-        candidates.extend(
-            slide for slide in outline.slides
+        already = set(candidate_indices)
+        candidate_indices.extend(
+            idx for idx, slide in enumerate(outline.slides)
             if slide.layout in ("content", "content_list")
-            and not slide.image_path and slide not in candidates
+            and not slide.image_path and idx not in already
         )
 
-        for slide in candidates:
+        for idx in candidate_indices:
+            slide = outline.slides[idx]
             if self.image_generation["generated"] >= self.max_generated_images:
                 break
             prompt = (slide.image_prompt or (
@@ -434,8 +452,21 @@ class PPTOrchestrator:
 
         检查：内容完整性、要点数量、文字量、封面/总结页
         修正：减少过多要点、截断过长文字、补充封面/总结页、补标题
+
+        所有生成入口都应调用一次（且只调用一次），否则只有 theme 路径
+        享受预检，其余路径的过长要点 / 缺封面会直接带病进入渲染。
+        预检本身失败时降级为"不修正"，并记录原因——它只是优化步骤，
+        不应让整次生成失败，但也不能假装修好了。
         """
-        fixed, report = check_and_fix_outline(outline, expected_slides)
+        try:
+            fixed, report = check_and_fix_outline(outline, expected_slides)
+        except Exception as exc:
+            reason = sanitize_error(exc)
+            logger.warning("质量预检失败，降级为未修正的大纲: %s", reason)
+            outline.changes = list(getattr(outline, "changes", []) or [])
+            outline.changes.append(f"质量预检: 执行失败，已跳过（{reason}）")
+            return outline
+
         if report.fixable_issues():
             fixed.changes = getattr(fixed, 'changes', [])
             fixed.changes.append(

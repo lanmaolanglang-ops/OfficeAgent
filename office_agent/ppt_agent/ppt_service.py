@@ -71,6 +71,26 @@ THEME_COLORS = {
 
 DEFAULT_FONTS = FontScheme()
 
+# 单页条目容量（由布局决定，不是整个 deck 的上限）。
+# 目录页：单列，起始 y=2.0、行距 0.85，第 6 项落在 y≈6.25，再往下会溢出。
+TOC_ITEMS_PER_PAGE = 6
+# 列表页：2 列 × 4 行的序号卡片网格。
+CONTENT_LIST_ITEMS_PER_PAGE = 8
+
+
+def _paginate_items(items: list, per_page: int) -> list:
+    """按单页容量切片；容量非正时退化为"全部放一页"，避免除零/空切片。"""
+    if per_page <= 0:
+        return [list(items)] if items else []
+    return [items[i:i + per_page] for i in range(0, len(items), per_page)]
+
+
+def _continuation_title(base: str, page_idx: int) -> str:
+    """续页标题：首页沿用原标题，之后带序号，避免多张续页分不清先后。"""
+    if page_idx <= 0:
+        return base
+    return f"{base}（续 {page_idx + 1}）"
+
 
 def hex_to_rgb(hex_color: str) -> RGBColor:
     """十六进制颜色转 RGBColor（解析口径统一在 office_agent.colors）"""
@@ -477,27 +497,46 @@ class PPTService:
             )
 
     def _render_toc(self, content: SlideContent):
-        """目录页"""
+        """目录页：超出单页容量自动续页，不再静默丢弃尾部条目。"""
+        items = content.bullets or content.left_content or []
+        base_title = content.title or "目录"
+        pages = _paginate_items(items, TOC_ITEMS_PER_PAGE)
+
+        # 空目录仍渲染一页标题（与旧行为一致），但不生成占位条目。
+        if not pages:
+            self._render_toc_page(content, [], base_title, content.page_number, 0)
+            return
+
+        for page_idx, page_items in enumerate(pages):
+            self._render_toc_page(
+                content,
+                page_items,
+                _continuation_title(base_title, page_idx),
+                content.page_number + page_idx,
+                page_idx * TOC_ITEMS_PER_PAGE,
+            )
+
+    def _render_toc_page(self, content: SlideContent, items: list,
+                         title: str, page_number: int, start_index: int):
+        """渲染单张目录页"""
         slide = self._add_blank_slide()
 
         # 标题
         self._add_text_box(
             slide, 0.8, 0.5, 5, 0.8,
-            content.title or "目录", font_size=self.fonts.title_size,
+            title, font_size=self.fonts.title_size,
             bold=True, color=self.colors.primary,
             font_name=self.fonts.title_cn
         )
         self._add_decorative_line(slide, 0.8, 1.3, 2, 0.05, self.colors.accent)
 
         # 目录项
-        items = content.bullets or content.left_content or []
-
-        for i, item in enumerate(items[:6]):
+        for i, item in enumerate(items):
             y = 2.0 + i * 0.85
-            # 序号
+            # 序号（跨页连续编号）
             self._add_text_box(
                 slide, 1.2, y, 0.8, 0.6,
-                f"{i+1:02d}", font_size=24, bold=True,
+                f"{start_index + i + 1:02d}", font_size=24, bold=True,
                 color=self.colors.secondary, alignment="center"
             )
             # 文本
@@ -515,7 +554,7 @@ class PPTService:
             # 底线
             self._add_decorative_line(slide, 2.2, y + 0.65, 8.5, 0.01, self.colors.line)
 
-        self._add_page_number(slide, content.page_number)
+        self._add_page_number(slide, page_number)
 
     def _render_section(self, content: SlideContent):
         """章节过渡页"""
@@ -667,21 +706,40 @@ class PPTService:
         self._add_page_number(slide, content.page_number)
 
     def _render_content_list(self, content: SlideContent):
-        """列表页（带序号卡片）"""
+        """列表页（带序号卡片）：超出 2×4 网格容量自动续页，不丢条目。"""
+        items = content.bullets or []
+        pages = _paginate_items(items, CONTENT_LIST_ITEMS_PER_PAGE)
+
+        if not pages:
+            self._render_content_list_page(content, [], content.title,
+                                           content.page_number, 0)
+            return
+
+        for page_idx, page_items in enumerate(pages):
+            self._render_content_list_page(
+                content,
+                page_items,
+                _continuation_title(content.title, page_idx),
+                content.page_number + page_idx,
+                page_idx * CONTENT_LIST_ITEMS_PER_PAGE,
+            )
+
+    def _render_content_list_page(self, content: SlideContent, items: list,
+                                  title: str, page_number: int, start_index: int):
+        """渲染单张列表页（2 列 × 4 行）"""
         slide = self._add_blank_slide()
 
         # 标题
         self._add_text_box(
             slide, 0.8, 0.5, 11, 0.8,
-            content.title, font_size=self.fonts.title_size, bold=True,
+            title, font_size=self.fonts.title_size, bold=True,
             color=self.colors.primary, font_name=self.fonts.title_cn
         )
         self._add_decorative_line(slide, 0.8, 1.3, 11.7, 0.04, self.colors.secondary)
 
-        items = content.bullets or []
         cols = 2
 
-        for i, item in enumerate(items[:8]):  # 最多8项
+        for i, item in enumerate(items):
             col = i % cols
             row = i // cols
             x = 0.8 + col * 6.2
@@ -702,7 +760,7 @@ class PPTService:
             )
             self._set_shape_bg(circle, self.colors.secondary)
             tf = circle.text_frame
-            tf.text = str(i + 1)
+            tf.text = str(start_index + i + 1)
             p = tf.paragraphs[0]
             p.font.size = Pt(14)
             p.font.bold = True
@@ -717,7 +775,7 @@ class PPTService:
                 anchor="middle"
             )
 
-        self._add_page_number(slide, content.page_number)
+        self._add_page_number(slide, page_number)
 
     def _render_data_cards(self, content: SlideContent):
         """数据卡片页"""
