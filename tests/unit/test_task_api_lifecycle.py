@@ -219,6 +219,9 @@ def test_task_routes_read_update_database_and_close_sessions(monkeypatch):
 
         def cancel_task(self, task_id):
             assert task_id == "db_task"
+            # 真实 TaskRepository.cancel_task 返回 bool(rowcount)；
+            # 此处模拟"取消成功"，必须返回 True。
+            return True
 
         def add_feedback(self, task_id, rating, comment):
             assert (task_id, rating, comment) == ("db_task", 4, "useful")

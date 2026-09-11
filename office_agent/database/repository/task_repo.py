@@ -34,6 +34,18 @@ class TaskRepository(BaseRepository[Task]):
         stmt = select(Task).where(Task.status.in_(["pending", "running"]))
         return list(self.session.scalars(stmt))
 
+    def filter_existing_ids(self, task_ids: List[str]) -> set:
+        """返回 ``task_ids`` 中确实已落库的子集。
+
+        列表接口判定"memory-only 快照"必须基于整库存在性，不能基于当前
+        分页窗口内的行：深分页把 offset 下推数据库后，窗口之外的行同样
+        存在于 DB，用窗口判定会把已落库任务误当成 memory-only 而重复计入。
+        """
+        if not task_ids:
+            return set()
+        stmt = select(Task.id).where(Task.id.in_(list(task_ids)))
+        return set(self.session.scalars(stmt))
+
     def create_task(self, task_type: str, instruction: str, agent_name: str | None = None,
                     user_id: str | None = None, input_file_ids: str | None = None,
                     options_json: str | None = None, priority: int = 0,

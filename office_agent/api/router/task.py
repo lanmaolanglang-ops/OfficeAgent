@@ -22,7 +22,7 @@ from ..schemas.response import (
 from ..core.task_manager import (
     normalize_task_status, task_manager, log_db_fallback,
 )
-from ..core.exceptions import APIError, TaskNotFoundError
+from ..core.exceptions import APIError, TaskNotFoundError, TaskStateError
 from ..core.file_resolution import resolve_input_files
 from ..core.pagination import page_query, page_size_query
 from ...security.error_sanitizer import sanitize_error
@@ -35,6 +35,11 @@ logger = logging.getLogger("office_agent.api.task")
 
 # Backward-compatible private name for integrations that imported the old helper.
 _resolve_input_files = resolve_input_files
+
+# 可取消状态必须与 TaskRepository.cancel_task 的 SQL 条件一致
+# （``status IN ("pending", "queued", "running")``）。上层判定与数据库实际
+# 行为一旦漂移，就会重新出现"数据库没取消、接口却报成功"的假成功。
+_CANCELLABLE_STATUSES = ("pending", "queued", "running")
 
 
 def _agent_name_for_task_type(task_type: str | None) -> str | None:
@@ -438,18 +443,35 @@ async def _list_tasks_impl(status: str | None = None, agent: str | None = None,
 
             # 有 degraded/memory-only 快照时，内存是该任务在当前进程内的
             # 权威视图。合并 DB 与内存视图可避免 get/list 出现不同结果。
+            # 深分页必须把 offset 下推数据库。历史实现固定 offset=0/limit=MAX_LIMIT
+            # 先取前 1000 行、再在内存里切片，任务数超过 MAX_LIMIT 时深页
+            # 永远读不到数据（内存切片无法补救没读出来的行）。
+            #
+            # 内存任务按 created_at 与 DB 行交错，会把窗口内的 DB 行往后挤，
+            # 因此窗口要向前多取若干行。这里用 memory_tasks 总数作为
+            # memory-only 数量的上界——上界只会让窗口更早、取更多行，
+            # 不会漏行；且这样可以在调用 find 之前就算出窗口，
+            # 保住"find 抛 SQLAlchemyError 即整体降级到内存列表"的既有契约。
             from ...database.repository.base import MAX_LIMIT
+            start = (page - 1) * page_size
+            lookback = len(memory_tasks)
+            db_offset = max(0, start - lookback)
+            db_limit = min(lookback + page_size, MAX_LIMIT)
             db_tasks = repo.find(
-                offset=0,
-                limit=MAX_LIMIT,
+                offset=db_offset,
+                limit=db_limit,
                 order_by="created_at",
                 descending=True,
                 **filters,
             )
             db_total = repo.count(**filters)
-            db_ids = {t.id for t in db_tasks}
+
+            # memory-only 判定必须基于整库存在性，而不是当前分页窗口内的行：
+            # offset 下推后，窗口之外的行同样存在于 DB，用窗口判定会把
+            # 已落库任务误当成 memory-only 而重复计入 total。
+            db_present = repo.filter_existing_ids([t.task_id for t in memory_tasks])
             memory_by_id = {t.task_id: t for t in memory_tasks}
-            memory_only = [t for t in memory_tasks if t.task_id not in db_ids]
+            memory_only = [t for t in memory_tasks if t.task_id not in db_present]
             merged = [
                 _task_info_from_memory(memory_by_id[t.id])
                 if t.id in memory_by_id else _task_info_from_db(t, file_repo)
@@ -458,9 +480,13 @@ async def _list_tasks_impl(status: str | None = None, agent: str | None = None,
             merged.extend(_task_info_from_memory(t) for t in memory_only)
             merged.sort(key=lambda item: item.created_at, reverse=True)
             total = db_total + len(memory_only)
-            start = (page - 1) * page_size
+
+            # merged 是"DB 窗口 + 全部 memory-only"的排序结果。窗口之前的
+            # db_offset 行在完整列表里同样位于窗口之前，所以完整列表下标
+            # start 对应窗口内下标 start - db_offset。
+            window_start = start - db_offset
             return BaseResponse(data=TaskListResponse(
-                tasks=merged[start:start + page_size],
+                tasks=merged[window_start:window_start + page_size],
                 total=total,
                 page=page,
                 page_size=page_size,
@@ -515,12 +541,19 @@ async def _cancel_task_impl(task_id: str, request: Request | None = None):
     # degraded 快照时，内存仍是该任务在当前进程内的权威视图。
     if session is None:
         if memory_task is not None:
-            if memory_task.status in ("pending", "queued", "running"):
+            if memory_task.status in _CANCELLABLE_STATUSES:
                 task_manager.cancel_memory_task(task_id)
+            else:
+                # 已终态：不得再回复"任务已取消"
+                raise TaskStateError(
+                    f"任务已处于终态（{memory_task.status}），无法取消: {task_id}")
             return BaseResponse(message="任务已取消")
     elif memory_task is not None and memory_task.degraded:
-        if memory_task.status in ("pending", "queued", "running"):
+        if memory_task.status in _CANCELLABLE_STATUSES:
             task_manager.cancel_memory_task(task_id)
+        else:
+            raise TaskStateError(
+                f"任务已处于终态（{memory_task.status}），无法取消: {task_id}")
         return BaseResponse(message="任务已取消")
 
     # 更新数据库
@@ -529,19 +562,25 @@ async def _cancel_task_impl(task_id: str, request: Request | None = None):
         try:
             from ...database.repository import TaskRepository
             repo = TaskRepository(session)
-            if repo.get_by_id(task_id):
-                if repo.cancel_task(task_id):
-                    session.commit()
-                    user_id = getattr(request.state, "user_id", None) if request else None
-                    if user_id == "anonymous":
-                        user_id = None
-                    try:
-                        from ...security.audit import get_audit_logger
-                        get_audit_logger().log_task_transition(
-                            task_id, "cancelled", user_id=user_id)
-                    except Exception:
-                        # 审计失败不改变取消结果（fail-open）
-                        pass
+            db_task = repo.get_by_id(task_id)
+            if db_task:
+                # repo.cancel_task 仅在任务仍处于可取消状态时返回 True。
+                # 返回 False 表示任务已终态（success/failed/cancelled）——
+                # 历史实现对此无 else 分支，照样回复"任务已取消"，构成假成功。
+                if not repo.cancel_task(task_id):
+                    raise TaskStateError(
+                        f"任务已处于终态（{db_task.status}），无法取消: {task_id}")
+                session.commit()
+                user_id = getattr(request.state, "user_id", None) if request else None
+                if user_id == "anonymous":
+                    user_id = None
+                try:
+                    from ...security.audit import get_audit_logger
+                    get_audit_logger().log_task_transition(
+                        task_id, "cancelled", user_id=user_id)
+                except Exception:
+                    # 审计失败不改变取消结果（fail-open）
+                    pass
                 db_available = True
                 return BaseResponse(message="任务已取消")
             db_available = True

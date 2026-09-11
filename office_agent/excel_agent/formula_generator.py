@@ -617,8 +617,12 @@ class FormulaGenerator:
         return_letter = self._col_letter(return_idx)
         return_name = return_col.name if return_col else ""
 
-        # 在数据右侧生成查找公式
-        result_col = self._col_letter(sheet.col_count + 1)
+        # 结果列写到数据区右侧第一个空列。
+        # col_count 是"列数量"，最后一列索引为 col_count-1，
+        # 因此下一个空列索引就是 col_count（col_letter 为 0-based）。
+        # 历史实现写成 col_count + 1，导致 6 列数据（A:F）把结果放到 H，
+        # 中间空出 G——与逐行公式（next_result_col = col_count）口径也不一致。
+        result_col = self._col_letter(sheet.col_count)
         lookup_array = f"{lookup_letter}{data_start_row}:{lookup_letter}{end_row}"
         return_array = f"{return_letter}{data_start_row}:{return_letter}{end_row}"
 
@@ -837,7 +841,7 @@ class FormulaGenerator:
         for row in range(data_start_row, end_row + 1):
             formulas.append(FormulaSpec(
                 formula=f"=IFERROR(VLOOKUP({lookup_letter}{row},{table_range},{col_index_num},FALSE),\"\")",
-                target_cell=f"{self._col_letter(sheet.col_count + 1)}{row}",
+                target_cell=f"{self._col_letter(sheet.col_count)}{row}",
                 description="VLOOKUP查找",
                 category="vlookup",
             ))
@@ -859,7 +863,7 @@ class FormulaGenerator:
             formulas.append(FormulaSpec(
                 formula=(f"=IFERROR(XLOOKUP({lookup_letter}{row},"
                          f"{lookup_array},{return_array}),\"\")"),
-                target_cell=f"{self._col_letter(sheet.col_count + 1)}{row}",
+                target_cell=f"{self._col_letter(sheet.col_count)}{row}",
                 description="XLOOKUP查找",
                 category="xlookup",
             ))

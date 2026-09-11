@@ -141,9 +141,10 @@ def test_index_match_template_unaffected():
 
 
 def test_vlookup_writes_to_column_right_of_data():
+    """6 列数据（A:F）-> 结果列必须紧邻写在 G，中间不得空出一列。"""
     formulas = _gen(2, 5, col_count=6)
-    assert formulas[0].target_cell == "H2"   # col_letter(col_count + 1) -> H
-    assert [f.target_cell for f in formulas] == ["H2", "H3", "H4"]
+    assert formulas[0].target_cell == "G2"
+    assert [f.target_cell for f in formulas] == ["G2", "G3", "G4"]
 
 
 def test_lookup_column_is_last_column_yields_no_formula():
