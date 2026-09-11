@@ -49,19 +49,28 @@ def _run_git(repo_root: Path, *args: str, binary: bool = False) -> bytes | str:
 def _changed_tracked_paths(repo_root: Path) -> set[str]:
     raw = _run_git(
         repo_root,
-        "diff",
-        "--name-only",
+        "status",
+        "--porcelain=v1",
         "-z",
-        "HEAD",
-        "--",
+        "--untracked-files=no",
         binary=True,
     )
     assert isinstance(raw, bytes)
-    return {
-        item.decode("utf-8", errors="surrogateescape")
-        for item in raw.split(b"\0")
-        if item
-    }
+    records = iter(raw.split(b"\0"))
+    paths: set[str] = set()
+    for record in records:
+        if not record:
+            continue
+        if len(record) < 4 or record[2:3] != b" ":
+            raise GuardError(f"unexpected Git status record: {record!r}")
+        status = record[:2]
+        paths.add(record[3:].decode("utf-8", errors="surrogateescape"))
+        if b"R" in status or b"C" in status:
+            original = next(records, b"")
+            if not original:
+                raise GuardError("Git status omitted the original rename path")
+            paths.add(original.decode("utf-8", errors="surrogateescape"))
+    return paths
 
 
 def _sha256(payload: bytes) -> str:

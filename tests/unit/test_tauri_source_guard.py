@@ -94,3 +94,13 @@ def test_dirty_tree_is_rejected_before_command_runs(clean_repo: Path):
         )
 
     assert not marker.exists()
+
+
+def test_status_parser_includes_both_rename_paths(clean_repo: Path):
+    renamed = "renamed-source.txt"
+    _git(clean_repo, "mv", UNEXPECTED, renamed)
+
+    assert tauri_source_guard._changed_tracked_paths(clean_repo) == {
+        UNEXPECTED,
+        renamed,
+    }
