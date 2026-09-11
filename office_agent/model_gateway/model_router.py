@@ -6,7 +6,9 @@ from typing import Any, Optional
 
 from office_agent.api.routing import PPT_STRONG, WORD_STRONG
 
-from ..models.model_schemas import AITaskType
+from ..models.model_schemas import (
+    AITaskType, TASK_CAPABILITY_REQUIREMENTS,
+)
 from .model_manager import ModelManager
 
 # 产品词表以 office_agent.api.routing 为单一真相源（WORD_STRONG/PPT_STRONG），
@@ -34,6 +36,36 @@ class ModelRouter:
     
     def __init__(self, model_manager: ModelManager):
         self.model_manager = model_manager
+
+    @staticmethod
+    def _requirements(task_type, require_vision: bool) -> list[tuple[str, bool]]:
+        """汇总本次选择需要满足的能力门槛：[(字段名, 是否硬门槛), ...]。
+
+        硬门槛不满足即淘汰；软门槛只影响排序（具备者优先）。
+        """
+        requirements: list[tuple[str, bool]] = []
+        if require_vision:
+            requirements.append(("supports_vision", True))
+        key = task_type.value if isinstance(task_type, AITaskType) else str(task_type)
+        capability = TASK_CAPABILITY_REQUIREMENTS.get(key)
+        if capability:
+            requirements.append(capability)
+        return requirements
+
+    @staticmethod
+    def _meets(config, requirements) -> bool:
+        return all(
+            bool(getattr(config, field, False))
+            for field, strict in requirements if strict
+        )
+
+    @staticmethod
+    def _rank(config, requirements) -> int:
+        """软门槛命中数量，越多越靠前。"""
+        return sum(
+            1 for field, strict in requirements
+            if not strict and bool(getattr(config, field, False))
+        )
     
     def select_model(self, task_type: AITaskType,
                     prefer_model: Optional[str] = None,
@@ -46,12 +78,17 @@ class ModelRouter:
             prefer_model: 用户指定的首选模型ID
             require_vision: 是否需要视觉能力
         """
+        # 能力门槛同时来自显式 require_vision 与任务类型本身（P1-8），
+        # 这样历史保存在磁盘上的路由表也会在"选型时"被纠正。
+        requirements = self._requirements(task_type, require_vision)
+        strict = any(s for _f, s in requirements)
+
         # 用户指定模型优先
         if prefer_model:
             model = self.model_manager.get_model(prefer_model)
             if model and model.enabled and model.api_key:
-                if require_vision and not model.supports_vision:
-                    pass  # 指定的模型不支持视觉，继续找其他
+                if not self._meets(model, requirements):
+                    pass  # 指定的模型不满足硬能力门槛，继续找其他
                 else:
                     # 返回指定模型 + 其他可用模型作为备用
                     routing = self.model_manager.get_routing(task_type)
@@ -62,7 +99,7 @@ class ModelRouter:
                         candidate = self.model_manager.get_model(mid)
                         if not candidate or not candidate.enabled or not candidate.api_key:
                             continue
-                        if require_vision and not candidate.supports_vision:
+                        if not self._meets(candidate, requirements):
                             continue
                         result.append(mid)
                     return result
@@ -76,20 +113,28 @@ class ModelRouter:
             config = self.model_manager.get_model(model_id)
             if not config or not config.enabled or not config.api_key:
                 continue
-            if require_vision and not config.supports_vision:
+            if not self._meets(config, requirements):
                 continue
             available.append(model_id)
         
         # 如果需要视觉但路由中没有视觉模型，找所有支持视觉的
-        if require_vision and not available:
+        if strict and not available:
             for model in self.model_manager.list_available_models():
-                if model.supports_vision:
+                if self._meets(model, requirements) and model.id not in available:
                     available.append(model.id)
         
         # 视觉任务绝不能退化到纯文本模型；宁可明确返回“无可用模型”。
-        if require_vision and not available:
+        if strict and not available:
             return []
 
+        # 软门槛：具备能力的模型排在前面（稳定排序，保持路由原有次序）
+        if requirements and available:
+            ranks = {}
+            for mid in available:
+                cfg = self.model_manager.get_model(mid)
+                ranks[mid] = self._rank(cfg, requirements) if cfg else 0
+            available.sort(key=lambda mid: -ranks[mid])
+        
         # 如果没有可用模型，返回所有有 API Key 的模型
         if not available:
             available = [m.id for m in self.model_manager.list_available_models()]

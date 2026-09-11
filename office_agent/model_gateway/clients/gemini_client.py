@@ -6,7 +6,6 @@ import json
 import time
 from typing import Optional
 from urllib.request import Request, urlopen
-from urllib.error import URLError, HTTPError
 
 from .base import BaseModelClient
 from ...models.model_schemas import ModelConfig, ModelResponse
@@ -81,24 +80,19 @@ class GeminiClient(BaseModelClient):
                 for part in parts:
                     content += part.get("text", "")
             
-            # token 统计
-            usage = result.get("usageMetadata", {})
+            # 空响应不得报成功（与 vision_gateway 及 OpenAI 客户端一致）
+            empty = self._empty_content_error(content, start)
+            if empty:
+                return empty
+
+            # token 统计（usage 缺失不能让调用崩溃）
+            usage = result.get("usageMetadata", {}) or {}
             tokens = usage.get("totalTokenCount", 0)
-            
+
             return self._make_response(content, start, tokens, result)
-            
-        except HTTPError as e:
-            error_body = ""
-            try:
-                error_body = e.read().decode("utf-8")
-            except Exception:
-                pass
-            return self._make_error(
-                f"HTTP {e.code}: {e.reason} {error_body[:200]}", start
-            )
-        except URLError as e:
-            return self._make_error(f"连接错误: {str(e.reason)}", start)
+
         except Exception as e:
-            return self._make_error(f"请求失败: {str(e)}", start)
+            # HTTP / 超时 / 连接 / 解析异常统一映射，切换 provider 语义一致
+            return self._make_transport_error(e, start)
     
     # analyze_image 由 BaseModelClient 提供，委托 GeminiVisionClient 实现。

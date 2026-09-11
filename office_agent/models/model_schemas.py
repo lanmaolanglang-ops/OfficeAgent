@@ -98,6 +98,21 @@ class ChatMessage:
         return d
 
 
+# 任务 -> (所需能力字段名, 是否"硬"门槛)
+#
+# 视觉是唯一的硬门槛：clients/base.py::analyze_image 对
+# supports_vision=False 直接返回"不支持图片分析"，把纯文本模型放进视觉
+# 路由必然失败，且视觉任务绝不能退化到文本模型。
+#
+# 文档理解只作"软"优先：base.analyze_document 的默认实现会先抽取文本再
+# 对话，任何模型都能承接；DEFAULT_ROUTING 的文档路由本身也包含
+# supports_document=False 的模型，硬过滤会让既有配置直接失去全部候选。
+TASK_CAPABILITY_REQUIREMENTS: dict[str, tuple[str, bool]] = {
+    AITaskType.VISION.value: ("supports_vision", True),
+    AITaskType.DOCUMENT_UNDERSTANDING.value: ("supports_document", False),
+}
+
+
 # 默认模型配置模板
 DEFAULT_MODEL_CONFIGS = {
     ModelProvider.OPENAI: ModelConfig(

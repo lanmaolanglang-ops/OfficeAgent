@@ -2,10 +2,12 @@
 模型客户端基类
 定义统一的模型调用接口
 """
+import socket
 import time
 from pathlib import Path
 from abc import ABC, abstractmethod
 from typing import Any, Optional
+from urllib.error import HTTPError, URLError
 
 from ...models.model_schemas import ModelConfig, ModelResponse, ChatMessage
 
@@ -179,6 +181,44 @@ class BaseModelClient(ABC):
             provider=self.config.provider.value,
             latency_ms=int((time.time() - start_time) * 1000),
         )
+
+    # === 三家供应商客户端共享的语义收敛（P1-9） ===
+    # 厂商 API 的报文格式可以不同，但上层切换 provider 时得到的
+    # 成功/失败/超时/空响应语义必须一致。
+
+    def _make_transport_error(self, exc: BaseException,
+                              start_time: float) -> ModelResponse:
+        """把底层传输异常映射为统一的错误语义。
+
+        过去三家各自 catch：HTTP/连接错误文案虽一致，但超时被混进通用
+        "请求失败"，调用方无法区分可重试的超时。
+        """
+        if isinstance(exc, HTTPError):
+            try:
+                body = exc.read().decode("utf-8", errors="ignore")[:200]
+            except Exception:
+                body = ""
+            return self._make_error(
+                f"HTTP {exc.code}: {exc.reason} {body}".strip(), start_time
+            )
+        if isinstance(exc, (TimeoutError, socket.timeout)):
+            return self._make_error(
+                f"请求超时（{self.config.timeout}s）: {exc}", start_time
+            )
+        if isinstance(exc, URLError):
+            return self._make_error(f"连接错误: {exc.reason}", start_time)
+        return self._make_error(f"请求失败: {exc}", start_time)
+
+    def _empty_content_error(self, content: str,
+                             start_time: float) -> Optional[ModelResponse]:
+        """空响应一律视为失败，而不是 success=True + 空串。
+
+        与 vision_gateway 既有约定一致（"模型返回空内容"）：
+        成功却拿到空正文会让上层把空结果当成有效产物。
+        """
+        if not content:
+            return self._make_error("模型返回空内容", start_time)
+        return None
     
     def _get_temperature(self, temperature: Optional[float]) -> float:
         return temperature if temperature is not None else self.config.temperature

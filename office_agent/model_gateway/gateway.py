@@ -6,7 +6,7 @@ from typing import Optional
 
 from ..models.model_schemas import (
     ModelConfig, ModelProvider, ModelResponse, ChatMessage, AITaskType,
-    DEFAULT_ROUTING,
+    DEFAULT_ROUTING, TASK_CAPABILITY_REQUIREMENTS,
 )
 from .model_manager import ModelManager
 from .model_router import ModelRouter
@@ -48,7 +48,9 @@ class ModelGateway:
     def add_provider(self, provider: str, api_key: str,
                     model: str = "", base_url: str = "",
                     display_name: str = "",
-                    model_id: Optional[str] = None) -> ModelConfig:
+                    model_id: Optional[str] = None,
+                    supports_vision: Optional[bool] = None,
+                    supports_document: Optional[bool] = None) -> ModelConfig:
         """
         添加模型提供商
         
@@ -59,6 +61,8 @@ class ModelGateway:
             base_url: API Base URL
             display_name: 显示名称
             model_id: 自定义模型ID
+            supports_vision: 显式声明视觉能力（None=沿用该供应商默认模板）
+            supports_document: 显式声明文档能力（None=沿用该供应商默认模板）
         """
         provider_enum = ModelProvider(provider)
         
@@ -71,8 +75,14 @@ class ModelGateway:
         # 获取默认配置
         default = self.manager.get_model(f"{provider}-default")
         
-        supports_vision = default.supports_vision if default else False
-        supports_document = default.supports_document if default else False
+        supports_vision = (
+            supports_vision if supports_vision is not None
+            else (default.supports_vision if default else False)
+        )
+        supports_document = (
+            supports_document if supports_document is not None
+            else (default.supports_document if default else False)
+        )
         
         if not base_url and default:
             base_url = default.base_url
@@ -102,7 +112,22 @@ class ModelGateway:
         for task_key, model_ids in manager._routing.items():
             if config.id in model_ids:
                 model_ids.remove(config.id)
-            model_ids.insert(0, config.id)
+            # 按能力元数据决定是否进入该任务队列（P1-8）：过去无差别
+            # insert(0)，纯文本模型会被塞进视觉路由，而
+            # base.analyze_image 对 supports_vision=False 直接判失败。
+            requirement = TASK_CAPABILITY_REQUIREMENTS.get(task_key)
+            if requirement is None:
+                model_ids.insert(0, config.id)
+                continue
+            capability, strict = requirement
+            capable = bool(getattr(config, capability, False))
+            if strict and not capable:
+                continue
+            # 软门槛：具备该能力的模型排在前面，不具备的仍作为兜底
+            if capable:
+                model_ids.insert(0, config.id)
+            else:
+                model_ids.append(config.id)
         manager._save_config()
         return config
     
