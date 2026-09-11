@@ -78,6 +78,10 @@ def test_windows_release_chain_pins_sha_and_rechecks_clean_tree():
     assert build_script.count(
         "git status --porcelain^=v1 --untracked-files^=no"
     ) == 2
+    assert (
+        "python desktop\\tauri_source_guard.py -- pnpm --dir desktop-client "
+        "run tauri:build"
+    ) in build_script
     assert package["scripts"]["tauri:build"] == "tauri build -- --locked"
 
 

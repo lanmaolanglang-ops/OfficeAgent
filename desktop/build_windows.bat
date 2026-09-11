@@ -55,7 +55,7 @@ python desktop\release_manifest.py verify --artifact-dir dist\OfficeAgent --expe
 if errorlevel 1 exit /b 1
 
 echo [4/4] Building Tauri installer...
-call pnpm --dir desktop-client run tauri:build
+python desktop\tauri_source_guard.py -- pnpm --dir desktop-client run tauri:build
 if errorlevel 1 exit /b 1
 
 for /f "delims=" %%I in ('git status --porcelain^=v1 --untracked-files^=no') do (
