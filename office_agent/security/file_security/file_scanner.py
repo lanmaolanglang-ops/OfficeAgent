@@ -103,6 +103,41 @@ ODF_MIME_TYPES = {
 }
 PDF_ACTIVE_TOKENS = (b"/javascript", b"/js", b"/launch", b"/embeddedfile")
 
+# 流式扫描分片大小：单次驻留内存恒为 chunk + overlap，与文件大小无关。
+SCAN_CHUNK_SIZE = 1024 * 1024
+# 跨分片保留的尾部重叠，避免签名/模式正好落在分片边界被切断。
+PDF_SCAN_OVERLAP = 64
+CONTENT_SCAN_OVERLAP = 8192
+
+# 预编译：内容扫描会对整份文件逐片跑这些模式，避免每片重复编译。
+_COMPILED_SUSPICIOUS_PATTERNS = [
+    (re.compile(pattern), desc) for pattern, desc in SUSPICIOUS_PATTERNS
+]
+
+
+def _iter_scan_windows(stream, max_bytes: int,
+                       chunk_size: int = SCAN_CHUNK_SIZE,
+                       overlap: int = 0):
+    """流式产出待扫描窗口（P4-1）。
+
+    过去扫描器只读文件头部固定字节（PDF 前 2MB、内容扫描前 1MB），
+    位于后部的危险签名直接漏检。为了既扫全量又不引入无界内存增长：
+
+    * 每个窗口 = 上一窗口尾部 ``overlap`` 字节 + 新读入的 ``chunk``；
+    * 从磁盘累计读入不超过 ``max_bytes``（默认等于上传上限），总量有界；
+    * 内存占用恒为 ``chunk_size + overlap``，与文件大小无关。
+    """
+    remaining = max_bytes
+    tail = b""
+    while remaining > 0:
+        chunk = stream.read(min(chunk_size, remaining))
+        if not chunk:
+            break
+        remaining -= len(chunk)
+        window = tail + chunk if tail else chunk
+        yield window
+        tail = window[-overlap:] if overlap else b""
+
 
 class FileScanner:
     """文件安全扫描器"""
@@ -115,11 +150,15 @@ class FileScanner:
                  max_archive_members: int = 5000,
                  max_archive_uncompressed_size: int | None = None,
                  max_archive_member_size: int | None = None,
-                 max_compression_ratio: float = 250.0):
+                 max_compression_ratio: float = 250.0,
+                 max_content_scan_bytes: int | None = None):
         self.max_file_size = max_file_size
         self.allowed_extensions = allowed_extensions or ALLOWED_EXTENSIONS
         self.blocked_extensions = blocked_extensions or DANGEROUS_EXTENSIONS
         self.scan_content = scan_content
+        # 内容扫描上界：默认等于上传上限，即"在允许的大小内不截断"。
+        # 调低会重新引入"后部 payload 漏检"的旁路，仅在明确接受该风险时使用。
+        self.max_content_scan_bytes = max_content_scan_bytes or max_file_size
         self.max_archive_members = max_archive_members
         self.max_archive_uncompressed_size = (
             max_archive_uncompressed_size or max_file_size * 5
@@ -223,21 +262,27 @@ class FileScanner:
             threats.append("压缩包损坏或使用不支持的算法")
         return threats
 
-    @staticmethod
-    def _validate_pdf(filepath: Path) -> list[str]:
+    def _validate_pdf(self, filepath: Path) -> list[str]:
         try:
             with filepath.open("rb") as stream:
                 header = stream.read(16)
                 stream.seek(max(0, filepath.stat().st_size - 8192))
                 tail = stream.read(8192)
+                if not re.match(br"%PDF-\d\.\d", header) or b"%%EOF" not in tail:
+                    return ["PDF 结构不完整"]
+                # 活跃内容标记（/JavaScript、/Launch、/EmbeddedFile…）可出现在
+                # 文件任意位置；过去只读前 2MB，后部 payload 直接漏检（P4-1）。
+                # 改为全文流式扫描，内存恒为 chunk+overlap。
                 stream.seek(0)
-                sample = stream.read(min(filepath.stat().st_size, 2 * 1024 * 1024)).lower()
+                for window in _iter_scan_windows(
+                    stream, self.max_file_size,
+                    chunk_size=SCAN_CHUNK_SIZE, overlap=PDF_SCAN_OVERLAP,
+                ):
+                    lowered = window.lower()
+                    if any(token in lowered for token in PDF_ACTIVE_TOKENS):
+                        return ["PDF 包含 JavaScript、启动动作或嵌入文件"]
         except OSError:
             return ["PDF 文件无法读取"]
-        if not re.match(br"%PDF-\d\.\d", header) or b"%%EOF" not in tail:
-            return ["PDF 结构不完整"]
-        if any(token in sample for token in PDF_ACTIVE_TOKENS):
-            return ["PDF 包含 JavaScript、启动动作或嵌入文件"]
         return []
 
     @staticmethod
@@ -350,17 +395,28 @@ class FileScanner:
         dangerous_content = False
         if self.scan_content and filepath.exists():
             try:
-                # 只扫描前1MB
+                # 全文流式扫描：可疑模式可能位于文件任意位置，截断扫描等于放行
+                # （P4-1）。总量以 max_content_scan_bytes 为界，不无增长。
+                matched: set[int] = set()
                 with open(filepath, "rb") as f:
-                    content = f.read(1024 * 1024)
-                # 尝试解码为文本
-                text = content.decode("utf-8", errors="ignore")
-                for pattern_index, (pattern, desc) in enumerate(SUSPICIOUS_PATTERNS):
-                    if re.search(pattern, text):
-                        threats.append(f"可疑内容: {desc}")
-                        suspicious_count += 1
-                        if pattern_index in {1, 2, 3, 4, 5}:
-                            dangerous_content = True
+                    for window in _iter_scan_windows(
+                        f, self.max_content_scan_bytes,
+                        chunk_size=SCAN_CHUNK_SIZE, overlap=CONTENT_SCAN_OVERLAP,
+                    ):
+                        # 尝试解码为文本
+                        text = window.decode("utf-8", errors="ignore")
+                        for pattern_index, (pattern, desc) in enumerate(
+                                _COMPILED_SUSPICIOUS_PATTERNS):
+                            if pattern_index in matched:
+                                continue
+                            if pattern.search(text):
+                                matched.add(pattern_index)
+                                threats.append(f"可疑内容: {desc}")
+                                suspicious_count += 1
+                                if pattern_index in {1, 2, 3, 4, 5}:
+                                    dangerous_content = True
+                        if len(matched) == len(_COMPILED_SUSPICIOUS_PATTERNS):
+                            break
             except OSError:
                 threats.append("文件内容无法读取")
                 dangerous_content = True

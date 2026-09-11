@@ -101,18 +101,40 @@ def _read_csv_any_encoding(csv_path: str):
     raise RuntimeError(f"无法识别 CSV 文件编码: {last_err}")
 
 
+# 公式注入前缀：Excel/CSV 消费端会把这些开头的单元格当作公式（含 DDE）求值。
+_CSV_FORMULA_PREFIXES = ("=", "+", "-", "@")
+# 前导空白：空格/tab/CR/LF/垂直制表/换页/不换行空格/BOM。
+# 这些字符不会阻止 Excel 把后续 "=" 解析为公式，因此检测前必须规范化掉。
+_CSV_LEADING_BLANKS = " \t\r\n\v\f\u00a0\ufeff"
+
+
 def _sanitize_csv_cell(value):
     """CSV 公式注入防护：以 = + - @ 开头的文本单元格前缀单引号，
-    防止被 openpyxl 当作公式（含 DDE）写入输出文件。"""
-    if isinstance(value, str) and value[:1] in ("=", "+", "-", "@"):
-        # 纯数字的负号（如 -12.5）不是注入，保留数值语义
-        rest = value[1:]
+    防止被 openpyxl 当作公式（含 DDE）写入输出文件。
+
+    检测时对前导空白做规范化 —— 否则 " =SUM(A1:A2)"、"\\t=..."、"\\r=..."
+    这类载荷可以绕过只看首字符的旧判断（P4-3）。
+    输出保留用户原始文本（含其前导空白），仅为转义追加前导单引号。
+    """
+    if not isinstance(value, str) or not value:
+        return value
+    stripped = value.lstrip(_CSV_LEADING_BLANKS)
+    if not stripped or stripped[0] not in _CSV_FORMULA_PREFIXES:
+        return value
+    rest = stripped[1:]
+    if stripped[0] in ("-", "+"):
+        # 纯数字的正负号（如 -12.5、+3）不是注入，保留数值语义；
+        # 孤立的正负号也不是公式。
+        if not rest:
+            return value
         try:
             float(rest)
             return value
         except ValueError:
-            return "'" + value
-    return value
+            pass
+    # "=" / "@" 开头一律转义：即便后面是数字（=1e5、@7）也仍是公式，
+    # 不能因为能被 float() 解析就放行。
+    return "'" + value
 
 
 def _csv_to_xlsx(csv_path: str) -> str:
