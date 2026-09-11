@@ -35,6 +35,77 @@ UNIQUE_VALUES_PREVIEW_LIMIT = 20
 
 
 # ==========================================
+# 列名规范化
+# ==========================================
+
+def _is_missing_label(value) -> bool:
+    """列名是否为缺失值：None / NaN / 空串 / 纯空白。
+
+    pandas 允许 None、NaN、空字符串、数字甚至重复值作为列名，
+    直接 str() 会得到 'None' / 'nan' / '' 这类误导性名字。
+    """
+    if value is None:
+        return True
+    try:
+        if not isinstance(value, (list, tuple, dict, set)) and pd.isna(value):
+            return True
+    except (TypeError, ValueError):
+        pass
+    return str(value).strip() == ""
+
+
+def _label_to_text(value) -> str:
+    """列名 → 展示文本（不做去重命名，保留用户原始写法）。
+
+    MultiIndex 会把列名存成 tuple，这里按层级拼接，
+    否则会得到 "('销售额', '元')" 这种 repr 噪声。
+    """
+    if isinstance(value, tuple):
+        parts = [_label_to_text(v) for v in value]
+        return " / ".join(p for p in parts if p)
+    if _is_missing_label(value):
+        return ""
+    return str(value)
+
+
+def _match_key(name: str) -> str:
+    """匹配/判断用的规范化列名：去空白 + 转小写。
+
+    只在"关键词是否命中"这类判断里使用，不写回 ColumnInfo.name，
+    避免不可逆地把用户真实列名改掉。
+    """
+    return str(name).strip().lower()
+
+
+def _unique_display_name(raw_value, col_idx: int, used: Dict[str, int]) -> str:
+    """生成保留身份的列名。
+
+    缺失列名回退到 "列{n}"；真实列名原样保留。
+    只有发生重名时（例如 int 1 与 str "1"，或表里本来就有两列同名）
+    才追加序号后缀——否则两列会塌缩成同一个身份，下游按名字定位时会串列。
+    """
+    text = _label_to_text(raw_value)
+    if not text:
+        text = f"列{col_idx + 1}"
+
+    seen = used.get(text, 0)
+    used[text] = seen + 1
+    if seen == 0:
+        return text
+    return f"{text} ({seen + 1})"
+
+
+def _column_series(df: pd.DataFrame, col_idx: int) -> pd.Series:
+    """按**位置**取列。
+
+    不能用 df[列名]：列名重复时（含 1 与 True 这种等值不同型的标签）
+    pandas 会返回 DataFrame 而非 Series，后续 .isna().sum() 得到的是
+    Series，int() 直接抛 TypeError，整份分析崩掉。
+    """
+    return df.iloc[:, col_idx]
+
+
+# ==========================================
 # 语义关键词词典
 # ==========================================
 
@@ -240,8 +311,15 @@ class DataAnalyzer:
             has_header=True,
         )
 
-        for col_idx, col_name in enumerate(df.columns):
-            col_info = self._analyze_column(df[col_name], str(col_name), col_idx, len(df))
+        used: Dict[str, int] = {}
+        for col_idx, raw_name in enumerate(df.columns):
+            # 按位置取列：列名重复时 df[raw_name] 会返回 DataFrame 而不是
+            # Series，导致后续统计崩掉。
+            series = _column_series(df, col_idx)
+            col_info = self._analyze_column(
+                series, _unique_display_name(raw_name, col_idx, used),
+                col_idx, len(df),
+            )
             sheet.columns.append(col_info)
 
         # 识别主键
@@ -369,7 +447,9 @@ class DataAnalyzer:
         """
         推断语义类型：date/amount/quantity/category/metric/id/name/percentage/text
         """
-        name_lower = col_name.lower().strip()
+        # 匹配一律用规范化 key（去空白 + 小写）：列名可能非 str，
+        # 也可能带前后空格或大小写差异，直接对原始值做 in 判断会漏判。
+        name_lower = _match_key(col_name)
 
         # 1. 日期类型
         if data_type == "date":
@@ -378,7 +458,7 @@ class DataAnalyzer:
         # 2. 关键词匹配（优先级从高到低）
         for sem_type, keywords in SEMANTIC_KEYWORDS.items():
             for kw in keywords:
-                if kw in name_lower or kw in col_name:
+                if kw in name_lower:
                     # 百分比优先于 metric
                     if sem_type == "metric" and data_type == "number":
                         if any(p in name_lower for p in ["%", "percent", "占比", "率", "比"]):
@@ -412,7 +492,7 @@ class DataAnalyzer:
             # 百分比：值在 0-1 或 0-100 之间
             if numeric.min() >= 0 and numeric.max() <= 1:
                 return "percentage"
-            if numeric.min() >= 0 and numeric.max() <= 100 and "率" in col_name:
+            if numeric.min() >= 0 and numeric.max() <= 100 and "率" in name_lower:
                 return "percentage"
 
             # 默认指标
@@ -441,9 +521,10 @@ class DataAnalyzer:
 
     def _infer_unit(self, col_name: str, semantic_type: str) -> str:
         """推断单位"""
+        name_lower = _match_key(col_name)
         for unit, keywords in UNIT_KEYWORDS.items():
             for kw in keywords:
-                if kw in col_name:
+                if kw in name_lower:
                     return unit
         if semantic_type == "percentage":
             return "%"
@@ -489,12 +570,13 @@ class DataAnalyzer:
     def _find_relation_between(self, df1: pd.DataFrame, name1: str,
                                 df2: pd.DataFrame, name2: str) -> Optional[DataRelation]:
         """查找两表之间的关联"""
-        for col1_name in df1.columns:
-            col1 = df1[col1_name].dropna().astype(str)
+        # 同样按位置取列：重名列会让 df[name] 返回 DataFrame。
+        for col1_idx, col1_name in enumerate(df1.columns):
+            col1 = _column_series(df1, col1_idx).dropna().astype(str)
             set1 = set(col1.unique())
 
-            for col2_name in df2.columns:
-                col2 = df2[col2_name].dropna().astype(str)
+            for col2_idx, col2_name in enumerate(df2.columns):
+                col2 = _column_series(df2, col2_idx).dropna().astype(str)
                 set2 = set(col2.unique())
 
                 if not set1 or not set2:
@@ -635,8 +717,13 @@ class DataAnalyzer:
             col_count=len(df.columns),
             has_header=True,
         )
-        for col_idx, col_name in enumerate(df.columns):
-            col_info = self._analyze_column(df[col_name], str(col_name), col_idx, len(df))
+        used: Dict[str, int] = {}
+        for col_idx, raw_name in enumerate(df.columns):
+            series = _column_series(df, col_idx)
+            col_info = self._analyze_column(
+                series, _unique_display_name(raw_name, col_idx, used),
+                col_idx, len(df),
+            )
             info.columns.append(col_info)
         return info
 

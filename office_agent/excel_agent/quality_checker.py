@@ -53,6 +53,36 @@ from openpyxl.utils import get_column_letter, column_index_from_string
 from .models import ExcelQualityIssue, DataProfile
 from ..quality.checker import IssueSeverity
 
+# 统一正文字体时使用的目标字体（只负责 name / sz 两个字段）。
+BODY_FONT_NAME = "微软雅黑"
+BODY_FONT_SIZE = 10
+
+# 统一字体时必须沿用的强调/着色字段：
+# 这些是用户主动设置的语义（加粗强调、标红告警、下划线、删除线等），
+# 质量器只统一字形与字号，不能顺手把它们抹掉。
+_PRESERVED_FONT_ATTRS = (
+    "b", "i", "u", "strike", "color", "vertAlign",
+    "charset", "family", "outline", "shadow", "condense", "extend",
+)
+
+
+def _build_body_font(existing, name: str = BODY_FONT_NAME,
+                     size: int = BODY_FONT_SIZE):
+    """基于单元格现有字体生成"只改字形字号"的新 Font。
+
+    openpyxl 的 Font 不可原地修改，必须整体替换；但整体替换成
+    ``Font(name=.., size=..)`` 会把 bold / italic / color / underline
+    一并重置为默认值，用户已有的强调格式就丢了。
+
+    这里只由质量器接管 name 与 sz，其余语义字段从原字体继承。
+    """
+    kwargs = {"name": name, "sz": size}
+    if existing is not None:
+        for attr in _PRESERVED_FONT_ATTRS:
+            if getattr(existing, attr, None) is not None:
+                kwargs[attr] = getattr(existing, attr)
+    return Font(**kwargs)
+
 logger = logging.getLogger("office_agent.excel_agent.quality_checker")
 
 
@@ -859,13 +889,16 @@ class ExcelQualityChecker:
                     fixed += 1
 
                 elif issue.issue_type == "format" and "字体种类过多" in issue.message:
-                    # 统一正文字体
-                    body_font = Font(name="微软雅黑", size=10)
+                    # 统一正文字体：只接管字形与字号，保留 bold/italic/
+                    # color/underline 等用户强调格式（整体替换 Font 会抹掉它们）。
                     for row_idx in range(header_row + 1, max_row + 1):
                         for col_idx in range(1, max_col + 1):
                             cell = ws.cell(row=row_idx, column=col_idx)
-                            if cell.value is not None and not (isinstance(cell.value, str) and cell.value.startswith("=")):
-                                cell.font = body_font
+                            if cell.value is None:
+                                continue
+                            if isinstance(cell.value, str) and cell.value.startswith("="):
+                                continue
+                            cell.font = _build_body_font(cell.font)
                     issue.fixed = True
                     fixed += 1
 
