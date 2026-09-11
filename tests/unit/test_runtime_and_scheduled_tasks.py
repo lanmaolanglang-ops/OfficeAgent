@@ -335,14 +335,20 @@ def test_runtime_start_returns_at_first_ready_not_after_fixed_wait(tmp_path, mon
     monkeypatch.setattr(runtime_module.subprocess, "Popen", lambda *_args, **_kwargs: process)
     monkeypatch.setattr(runtime_module.threading, "Thread", _ImmediateThread)
     monkeypatch.setattr(manager, "_monitor_loop", lambda: None)
-    sleeps = []
-    monkeypatch.setattr(runtime_module.time, "sleep", lambda seconds: sleeps.append(seconds))
+    ticks = []
+    real_wait = manager._stop_event.wait
+
+    def _tick(seconds=0.5):
+        ticks.append(seconds)
+        return real_wait(0)
+
+    monkeypatch.setattr(manager, "_startup_wait_tick", _tick)
     assert manager.start() is True
     assert manager.state.status == AppStatus.RUNNING
     assert manager.state.pid == 4321
     # 第 3 次健康检查通过即返回：只有 2 次 0.5s 间隔，远低于 30s 上限
     assert len(health_calls) == 3
-    assert sleeps == [0.5, 0.5]
+    assert ticks == [0.5, 0.5]
 
 
 def test_runtime_start_timeout_kills_child_process(tmp_path, monkeypatch):

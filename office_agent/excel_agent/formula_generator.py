@@ -599,35 +599,57 @@ class FormulaGenerator:
         if not lookup_col:
             return formulas
 
-        lookup_letter = self._col_letter(lookup_col.index)
+        last_col_idx = sheet.col_count - 1
+        lookup_idx = lookup_col.index
+        lookup_letter = self._col_letter(lookup_idx)
 
-        if return_col:
-            return_letter = self._col_letter(return_col.index)
+        # 返回列：优先识别结果，其次目标列，最后退回查找列右邻列
+        # （等价于历史"从 A 查、取 B"的语义，但不写死 A）。
+        if return_col is not None:
+            return_idx = return_col.index
+        elif target_cols:
+            return_idx = target_cols[0].index
         else:
-            return_col = target_cols[0] if target_cols else None
-            return_letter = self._col_letter(return_col.index) if return_col else "B"
-
-        # 查找表范围
-        table_range = f"A:{self._col_letter(sheet.col_count - 1)}"
-        col_index_num = return_col.index + 1 if return_col else 2
+            return_idx = lookup_idx + 1
+        if return_idx > last_col_idx:
+            # 查找列已是最后一列，没有可返回的数据列
+            return formulas
+        return_letter = self._col_letter(return_idx)
+        return_name = return_col.name if return_col else ""
 
         # 在数据右侧生成查找公式
         result_col = self._col_letter(sheet.col_count + 1)
+        lookup_array = f"{lookup_letter}{data_start_row}:{lookup_letter}{end_row}"
+        return_array = f"{return_letter}{data_start_row}:{return_letter}{end_row}"
 
         if tpl.name == "vlookup":
-            for row in range(data_start_row, end_row + 1):
-                formula = (f"=IFERROR(VLOOKUP({lookup_letter}{row},"
-                          f"{table_range},{col_index_num},FALSE),\"\")")
-                formulas.append(FormulaSpec(
-                    formula=formula,
-                    target_cell=f"{result_col}{row}",
-                    description=f"根据{lookup_col.name}查找{return_col.name if return_col else ''}",
-                    category=tpl.name,
-                ))
+            built = self._build_vlookup_range(lookup_idx, return_idx, last_col_idx)
+            if built is None:
+                # 返回列位于查找列左侧：VLOOKUP 结构上无法表达（它只能向右取），
+                # 历史上会生成必然 #N/A 的伪公式并被 IFERROR 吞成空值。
+                # 这里改用项目既有的 XLOOKUP 反向查找策略。
+                for row in range(data_start_row, end_row + 1):
+                    formula = (f"=IFERROR(XLOOKUP({lookup_letter}{row},"
+                              f"{lookup_array},{return_array}),\"\")")
+                    formulas.append(FormulaSpec(
+                        formula=formula,
+                        target_cell=f"{result_col}{row}",
+                        description=f"根据{lookup_col.name}反向查找{return_name}",
+                        category="xlookup",
+                    ))
+            else:
+                table_range, col_index_num = built
+                for row in range(data_start_row, end_row + 1):
+                    formula = (f"=IFERROR(VLOOKUP({lookup_letter}{row},"
+                              f"{table_range},{col_index_num},FALSE),\"\")")
+                    formulas.append(FormulaSpec(
+                        formula=formula,
+                        target_cell=f"{result_col}{row}",
+                        description=f"根据{lookup_col.name}查找{return_name}",
+                        category=tpl.name,
+                    ))
 
         elif tpl.name == "xlookup":
-            lookup_array = f"{lookup_letter}{data_start_row}:{lookup_letter}{end_row}"
-            return_array = f"{return_letter}{data_start_row}:{return_letter}{end_row}"
             for row in range(data_start_row, end_row + 1):
                 formula = (f"=IFERROR(XLOOKUP({lookup_letter}{row},"
                           f"{lookup_array},{return_array}),\"\")")
@@ -639,8 +661,6 @@ class FormulaGenerator:
                 ))
 
         elif tpl.name == "index_match":
-            lookup_array = f"{lookup_letter}{data_start_row}:{lookup_letter}{end_row}"
-            return_array = f"{return_letter}{data_start_row}:{return_letter}{end_row}"
             for row in range(data_start_row, end_row + 1):
                 formula = (f"=IFERROR(INDEX({return_array},"
                           f"MATCH({lookup_letter}{row},{lookup_array},0)),\"\")")
@@ -652,6 +672,23 @@ class FormulaGenerator:
                 ))
 
         return formulas
+
+    def _build_vlookup_range(self, lookup_idx: int, return_idx: int,
+                              last_col_idx: int) -> Tuple[str, int] | None:
+        """构造 VLOOKUP 的 ``table_array`` 与 ``col_index_num``。
+
+        VLOOKUP 要求查找列是 table_array 的第一列，且只能向右取返回值，
+        因此正确的 ``col_index_num`` 是 ``return_idx - lookup_idx + 1``
+        而不是 ``return_idx + 1``（P1-10）。
+
+        返回 None 表示返回列位于查找列左侧、VLOOKUP 无法表达，调用方应
+        回退到 XLOOKUP / INDEX+MATCH。
+        """
+        if return_idx < lookup_idx:
+            return None
+        start_letter = self._col_letter(lookup_idx)
+        end_letter = self._col_letter(max(return_idx, last_col_idx))
+        return f"{start_letter}:{end_letter}", return_idx - lookup_idx + 1
 
     def _generate_logical(self, tpl: FormulaTemplate,
                            target_cols: List[ColumnInfo],
@@ -785,16 +822,47 @@ class FormulaGenerator:
         formulas = []
         end_row = data_start_row + sheet.row_count - 1
         lookup_letter = self._col_letter(lookup_col_idx)
-        table_range = f"A:{self._col_letter(sheet.col_count - 1)}"
+        # VLOOKUP 的 table_array 必须从真正的查找列起，col_index_num 也必须是
+        # 相对查找列的偏移；写死 A 列会让非 A 列查找恒为 #N/A（P1-10）。
+        built = self._build_vlookup_range(
+            lookup_col_idx, return_col_idx, sheet.col_count - 1
+        )
+        if built is None:
+            # 返回列在查找列左侧，VLOOKUP 无法表达：回退 XLOOKUP
+            return self.generate_xlookup_formulas(
+                lookup_col_idx, return_col_idx, sheet, data_start_row
+            )
+        table_range, col_index_num = built
 
         for row in range(data_start_row, end_row + 1):
             formulas.append(FormulaSpec(
-                formula=f"=IFERROR(VLOOKUP({lookup_letter}{row},{table_range},{return_col_idx + 1},FALSE),\"\")",
+                formula=f"=IFERROR(VLOOKUP({lookup_letter}{row},{table_range},{col_index_num},FALSE),\"\")",
                 target_cell=f"{self._col_letter(sheet.col_count + 1)}{row}",
                 description="VLOOKUP查找",
                 category="vlookup",
             ))
 
+        return formulas
+
+    def generate_xlookup_formulas(self, lookup_col_idx: int,
+                                    return_col_idx: int,
+                                    sheet: SheetInfo,
+                                    data_start_row: int = 2) -> List[FormulaSpec]:
+        """生成 XLOOKUP 公式（VLOOKUP 无法表达的反向查找回退方案）"""
+        formulas = []
+        end_row = data_start_row + sheet.row_count - 1
+        lookup_letter = self._col_letter(lookup_col_idx)
+        return_letter = self._col_letter(return_col_idx)
+        lookup_array = f"{lookup_letter}{data_start_row}:{lookup_letter}{end_row}"
+        return_array = f"{return_letter}{data_start_row}:{return_letter}{end_row}"
+        for row in range(data_start_row, end_row + 1):
+            formulas.append(FormulaSpec(
+                formula=(f"=IFERROR(XLOOKUP({lookup_letter}{row},"
+                         f"{lookup_array},{return_array}),\"\")"),
+                target_cell=f"{self._col_letter(sheet.col_count + 1)}{row}",
+                description="XLOOKUP查找",
+                category="xlookup",
+            ))
         return formulas
 
     # ==========================================

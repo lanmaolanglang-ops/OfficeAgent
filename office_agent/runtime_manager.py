@@ -188,9 +188,22 @@ class ApplicationRuntimeManager:
             env["PYTHONPATH"] = backend_dir + os.pathsep + env.get("PYTHONPATH", "")
         return env
 
+    def _startup_wait_tick(self) -> bool:
+        """等待一个启动轮询周期（0.5s）。
+
+        用 ``_stop_event.wait`` 而不是 ``time.sleep``：stop() 可以在等待途中
+        立即唤醒本线程，启动等待随即放弃，避免停止后仍无意义地睡满一拍
+        （P1-3）。返回 True 表示等待被停止请求中断。
+        """
+        return self._stop_event.wait(0.5)
+
     def start(self) -> bool:
         """启动Backend"""
-        if self.state.status == AppStatus.RUNNING:
+        if (self.state.status == AppStatus.RUNNING
+                and self._process is not None
+                and self._process.poll() is None):
+            # 仅在"确实持有存活子进程"时才视为已启动；状态是 RUNNING 但进程
+            # 已死/缺失时必须继续走启动流程，否则会空转返回 True（P1-3）。
             logger.info("Already running")
             return True
         if self.is_port_in_use():
@@ -199,6 +212,11 @@ class ApplicationRuntimeManager:
                 self._set_status(AppStatus.RUNNING)
                 return True
             logger.warning(f"Port {self.config.port} in use but health check failed")
+            # 端口被占且占用者不健康：不能保持 RUNNING 假象，必须落到 ERROR
+            self._set_status(
+                AppStatus.ERROR,
+                f"Port {self.config.port} is occupied by an unhealthy process",
+            )
             return False
         self._set_status(AppStatus.STARTING)
         log_handle = None
@@ -223,6 +241,13 @@ class ApplicationRuntimeManager:
             # 等待启动
             start_deadline = time.time() + self.config.startup_timeout
             while time.time() < start_deadline:
+                if self._stop_event.is_set():
+                    # 启动等待途中收到停止请求：放弃启动，不留孤儿进程
+                    logger.info("Startup aborted by stop request")
+                    self._kill_process()
+                    self._process = None
+                    self._set_status(AppStatus.STOPPED)
+                    return False
                 if self._process.poll() is not None:
                     # 进程已退出
                     self._set_status(AppStatus.ERROR, f"Backend exited with code {self._process.returncode}")
@@ -234,7 +259,12 @@ class ApplicationRuntimeManager:
                     self._monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
                     self._monitor_thread.start()
                     return True
-                time.sleep(0.5)
+                if self._startup_wait_tick():
+                    logger.info("Startup aborted by stop request")
+                    self._kill_process()
+                    self._process = None
+                    self._set_status(AppStatus.STOPPED)
+                    return False
             self._set_status(AppStatus.ERROR, "Startup timeout")
             self._kill_process()
             return False
@@ -277,8 +307,7 @@ class ApplicationRuntimeManager:
         """重启Backend"""
         self._set_status(AppStatus.RESTARTING)
         self.stop()
-        time.sleep(self.config.restart_delay)
-        return self.start()
+        return self._do_restart()
 
     def _kill_process(self):
         """强制杀死进程"""
@@ -325,12 +354,33 @@ class ApplicationRuntimeManager:
                                 self.state.uptime_seconds)
                     self.state.restart_count = 0
 
-    def _do_restart(self):
-        """执行重启"""
+    def _do_restart(self) -> bool:
+        """执行重启，返回新进程是否真正起来了。
+
+        关键：必须先把状态切到 RESTARTING 再 kill。否则状态仍是 RUNNING，
+        ``start()`` 的"已运行"短路分支会直接 ``return True``——旧进程已被
+        kill、新进程从未创建，监控线程也随之退出，外部却看到 restart 成功
+        （P1-3）。
+        """
+        if self.state.status != AppStatus.RESTARTING:
+            self._set_status(AppStatus.RESTARTING)
         self._kill_process()
         self._process = None
-        time.sleep(self.config.restart_delay)
-        self.start()
+        # stop()/上一次停止请求会置 _stop_event；重启是"要拉起来"的意图，
+        # 不清掉会让 start() 的启动等待立刻放弃。清掉后仍用可中断等待，
+        # 期间若再次收到 stop() 则放弃重启。
+        self._stop_event.clear()
+        if self._stop_event.wait(self.config.restart_delay):
+            logger.info("Restart aborted by stop request")
+            self._set_status(AppStatus.STOPPED)
+            return False
+        if self.start():
+            return True
+        # start() 有失败路径不置 ERROR（如端口被占），这里兜底，
+        # 避免状态永久卡在 RESTARTING。
+        if self.state.status != AppStatus.ERROR:
+            self._set_status(AppStatus.ERROR, "Restart failed")
+        return False
 
     def get_info(self) -> dict:
         """获取应用信息"""
