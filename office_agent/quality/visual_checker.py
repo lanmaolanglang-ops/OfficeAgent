@@ -17,6 +17,7 @@ import re
 import tempfile
 import subprocess
 import shutil
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
 from typing import Optional, List, Dict
@@ -327,8 +328,10 @@ category 取值：heading, paragraph, page_break, table, whitespace, alignment, 
         if not os.path.exists(docx_path):
             report.error = f"文件不存在: {docx_path}"
             return report
-
         render_dpi = dpi or self.dpi
+        # 渲染产物落在 _temp_dir：检查结束（含异常路径）必须清理，
+        # 否则每次检查都在系统临时目录残留一批页面 PNG。
+        self._ensure_temp_dir()
 
         try:
             # Step 1: docx → PDF
@@ -354,15 +357,16 @@ category 取值：heading, paragraph, page_break, table, whitespace, alignment, 
 
             report.total_pages = len(pages)
 
-            # Step 3: 逐页视觉检查
+            # Step 3: 并行逐页视觉检查（结果按页码顺序还原）
             all_category_scores: Dict[str, List[float]] = {}
             all_issues = []
 
+            by_page = self._check_pages(pages, model_key)
             for page in pages:
-                if not page.image:
+                page_result = by_page.get(page.page_number)
+                if page_result is None:
                     continue
 
-                page_result = self._check_page(page, model_key)
                 report.pages.append(page_result)
                 all_issues.extend(page_result.issues)
 
@@ -392,6 +396,8 @@ category 取值：heading, paragraph, page_break, table, whitespace, alignment, 
 
         except Exception as e:
             report.error = f"视觉检查失败: {e}"
+        finally:
+            self.cleanup()
 
         return report
 
@@ -415,6 +421,7 @@ category 取值：heading, paragraph, page_break, table, whitespace, alignment, 
             return report
 
         render_dpi = dpi or self.dpi
+        self._ensure_temp_dir()
 
         try:
             renderer = DocumentRenderer(
@@ -433,10 +440,11 @@ category 取值：heading, paragraph, page_break, table, whitespace, alignment, 
             all_category_scores: Dict[str, List[float]] = {}
             all_issues = []
 
+            by_page = self._check_pages(pages, model_key)
             for page in pages:
-                if not page.image:
+                page_result = by_page.get(page.page_number)
+                if page_result is None:
                     continue
-                page_result = self._check_page(page, model_key)
                 report.pages.append(page_result)
                 all_issues.extend(page_result.issues)
                 for cat, score in page_result.score_details.items():
@@ -460,6 +468,8 @@ category 取值：heading, paragraph, page_break, table, whitespace, alignment, 
 
         except Exception as e:
             report.error = f"视觉检查失败: {e}"
+        finally:
+            self.cleanup()
 
         return report
 
@@ -741,6 +751,31 @@ category 取值：heading, paragraph, page_break, table, whitespace, alignment, 
         """清理临时文件"""
         import shutil as sh
         sh.rmtree(self._temp_dir, ignore_errors=True)
+
+    def _ensure_temp_dir(self):
+        """确保临时渲染目录存在（cleanup 后可复用同一 checker）。"""
+        os.makedirs(self._temp_dir, exist_ok=True)
+
+    def _check_pages(self, pages, model_key: Optional[str] = None,
+                     max_workers: int = 4):
+        """并行逐页视觉检查（结果顺序由调用方按 pages 还原）。
+
+        旧实现逐页串行调用视觉网关——每页一次网络往返，30 页文档在
+        串行下耗时线性放大。并发度受 min(max_workers, 页数) 约束。
+        """
+        candidates = [page for page in pages if page.image]
+        if not candidates:
+            return {}
+        worker_count = max(1, min(int(max_workers), len(candidates)))
+        by_page: Dict[int, object] = {}
+        with ThreadPoolExecutor(max_workers=worker_count,
+                                thread_name_prefix="visual-page") as executor:
+            futures = {executor.submit(self._check_page, page, model_key): page
+                       for page in candidates}
+            for future in as_completed(futures):
+                page = futures[future]
+                by_page[page.page_number] = future.result()
+        return by_page
 
     def __del__(self):
         try:

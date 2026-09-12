@@ -207,11 +207,14 @@ class QualityChecker:
         print(report.to_text())
     """
 
+    # 乱码/异常字符检测：(模式, 严重级别)。顺序即裁决顺序——
+    # 控制字符与替换符是真实损坏（ERROR）；零宽字符渲染不可见、多为
+    # 复制粘贴残留，私有区字符常来自符号字体，降为 WARNING 提示清理。
     GARBLED_PATTERNS = [
-        re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]"),
-        re.compile(r"[\ufffd\uFFFE\uFFFF]"),
-        re.compile(r"[\u200b\u200c\u200d\u2060]"),
-        re.compile(r"[\ue000-\uf8ff]"),
+        (re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]"), IssueSeverity.ERROR.value),
+        (re.compile(r"[\ufffd\uFFFE\uFFFF]"), IssueSeverity.ERROR.value),
+        (re.compile(r"[\u200b\u200c\u200d\u2060]"), IssueSeverity.WARNING.value),
+        (re.compile(r"[\ue000-\uf8ff]"), IssueSeverity.WARNING.value),
     ]
 
     def __init__(self):
@@ -278,6 +281,8 @@ class QualityChecker:
             if self.node_map.get(idx) in ("list_item", "quote"):
                 continue
 
+            # 检查该段全部 run：首 run 正常不能掩盖后续 run 的字体问题；
+            # 命中本段首个异常 run 后跳出（每段只记一条字体问题）。
             for run in para.runs:
                 if not run.text.strip():
                     continue
@@ -297,7 +302,7 @@ class QualityChecker:
                                 fixable=True,
                                 fix_suggestion=f"将正文字体统一为{expected_cn}",
                             ))
-                break
+                        break
 
         if font_errors > 3:
             report.add_issue(QualityIssue(
@@ -322,6 +327,7 @@ class QualityChecker:
             if self.node_map.get(idx) in ("list_item", "quote"):
                 continue
 
+            # 同字体检查：扫全部 run，命中本段首个异常 run 后跳出。
             for run in para.runs:
                 if not run.text.strip():
                     continue
@@ -341,7 +347,7 @@ class QualityChecker:
                                 fixable=True,
                                 fix_suggestion=f"将正文字号统一为{expected_size}pt",
                             ))
-                break
+                        break
 
         if size_errors > 3:
             report.add_issue(QualityIssue(
@@ -539,13 +545,16 @@ class QualityChecker:
             if not text.strip():
                 continue
 
-            for pattern in self.GARBLED_PATTERNS:
+            for pattern, severity in self.GARBLED_PATTERNS:
                 matches = pattern.findall(text)
                 if matches:
+                    label = ("不可见零宽/私有区字符"
+                             if severity == IssueSeverity.WARNING.value
+                             else "乱码字符")
                     report.add_issue(QualityIssue(
                         type=IssueType.GARBLED.value,
-                        severity=IssueSeverity.ERROR.value,
-                        message=f"第{idx+1}段发现乱码字符（{len(matches)}个）",
+                        severity=severity,
+                        message=f"第{idx+1}段发现{label}（{len(matches)}个）",
                         paragraph_index=idx,
                         paragraph_text=text[:50],
                         expected="正常文字",
@@ -665,8 +674,8 @@ class QualityChecker:
         if m:
             return tuple(int(g) for g in m.groups())
 
-        # "一、标题"
-        m = re.match(r"^([一二三四五六七八九十]+)[、.]", text)
+        # "一、标题" / "一百零二、标题"
+        m = re.match(r"^([一二三四五六七八九十百千零]+)[、.]", text)
         if m:
             return self._cn_to_int(m.group(1))
 
@@ -674,18 +683,43 @@ class QualityChecker:
 
     @staticmethod
     def _cn_to_int(cn: str) -> int:
+        """中文数字转整数（支持一~九十九及百/千/零组合，如 一百二十三）。
+
+        非法/无法解析的输入返回 0，与历史行为一致。
+        """
         if cn.isdigit():
             return int(cn)
-        cn_map = {"一":1, "二":2, "三":3, "四":4, "五":5,
-                  "六":6, "七":7, "八":8, "九":9, "十":10}
+        cn_map = {"一":1, "二":2, "两":2, "三":3, "四":4, "五":5,
+                  "六":6, "七":7, "八":8, "九":9}
         if cn in cn_map:
             return cn_map[cn]
-        if "十" in cn:
-            parts = cn.split("十")
-            tens = cn_map.get(parts[0], 1) if parts[0] else 1
-            ones = cn_map.get(parts[1], 0) if len(parts) > 1 and parts[1] else 0
-            return tens * 10 + ones
-        return 0
+        if cn == "十":
+            return 10
+        result = 0
+        current = 0   # 尚未乘以"十/百/千"单位的数字
+        matched = False
+        for ch in cn:
+            if ch in cn_map:
+                current = cn_map[ch]
+                matched = True
+            elif ch == "零":
+                current = 0
+                matched = True
+            elif ch == "十":
+                result += (current or 1) * 10
+                current = 0
+                matched = True
+            elif ch == "百":
+                result += (current or 1) * 100
+                current = 0
+                matched = True
+            elif ch == "千":
+                result += (current or 1) * 1000
+                current = 0
+                matched = True
+            else:
+                return 0
+        return result + current if matched else 0
 
     def _read_table_borders(self, tblBorders) -> dict:
         borders = {}

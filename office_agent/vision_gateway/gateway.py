@@ -47,16 +47,20 @@ class VisionGateway:
     """多模态视觉理解网关"""
 
     def __init__(self, default_model: Optional[str] = None,
-                 dpi: int = 200, output_dir: Optional[str] = None):
+                 dpi: int = 200, output_dir: Optional[str] = None,
+                 failover_budget: int = 3):
         """
         Args:
             default_model: 默认使用的模型名称
             dpi: 文档渲染 DPI
             output_dir: 临时文件目录
+            failover_budget: 单次 analyze 最多尝试的候选模型数
+                （超出后停止切换并返回可诊断的失败结果）
         """
         self.clients: Dict[str, BaseVisionClient] = {}
         self.client_order: List[str] = []
         self.default_model = default_model
+        self.failover_budget = max(1, int(failover_budget))
         self.renderer = DocumentRenderer(dpi=dpi, output_dir=output_dir)
         self._renderer_lock = threading.RLock()
         self._closed = False
@@ -167,13 +171,20 @@ class VisionGateway:
     # === 核心分析接口 ===
 
     def analyze(self, request: VisionRequest,
-                model_key: Optional[str] = None) -> VisionResponse:
+                model_key: Optional[str] = None,
+                max_attempts: Optional[int] = None) -> VisionResponse:
         """
         执行视觉分析
 
         Args:
             request: 视觉请求
             model_key: 指定模型（None 使用默认）
+            max_attempts: 本次调用的 failover 预算（最多尝试的候选模型
+                数；None 用实例默认 ``failover_budget``）。请求级参数，
+                不写回全局配置。
+
+        故障转移不再无界：候选按 client_order 顺序尝试，最多消耗预算
+        即停；每次尝试的 (provider, 错误) 记入最终错误的诊断信息。
         """
         if not self.clients:
             return VisionResponse(
@@ -189,9 +200,14 @@ class VisionGateway:
                 error=f"模型 {model_key} 不存在",
             )
 
-        # 尝试调用（带故障转移）
+        # 尝试调用（带故障转移预算）
+        budget = self.failover_budget if max_attempts is None \
+            else max(1, int(max_attempts))
+        attempts: List[Dict[str, str]] = []
         last_error = ""
         for key in keys:
+            if len(attempts) >= budget:
+                break
             if key not in self.clients:
                 continue
             client = self.clients[key]
@@ -202,11 +218,17 @@ class VisionGateway:
                 last_error = resp.error
             except Exception as e:
                 last_error = str(e)
-                continue
+            attempts.append({"provider": key, "error": last_error})
 
+        history = "; ".join(
+            f"{item['provider']}: {item['error']}" for item in attempts)
+        skipped = len(keys) - len(attempts)
+        detail = f"（尝试 {len(attempts)}/{len(keys)} 个候选，预算 {budget}）"
+        if skipped > 0:
+            detail += f"，未尝试 {skipped} 个"
         return VisionResponse(
             success=False,
-            error=f"所有视觉模型调用失败: {last_error}",
+            error=f"所有视觉模型调用失败{detail}: {history or last_error}",
         )
 
     def analyze_image(self, image_path: str,
