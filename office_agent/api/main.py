@@ -365,6 +365,23 @@ def create_app() -> FastAPI:
                 get_worker().shutdown(wait=False)
             except Exception:
                 logger.warning("任务 Worker 关闭失败", exc_info=True)
+        # 审计事件与 API Key 使用统计的落库收尾：必须在数据库引擎
+        # 释放之前完成，否则收尾写入会全部失败。
+        try:
+            from office_agent.security import get_audit_logger
+            audit_logger = get_audit_logger()
+            if not audit_logger.flush(5.0):
+                logger.warning("审计队列关闭冲洗超时，仍有未落库事件")
+            audit_logger.close(5.0)
+        except Exception:
+            logger.warning("审计日志关闭刷新失败", exc_info=True)
+        try:
+            from office_agent.security.auth.token import flush_all_token_usage
+            flushed = flush_all_token_usage()
+            if flushed:
+                logger.info("已收尾 %s 个 API Key 的使用统计", flushed)
+        except Exception:
+            logger.warning("API Key 使用统计关闭冲洗失败", exc_info=True)
         try:
             from office_agent.database import dispose_default_engine
             dispose_default_engine()

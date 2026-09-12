@@ -115,6 +115,8 @@ def test_audit_is_persisted_and_retention_is_enforced():
     factory, _ = _session_factory()
     audit = AuditLogger(session_factory=factory)
     audit.log("config_change", user_id="external-user", resource="settings")
+    # 持久化已迁移到后台批量写线程：查询前先等待队列排空
+    assert audit.flush(5.0) is True
     with factory() as session:
         row = session.scalar(select(AuditLogModel))
         assert row.user_id is None

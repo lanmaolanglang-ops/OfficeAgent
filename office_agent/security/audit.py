@@ -4,6 +4,8 @@ Audit Logger - 安全审计日志
 """
 from __future__ import annotations
 
+import queue
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -97,15 +99,36 @@ class AuditEntry:
 
 
 class AuditLogger:
-    """有界内存镜像 + 数据库持久化的安全审计日志。"""
+    """有界内存镜像 + 数据库持久化的安全审计日志。
+
+    持久化语义（安全审计事件不允许静默丢失）：
+    - ``log()`` 只做内存镜像更新与入队（临界区极小），写库由单个后台
+      写线程批量完成——请求路径不再逐事件同步 commit；
+    - 队列满（数据库长时间落后）时退化为调用线程**同步**持久化——
+      宁可变慢，不丢事件；
+    - 批量落库失败先整批重试一次，再逐条隔离重试，单条坏数据不拖垮
+      整批；最终失败只记录错误日志（事件仍保留在有界内存镜像中可查）；
+    - ``flush()`` 等待队列排空，``close()`` 结束写线程（先排空），
+      供应用关闭与测试收尾调用。
+    """
 
     def __init__(self, enable: bool = True, session_factory=None,
-                 max_memory_entries: int = 1000):
+                 max_memory_entries: int = 1000, batch_size: int = 50,
+                 batch_window: float = 0.5, queue_maxsize: int = 10000):
         self.enable = enable
         self._entries: list[AuditEntry] = []
+        self._entries_lock = threading.Lock()
         self._callbacks: list[Callable[[AuditEntry], None]] = []
         self._session_factory = session_factory
         self._max_memory_entries = max(1, max_memory_entries)
+        self._batch_size = max(1, int(batch_size))
+        self._batch_window = max(0.0, float(batch_window))
+        self._legacy_fk: bool | None = None  # 逐事件 FK 内省的缓存
+        self._queue: queue.Queue = queue.Queue(maxsize=max(1, queue_maxsize))
+        self._closed = False
+        self._writer = threading.Thread(
+            target=self._writer_loop, daemon=True, name="audit-writer")
+        self._writer.start()
 
     def _get_session_factory(self):
         if self._session_factory is None:
@@ -113,47 +136,158 @@ class AuditLogger:
             self._session_factory = SessionLocal
         return self._session_factory
 
-    def _persist(self, entry: AuditEntry) -> None:
-        from sqlalchemy import inspect, text
+    def _resolve_legacy_fk(self, session) -> bool:
+        """缓存 security_audit_logs 是否仍挂在旧 security_users 外键上。
+
+        旧实现在每个事件上做一次表内省（get_foreign_keys），纯开销；
+        运行期 schema 不会变化，按实例缓存一次即可。
+        """
+        if self._legacy_fk is None:
+            from sqlalchemy import inspect
+            inspector = inspect(session.connection())
+            self._legacy_fk = any(
+                fk.get("referred_table") == "security_users"
+                for fk in inspector.get_foreign_keys("security_audit_logs")
+            )
+        return self._legacy_fk
+
+    def _persist_entries(self, entries: list[AuditEntry]) -> None:
+        """一个会话、一次 commit 批量持久化多条审计事件。"""
+        from sqlalchemy import text
         from office_agent.database.models import AuditLogModel, User
 
-        details = dict(entry.details)
-        occurred_at = datetime.fromtimestamp(entry.timestamp, timezone.utc)
         with self._get_session_factory()() as session:
-            persisted_user_id = entry.user_id
-            if persisted_user_id:
-                inspector = inspect(session.connection())
-                legacy_fk = any(
-                    fk.get("referred_table") == "security_users"
-                    for fk in inspector.get_foreign_keys("security_audit_logs")
-                )
-                if legacy_fk:
-                    known = session.execute(text(
-                        "SELECT 1 FROM security_users WHERE id=:id"
-                    ), {"id": persisted_user_id}).first()
-                else:
-                    known = session.get(User, persisted_user_id)
-                if known is None:
-                    details.setdefault("subject_user_id", persisted_user_id)
-                    persisted_user_id = None
-            session.add(AuditLogModel(
-                user_id=persisted_user_id,
-                action=entry.action,
-                resource=entry.resource,
-                resource_id=entry.resource_id,
-                status=entry.status,
-                ip_address=entry.ip_address,
-                details=details,
-                risk_level=entry.risk_level,
-                timestamp=occurred_at,
-                created_at=occurred_at,
-                updated_at=occurred_at,
-            ))
+            legacy_fk = self._resolve_legacy_fk(session)
+            for entry in entries:
+                details = dict(entry.details)
+                occurred_at = datetime.fromtimestamp(
+                    entry.timestamp, timezone.utc)
+                persisted_user_id = entry.user_id
+                if persisted_user_id:
+                    if legacy_fk:
+                        known = session.execute(text(
+                            "SELECT 1 FROM security_users WHERE id=:id"
+                        ), {"id": persisted_user_id}).first()
+                    else:
+                        known = session.get(User, persisted_user_id)
+                    if known is None:
+                        details.setdefault("subject_user_id", persisted_user_id)
+                        persisted_user_id = None
+                session.add(AuditLogModel(
+                    user_id=persisted_user_id,
+                    action=entry.action,
+                    resource=entry.resource,
+                    resource_id=entry.resource_id,
+                    status=entry.status,
+                    ip_address=entry.ip_address,
+                    details=details,
+                    risk_level=entry.risk_level,
+                    timestamp=occurred_at,
+                    created_at=occurred_at,
+                    updated_at=occurred_at,
+                ))
             session.commit()
+
+    def _persist_batch(self, entries: list[AuditEntry]) -> None:
+        try:
+            self._persist_entries(entries)
+        except Exception:
+            logger.warning("审计批量持久化失败，降级为逐条重试", exc_info=True)
+            for entry in entries:
+                try:
+                    self._persist_entries([entry])
+                except Exception:
+                    # 事件仍在有界内存镜像中（get_entries 可查），
+                    # 这里只记录失败，不再无限重试。
+                    logger.exception("Audit persistence failed")
+
+    def _writer_loop(self) -> None:
+        closed = False
+        while not closed:
+            entry = self._queue.get()
+            if entry is None:
+                closed = True
+                self._queue.task_done()
+                batch: list[AuditEntry] = []
+            else:
+                batch = [entry]
+                deadline = time.monotonic() + self._batch_window
+                while len(batch) < self._batch_size:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    try:
+                        next_entry = self._queue.get(timeout=remaining)
+                    except queue.Empty:
+                        break
+                    if next_entry is None:
+                        closed = True
+                        break
+                    batch.append(next_entry)
+            if batch:
+                try:
+                    self._persist_batch(batch)
+                finally:
+                    for _ in batch:
+                        self._queue.task_done()
+            if closed:
+                self._drain_and_finish()
+
+    def _drain_and_finish(self) -> None:
+        """关闭前排空队列中剩余事件。"""
+        rest: list[AuditEntry] = []
+        while True:
+            try:
+                entry = self._queue.get_nowait()
+            except queue.Empty:
+                break
+            if entry is not None:
+                rest.append(entry)
+            self._queue.task_done()
+        for index in range(0, len(rest), self._batch_size):
+            self._persist_batch(rest[index:index + self._batch_size])
+
+    def _enqueue(self, entry: AuditEntry) -> None:
+        if self._closed:
+            try:
+                self._persist_entries([entry])
+            except Exception:
+                logger.exception("Audit persistence failed")
+            return
+        try:
+            self._queue.put_nowait(entry)
+        except queue.Full:
+            # 队列满（数据库长时间落后）：调用线程同步持久化——
+            # 宁可变慢，不丢事件。
+            try:
+                self._persist_entries([entry])
+            except Exception:
+                logger.exception("Audit persistence failed")
+
+    def flush(self, timeout: float = 5.0) -> bool:
+        """等待队列中所有事件落库（应用关闭/测试收尾）。"""
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        while self._queue.unfinished_tasks > 0:
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.005)
+        return True
+
+    def close(self, timeout: float = 5.0) -> None:
+        """排空并结束后台写线程；之后的 log() 走同步持久化兜底。"""
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self._queue.put(None, timeout=max(0.0, float(timeout)))
+        except queue.Full:
+            logger.warning("审计队列已满，关闭信号未入队")
+        self._writer.join(timeout=max(0.0, float(timeout)))
 
     def add_callback(self, callback: Callable[[AuditEntry], None]):
         """添加审计回调（用于写入数据库等）"""
-        self._callbacks.append(callback)
+        with self._entries_lock:
+            self._callbacks.append(callback)
 
     def log(self, action: str | AuditAction, status: str = "success",
             user_id: str | None = None, resource: str | None = None,
@@ -172,9 +306,11 @@ class AuditLogger:
         )
 
         if self.enable:
-            self._entries.append(entry)
-            if len(self._entries) > self._max_memory_entries:
-                del self._entries[:-self._max_memory_entries]
+            with self._entries_lock:
+                self._entries.append(entry)
+                overflow = len(self._entries) - self._max_memory_entries
+                if overflow > 0:
+                    del self._entries[:overflow]
 
             # 日志输出
             log_msg = (
@@ -189,13 +325,13 @@ class AuditLogger:
             else:
                 logger.debug(log_msg)
 
-            try:
-                self._persist(entry)
-            except Exception:
-                logger.exception("Audit persistence failed")
+            # 异步入队（后台写线程批量持久化）；队列满/已关闭时同步兜底
+            self._enqueue(entry)
 
             # 回调
-            for cb in self._callbacks:
+            with self._entries_lock:
+                callbacks = list(self._callbacks)
+            for cb in callbacks:
                 try:
                     cb(entry)
                 except Exception as e:
@@ -352,7 +488,8 @@ class AuditLogger:
                     action: str | None = None,
                     limit: int = 100) -> list[AuditEntry]:
         """查询审计条目"""
-        entries = self._entries
+        with self._entries_lock:
+            entries = list(self._entries)
         if user_id:
             entries = [e for e in entries if e.user_id == user_id]
         if action:
@@ -361,8 +498,10 @@ class AuditLogger:
 
     def get_recent_dangerous(self, limit: int = 20) -> list[AuditEntry]:
         """获取最近的危险操作"""
-        dangerous = [e for e in self._entries
-                    if e.risk_level in ("danger", "critical")]
+        with self._entries_lock:
+            entries = list(self._entries)
+        dangerous = [e for e in entries
+                     if e.risk_level in ("danger", "critical")]
         return dangerous[-limit:]
 
     def cleanup_expired(self, retention_days: int = 90) -> int:
@@ -382,7 +521,8 @@ class AuditLogger:
 
     def clear(self):
         """清空（测试用）"""
-        self._entries.clear()
+        with self._entries_lock:
+            self._entries.clear()
 
 
 # 全局审计日志

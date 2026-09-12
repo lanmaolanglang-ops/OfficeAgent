@@ -325,6 +325,8 @@ class TestTaskTransitionAudit:
         monkeypatch.setattr(audit_module, "logger", _RecordingLogger())
         worker, task_id, _ = self._worker_and_task(tmp_path)
         worker._update_status(task_id, "success")
+        # 持久化已迁移到后台写线程：flush 排空队列后，失败日志必然已产生
+        assert audit_module.get_audit_logger().flush(5.0) is True
         assert "Audit persistence failed" in calls
 
 
