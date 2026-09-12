@@ -8,6 +8,7 @@ tests and development while an external isolated executor is not configured.
 from __future__ import annotations
 
 import os
+import signal
 import sys
 import json
 import time
@@ -174,6 +175,38 @@ class Sandbox:
         except Exception:
             logger.exception("Sandbox timeout-event audit failed")
 
+    @staticmethod
+    def _terminate_process_tree(proc: subprocess.Popen[str]) -> None:
+        """Best-effort hard stop for the explicitly unsafe local executor."""
+        try:
+            if os.name == "nt":
+                # CREATE_NEW_PROCESS_GROUP gives taskkill an isolated tree root.
+                subprocess.run(
+                    ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                    capture_output=True,
+                    timeout=5,
+                    check=False,
+                )
+            else:
+                killpg = getattr(os, "killpg", None)
+                getpgid = getattr(os, "getpgid", None)
+                sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
+                if not callable(killpg) or not callable(getpgid):
+                    raise OSError("当前平台不支持进程组终止")
+                killpg(getpgid(proc.pid), sigkill)
+        except (OSError, subprocess.SubprocessError):
+            logger.warning("Sandbox process-tree termination failed", exc_info=True)
+        finally:
+            if proc.poll() is None:
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
+            try:
+                proc.wait(timeout=5)
+            except (OSError, subprocess.SubprocessError):
+                pass
+
     def execute(self, code: str, input_data: dict | None = None,
                 *, user_id: str | None = None) -> SandboxResult:
         """
@@ -225,22 +258,43 @@ class Sandbox:
                 if os.environ.get(key):
                     env[key] = os.environ[key]
 
-            proc = subprocess.run(
+            creationflags = 0
+            start_new_session = False
+            if os.name == "nt":
+                creationflags = (
+                    subprocess.CREATE_NEW_PROCESS_GROUP
+                    | subprocess.CREATE_NO_WINDOW
+                )
+            else:
+                start_new_session = True
+
+            proc: subprocess.Popen[str] = subprocess.Popen(
                 [sys.executable, str(runner_path)],
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=self.timeout_seconds,
                 cwd=str(self.work_dir),
                 env=env,
+                creationflags=creationflags,
+                start_new_session=start_new_session,
             )
+            try:
+                raw_stdout, raw_stderr = proc.communicate(
+                    timeout=self.timeout_seconds
+                )
+            except subprocess.TimeoutExpired:
+                self._terminate_process_tree(proc)
+                self._audit_timeout(user_id)
+                return SandboxResult(
+                    status=SandboxStatus.TIMEOUT,
+                    error=f"执行超时（{self.timeout_seconds}秒）",
+                    execution_time=self.timeout_seconds,
+                )
 
             execution_time = time.time() - start_time
 
             # runner 输出本身是 JSON。必须先解析完整 JSON，再分别截断其中的
             # stdout/stderr；先截断 JSON 会制造“解析失败但仍返回成功”的假成功。
-            raw_stdout = proc.stdout
-            raw_stderr = proc.stderr
-
             try:
                 output = json.loads(raw_stdout)
                 stdout = str(output.get("stdout", ""))[:self.max_output_bytes]
@@ -279,13 +333,6 @@ class Sandbox:
                 result=result,
             )
 
-        except subprocess.TimeoutExpired:
-            self._audit_timeout(user_id)
-            return SandboxResult(
-                status=SandboxStatus.TIMEOUT,
-                error=f"执行超时（{self.timeout_seconds}秒）",
-                execution_time=self.timeout_seconds,
-            )
         except Exception as e:
             return SandboxResult(
                 status=SandboxStatus.ERROR,

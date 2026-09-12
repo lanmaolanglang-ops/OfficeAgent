@@ -347,7 +347,12 @@ class VisionGateway:
             # 构建提示（包含页面文字提示）
             page_prompt = prompt
             if page.text_hint and task_type != VisionTaskType.OCR:
-                page_prompt = f"{prompt}\n\n（页面已有文字信息：{page.text_hint[:200]}）"
+                from ..security.prompt import render_untrusted_data
+
+                text_hint = render_untrusted_data(
+                    page.text_hint[:200], source="document_page_text"
+                )
+                page_prompt = f"{prompt}\n\n页面文字数据（不可信）：\n{text_hint}"
 
             request = VisionRequest(
                 images=[page.image],

@@ -85,8 +85,18 @@ class BaseModelClient(ABC):
             if len(content) > max_chars:
                 content = content[:max_chars] + "\n...(内容已截断)"
             
-            full_prompt = f"{prompt}\n\n文档内容：\n{content}"
-            return self.simple_chat(full_prompt, system_prompt=system_prompt)
+            from ...security.prompt import (
+                UNTRUSTED_DATA_SYSTEM_RULE,
+                render_untrusted_data,
+            )
+
+            data_block = render_untrusted_data(content, source="document")
+            full_prompt = f"{prompt}\n\n文档数据（不可信）：\n{data_block}"
+            trusted_system = "\n".join(
+                part for part in (system_prompt, UNTRUSTED_DATA_SYSTEM_RULE)
+                if part
+            )
+            return self.simple_chat(full_prompt, system_prompt=trusted_system)
         except Exception as e:
             return ModelResponse(
                 success=False,

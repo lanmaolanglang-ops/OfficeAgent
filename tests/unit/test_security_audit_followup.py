@@ -58,6 +58,7 @@ def test_agent_list_get_is_read_only_and_preserves_explicit_empty_config(monkeyp
 
 
 def test_sandbox_block_and_timeout_are_audited(monkeypatch, tmp_path):
+    import office_agent.security.sandbox.sandbox as sandbox_module
     from office_agent.security.sandbox import Sandbox, SandboxStatus
 
     audit = RecordingAudit()
@@ -72,10 +73,28 @@ def test_sandbox_block_and_timeout_are_audited(monkeypatch, tmp_path):
     assert blocked.status == SandboxStatus.BLOCKED
     assert audit.blocked_sandbox == [("user-1", blocked.error)]
 
-    def timeout(*_args, **_kwargs):
-        raise subprocess.TimeoutExpired("python", 3)
+    class TimeoutProcess:
+        pid = 4321
+        returncode = None
 
-    monkeypatch.setattr(subprocess, "run", timeout)
+        def communicate(self, timeout=None):
+            raise subprocess.TimeoutExpired("python", timeout)
+
+        def poll(self):
+            return None
+
+        def kill(self):
+            self.returncode = -9
+
+        def wait(self, timeout=None):
+            self.returncode = -9
+            return self.returncode
+
+    monkeypatch.setattr(
+        sandbox_module.subprocess, "Popen",
+        lambda *_args, **_kwargs: TimeoutProcess(),
+    )
+    monkeypatch.setattr(Sandbox, "_terminate_process_tree", lambda *_args: None)
     timed_out = sandbox.execute("result = 1", user_id="user-1")
     assert timed_out.status == SandboxStatus.TIMEOUT
     assert audit.sandbox_timeouts == [("user-1", 3)]

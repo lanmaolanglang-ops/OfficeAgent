@@ -64,12 +64,11 @@ def test_sandbox_injects_data_and_malformed_output_is_error(tmp_path, monkeypatc
     assert result.status == SandboxStatus.SUCCESS
     assert result.result == "7"
 
+    malformed_process = SimpleNamespace(returncode=0)
+    malformed_process.communicate = lambda timeout=None: ("{" * 100, "")
     monkeypatch.setattr(
-        sandbox_module.subprocess,
-        "run",
-        lambda *_args, **_kwargs: SimpleNamespace(
-            stdout="{" * 100, stderr="", returncode=0
-        ),
+        sandbox_module.subprocess, "Popen",
+        lambda *_args, **_kwargs: malformed_process,
     )
     malformed = sandbox.execute("result = 1")
     assert malformed.status == SandboxStatus.ERROR

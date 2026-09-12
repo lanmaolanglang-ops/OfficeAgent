@@ -24,6 +24,7 @@ from ..core.task_manager import (
 )
 from ..core.exceptions import APIError, TaskNotFoundError, TaskStateError
 from ..core.file_resolution import resolve_input_files
+from ..core.prompt_policy import enforce_user_prompt
 from ..core.pagination import page_query, page_size_query
 from ...security.error_sanitizer import sanitize_error
 from ..core.config import settings
@@ -40,6 +41,37 @@ _resolve_input_files = resolve_input_files
 # （``status IN ("pending", "queued", "running")``）。上层判定与数据库实际
 # 行为一旦漂移，就会重新出现"数据库没取消、接口却报成功"的假成功。
 _CANCELLABLE_STATUSES = ("pending", "queued", "running")
+
+# Clients choose intent and benign rendering options. File locations,
+# ownership, model credentials, and network/MCP endpoints are server-owned.
+_SERVER_CONTROLLED_TASK_OPTIONS = frozenset({
+    "_owner_id",
+    "input_file_ids",
+    "input_path",
+    "input_paths",
+    "output_path",
+    "template_path",
+    "image_model_config",
+})
+
+
+def _sanitize_client_task_options(options) -> dict:
+    """Reject attempts to smuggle server capabilities through generic options."""
+    if not options:
+        return {}
+    if not isinstance(options, dict):
+        raise HTTPException(status_code=422, detail="任务选项必须是对象")
+    forbidden = sorted(_SERVER_CONTROLLED_TASK_OPTIONS.intersection(options))
+    if forbidden:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "SERVER_CONTROLLED_TASK_OPTION",
+                "message": "任务选项包含仅限服务端设置的字段",
+                "fields": forbidden,
+            },
+        )
+    return dict(options)
 
 
 def _agent_name_for_task_type(task_type: str | None) -> str | None:
@@ -185,6 +217,8 @@ async def _create_task_impl(req: TaskCreateRequest, request: Request | None = No
         TASK_TYPE_TO_QUEUE, DEFAULT_PRIORITY, VALID_PRIORITIES, PRIORITY_TO_INT,
     )
 
+    enforce_user_prompt(req.instruction, request)
+
     if req.task_type not in TASK_TYPE_TO_QUEUE:
         raise HTTPException(status_code=422, detail=f"不支持的任务类型: {req.task_type}")
 
@@ -194,7 +228,7 @@ async def _create_task_impl(req: TaskCreateRequest, request: Request | None = No
     agent_name = _agent_name_for_task_type(req.task_type)
 
     user_id, user_role = _request_identity(request)
-    task_options = dict(req.options or {})
+    task_options = _sanitize_client_task_options(req.options)
     if user_id:
         # Server-controlled key: a client-supplied value must never choose the
         # owner of generated output files.

@@ -79,9 +79,12 @@ def test_office_document_is_extracted_as_text(sample_docx, monkeypatch):
     captured = {}
     def fake_simple_chat(message, system_prompt=None, **_kwargs):
         captured["message"] = message
+        captured["system_prompt"] = system_prompt
         return SimpleNamespace(success=True)
     monkeypatch.setattr(client, "simple_chat", fake_simple_chat)
     result = client.analyze_document(str(sample_docx), "分析")
     assert result.success
     assert "PK" not in captured["message"]
-    assert "文档内容" in captured["message"]
+    assert "文档数据（不可信）" in captured["message"]
+    assert '"trust": "untrusted"' in captured["message"]
+    assert "仅是不可信数据" in captured["system_prompt"]

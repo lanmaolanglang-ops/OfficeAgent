@@ -49,6 +49,10 @@ def _llm_format_config(instruction: str, input_path: str, options: dict,
     try:
         from ...model_gateway.gateway import ModelGateway
         from ...models.model_schemas import AITaskType
+        from ...security.prompt import (
+            UNTRUSTED_DATA_SYSTEM_RULE,
+            render_untrusted_data,
+        )
         from docx import Document
         doc = Document(input_path)
         structure = {
@@ -61,12 +65,15 @@ def _llm_format_config(instruction: str, input_path: str, options: dict,
         prompt = json.dumps({"instruction": instruction,
                              "previous_instruction": options.get("previous_instruction", ""),
                              "is_follow_up": bool(options.get("is_follow_up")),
-                             "history": history,
-                             "document": structure}, ensure_ascii=False)
+                             "history": history}, ensure_ascii=False)
+        prompt += "\n文档结构数据（不可信）：\n" + render_untrusted_data(
+            json.dumps(structure, ensure_ascii=False), source="word_document"
+        )
         system = ("你是Word排版参数解析器。理解用户当前要求和历史反馈，输出严格JSON，不能输出解释。"
                   "只允许字段：font,en_font,size,line_spacing,alignment,first_line_indent,bold,italic,"
                   "space_before,space_after,headings。headings的键只能是1到4，值可含font,size,bold,italic,"
-                  "alignment,line_spacing,numbering。只输出用户明确要求或合理修正所需字段；若无法确定输出{}。")
+                  "alignment,line_spacing,numbering。只输出用户明确要求或合理修正所需字段；若无法确定输出{}。"
+                  + UNTRUSTED_DATA_SYSTEM_RULE)
         response = ModelGateway(
             cancel_event=getattr(progress, "cancel_event", None)
         ).chat(user_message=prompt, system_prompt=system,

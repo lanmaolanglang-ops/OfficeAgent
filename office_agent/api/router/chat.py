@@ -13,40 +13,15 @@ from ..schemas.response import ChatResponse, BaseResponse
 from ..routing import resolve_route, route_intent
 from ..core.config import settings
 from ..core.file_resolution import resolve_input_files
+from ..core.prompt_policy import enforce_user_prompt
 
 router = APIRouter(prefix="/api", tags=["对话"])
 
 logger = logging.getLogger("office_agent.api.chat")
 
-_prompt_scanner = None
-
-
 def _scan_user_prompt(message: str, request: Request):
-    """Enforce prompt policy before routing or writing any task state."""
-    global _prompt_scanner
-    from ...security.prompt import PromptAction, PromptSecurityScanner
-
-    if _prompt_scanner is None:
-        _prompt_scanner = PromptSecurityScanner()
-    result = _prompt_scanner.scan(message, source="user")
-    if result.action == PromptAction.REJECT:
-        from ...security.audit import get_audit_logger
-        from ...security.client_identity import resolve_request_client
-
-        get_audit_logger().log_prompt_injection(
-            user_id=getattr(request.state, "user_id", "anonymous"),
-            matches=result.matches,
-            ip=resolve_request_client(request),
-        )
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "code": "PROMPT_POLICY_REJECTED",
-                "message": "输入包含高风险指令操纵或模型控制标记",
-                "risk_level": result.risk_level,
-            },
-        )
-    return result
+    """Backward-compatible wrapper around the shared API prompt policy."""
+    return enforce_user_prompt(message, request)
 
 
 def _recover_conversation_context(conversation_id: str, task_repo, storage,

@@ -63,7 +63,9 @@ class ChatRequest(BaseModel):
 class TaskCreateRequest(BaseModel):
     """创建任务请求"""
     task_type: str = Field(..., description="任务类型：word_format/ppt_generate/excel_analysis等")
-    instruction: str = Field(..., description="任务指令", min_length=1)
+    instruction: str = Field(
+        ..., description="任务指令", min_length=1, max_length=10000,
+    )
     file_ids: Optional[List[str]] = Field(default=None, description="输入文件ID列表")
     output_format: Optional[str] = Field(default=None, description="输出格式")
     options: Optional[Dict[str, Any]] = Field(default=None, description="任务选项")

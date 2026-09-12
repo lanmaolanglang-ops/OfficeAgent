@@ -13,6 +13,35 @@ from .model_router import ModelRouter
 from .failover import FailoverManager
 
 
+_MODEL_MESSAGE_ROLES = frozenset({"user", "assistant"})
+_MODEL_MESSAGE_FIELDS = frozenset({"role", "content", "name"})
+
+
+def _normalize_model_messages(messages) -> list[dict[str, str]]:
+    """Keep privileged roles and tool envelopes out of untrusted message data."""
+    if not isinstance(messages, list) or not messages:
+        raise ValueError("模型消息必须是非空列表")
+    normalized: list[dict[str, str]] = []
+    for message in messages:
+        if not isinstance(message, dict):
+            raise ValueError("模型消息必须是对象")
+        unexpected = set(message).difference(_MODEL_MESSAGE_FIELDS)
+        if unexpected:
+            raise ValueError("模型消息包含不允许的工具或控制字段")
+        role = message.get("role")
+        content = message.get("content")
+        if role not in _MODEL_MESSAGE_ROLES:
+            raise ValueError("模型消息角色不允许提升为 system/tool/developer")
+        if not isinstance(content, str):
+            raise ValueError("模型消息内容必须是字符串")
+        clean = {"role": role, "content": content}
+        name = message.get("name")
+        if isinstance(name, str) and name.strip():
+            clean["name"] = name.strip()[:80]
+        normalized.append(clean)
+    return normalized
+
+
 class ModelGateway:
     """
     模型网关 - 统一入口
@@ -213,14 +242,14 @@ class ModelGateway:
         if isinstance(messages, list) and messages and isinstance(messages[0], ChatMessage):
             messages = [m.to_dict() for m in messages]
 
+        if messages is None:
+            messages = [{"role": "user", "content": user_message}]
+        messages = _normalize_model_messages(messages)
+
         if not task_type:
             # 自动推断
             input_text = user_message or (messages[-1].get("content", "") if messages else "")
             task_type = self.router.infer_task_type(input_text)
-        
-        # 构建消息
-        if messages is None:
-            messages = [{"role": "user", "content": user_message}]
         
         # 选择模型：显式 prefer_model 优先，否则用用户设置的默认模型
         if not prefer_model:
