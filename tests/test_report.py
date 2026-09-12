@@ -4,11 +4,10 @@
 """
 import json
 import time
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from enum import Enum
-from typing import Any
 
 
 class TestStatus(str, Enum):
@@ -196,25 +195,61 @@ class TestRunner:
     def __init__(self, project: str = "Office Agent", version: str = "0.45.0"):
         self.report = TestReport(project=project, version=version)
 
+    @staticmethod
+    def _judge_result(result) -> tuple[TestStatus, float | None]:
+        """把测试函数的返回值映射为状态。
+
+        判定口径必须与 :class:`tests.qa_framework.QATestRunner` 一致，
+        否则同一份用例在两套 Runner 下会得出不同通过率：
+
+        - 返回带 ``total_score`` / ``passed`` 的评测对象 → 按 ``passed`` 判定
+        - 返回 ``(ok, msg)`` 元组 → 按第一个元素判定
+        - 返回 ``dict`` → 按 ``passed`` 键判定（缺省 True）
+        - 返回 ``bool`` → 按值判定（**False 即 FAIL**）
+        - 返回 ``None`` 或其它非布尔值 → PASS（"无断言即通过"的历史语义）
+
+        修复前：``result is False`` 与 ``(False, msg)`` 元组都落到 else 分支被
+        无条件记为 PASS，测试函数显式返回失败仍算通过，QA 通过率虚高。
+        """
+        if hasattr(result, "total_score"):
+            passed = bool(getattr(result, "passed", False))
+            return (TestStatus.PASS if passed else TestStatus.FAIL), result.total_score
+        if isinstance(result, tuple):
+            if not result:
+                return TestStatus.FAIL, None
+            head = result[0]
+            if isinstance(head, bool):
+                return (TestStatus.PASS if head else TestStatus.FAIL), None
+            return TestStatus.PASS, None
+        if isinstance(result, dict):
+            passed = result.get("passed", True)
+            return (TestStatus.PASS if passed else TestStatus.FAIL), None
+        if isinstance(result, bool):
+            return (TestStatus.PASS if result else TestStatus.FAIL), None
+        return TestStatus.PASS, None
+
+    @staticmethod
+    def _failure_note(result) -> str:
+        """为 FAIL 结果补充可读原因（Markdown 报告会打印 error 字段）。"""
+        if isinstance(result, tuple) and len(result) > 1:
+            return str(result[1])
+        if isinstance(result, dict):
+            return str(result.get("message", ""))
+        return "测试函数返回失败"
+
     def run_test(self, name: str, module: str, category: str, func, *args, **kwargs):
-        """运行单个测试"""
+        """运行单个测试，返回该用例是否通过。"""
         start = time.time()
         try:
             result = func(*args, **kwargs)
             duration = time.time() - start
-            score = None
-            if hasattr(result, "total_score"):
-                score = result.total_score
-                status = TestStatus.PASS if result.passed else TestStatus.FAIL
-            elif result is None or result is True:
-                status = TestStatus.PASS
-            else:
-                status = TestStatus.PASS
+            status, score = self._judge_result(result)
             self.report.add_result(TestCaseResult(
                 name=name, module=module, category=category,
                 status=status, duration=duration, score=score,
+                error="" if status == TestStatus.PASS else self._failure_note(result),
             ))
-            return True
+            return status == TestStatus.PASS
         except AssertionError as e:
             duration = time.time() - start
             self.report.add_result(TestCaseResult(

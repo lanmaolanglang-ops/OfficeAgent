@@ -26,6 +26,7 @@ from docx.oxml import parse_xml, OxmlElement
 from ..models.schemas import (
     FormatConfig, FontConfig, ParagraphConfig, HeadingConfig,
     TableConfig, Alignment, ProcessResult, PageSetupConfig,
+    DEFAULT_BODY_FIRST_LINE_INDENT_CHARS,
 )
 from ..parsers.document_structure import DocumentStructureAnalyzer, DocumentTree
 from ..text_encoding import read_text_file
@@ -747,6 +748,29 @@ class WordService:
                 return float(m.group())
         return default
 
+    @staticmethod
+    def _indent_unit(d: dict) -> str:
+        """判定缩进使用的单位：chars（显式或默认）/ points（显式）。"""
+        if "first_line_indent_chars" in d:
+            return "chars"
+        if "first_line_indent" in d:
+            return "points"
+        return "chars"   # 两者都没给 → canonical 默认（2 字符）
+
+    def _resolve_indent_points(self, d: dict) -> float:
+        """首行缩进的磅值分量（仅在按磅值口径生效时非 0）。"""
+        if self._indent_unit(d) != "points":
+            return 0.0
+        return self._coerce_float(d.get("first_line_indent"), 0)
+
+    def _resolve_indent_chars(self, d: dict) -> float:
+        """首行缩进的字符分量（仅在按字符口径生效时非 0）。"""
+        if self._indent_unit(d) != "chars":
+            return 0.0
+        if "first_line_indent_chars" not in d:
+            return DEFAULT_BODY_FIRST_LINE_INDENT_CHARS
+        return self._coerce_float(d.get("first_line_indent_chars"), 0)
+
     def config_from_dict(self, d: dict) -> FormatConfig:
         """
         从字典创建 FormatConfig
@@ -757,7 +781,8 @@ class WordService:
             "size": "小四",  # 或 12
             "line_spacing": 1.25,
             "alignment": "justify",
-            "first_line_indent": 24,
+            "first_line_indent_chars": 2,  # canonical：按当前字号换算
+            # 或 "first_line_indent": 24  # 绝对磅值（显式提供时优先按磅处理）
             "bold": False,
             "headings": {
                 "1": {"font": "黑体", "size": 15, "bold": True},
@@ -798,10 +823,16 @@ class WordService:
             ),
             space_before=self._coerce_float(d.get("space_before"), 0),
             space_after=self._coerce_float(d.get("space_after"), 0),
-            first_line_indent=self._coerce_float(d.get("first_line_indent"), 24),
-            first_line_indent_chars=self._coerce_float(
-                d.get("first_line_indent_chars"), 0
-            ),
+            # 缩进：canonical 单位是"字符"（按当前字号换算磅值，见
+            # _apply_paragraph_format 的 chars 优先规则）。这里必须按字典里
+            # **实际出现的键**决定用哪个单位：
+            #   1) 显式给 chars → chars 生效、磅值置 0
+            #   2) 显式给磅值   → 磅值生效、chars 置 0（不能用默认 chars 抢走它）
+            #   3) 两者都没给   → 落到 canonical 默认 2 字符
+            # 历史缺陷：3) 兜底 24 磅 + 0 字符，与 FormatConfig.body_paragraph
+            # 的默认 0 磅 + 2 字符分叉；字号≠12pt 时同一份配置在两条入口下缩进不同。
+            first_line_indent=self._resolve_indent_points(d),
+            first_line_indent_chars=self._resolve_indent_chars(d),
         )
 
         # 解析标题配置

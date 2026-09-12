@@ -70,6 +70,15 @@ class Alignment(Enum):
     JUSTIFY = "justify"
 
 
+# 正文首行缩进的 canonical 默认值：**2 字符**（按当前正文字号换算磅值）。
+# 这是两条入口的唯一来源：``FormatConfig.body_paragraph`` 的默认构造，以及
+# ``WordService.config_from_dict`` 在用户未提供缩进时的兜底。
+# 历史缺陷：config_from_dict 兜底 24 磅 + 0 字符，与 FormatConfig 的 0 磅 +
+# 2 字符分叉；12pt 下视觉等价，正文字号≠12pt 时同一份用户配置在两条入口下
+# 得到不同缩进。
+DEFAULT_BODY_FIRST_LINE_INDENT_CHARS = 2.0
+
+
 @dataclass
 class FileInfo:
     """文件信息"""
@@ -169,7 +178,7 @@ class FormatConfig:
     body_paragraph: ParagraphConfig = field(default_factory=lambda: ParagraphConfig(
         alignment=Alignment.JUSTIFY,
         line_spacing=1.25,
-        first_line_indent_chars=2.0,
+        first_line_indent_chars=DEFAULT_BODY_FIRST_LINE_INDENT_CHARS,
     ))
     headings: dict[int, HeadingConfig] = field(default_factory=dict)
     table_config: TableConfig = field(default_factory=TableConfig)
