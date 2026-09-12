@@ -13,7 +13,9 @@ Security & Permission Layer
 """
 from .config import SecurityConfig, get_security_config, set_security_config
 from .auth import (
-    hash_password, verify_password, generate_password, is_password_strong,
+    MAX_PASSWORD_LENGTH, PASSWORD_HASH_ITERATIONS, PASSWORD_HASH_SCHEME,
+    PasswordVerification, generate_password, hash_password, is_password_strong,
+    needs_rehash, verify_password, verify_password_and_rehash,
     JWTManager, TokenPayload,
     TokenManager, TokenType, TokenInfo,
 )
@@ -49,7 +51,9 @@ __all__ = [
     # 配置
     "SecurityConfig", "get_security_config", "set_security_config",
     # 认证
-    "hash_password", "verify_password", "generate_password", "is_password_strong",
+    "MAX_PASSWORD_LENGTH", "PASSWORD_HASH_ITERATIONS", "PASSWORD_HASH_SCHEME",
+    "PasswordVerification", "hash_password", "verify_password", "needs_rehash",
+    "verify_password_and_rehash", "generate_password", "is_password_strong",
     "JWTManager", "TokenPayload",
     "TokenManager", "TokenType", "TokenInfo",
     # 权限

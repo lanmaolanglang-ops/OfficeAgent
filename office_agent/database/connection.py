@@ -57,6 +57,9 @@ def _register_sqlite_pragmas(target: Engine) -> Engine:
 # 引擎参数
 _engine_kwargs: dict[str, object] = {
     "echo": os.environ.get("DB_ECHO", "false").lower() == "true",
+    # SQL echo is useful for diagnosing statement shape, but bound values can
+    # contain password hashes, API keys, document text, or other secrets.
+    "hide_parameters": True,
     "future": True,
 }
 

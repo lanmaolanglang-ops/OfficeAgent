@@ -63,12 +63,14 @@ class TestVerifyPassword:
         # AttributeError 等编程错误不得再被伪装成"密码错误"
         import office_agent.security.auth.password as password_module
 
+        stored = password_module.hash_password("pw")
+
         def _broken(*args, **kwargs):
             raise AttributeError("simulated programming bug")
 
-        monkeypatch.setattr(password_module.hashlib, "pbkdf2_hmac", _broken)
+        monkeypatch.setattr(password_module, "_kdf", _broken)
         with pytest.raises(AttributeError):
-            verify_password("pw", hash_password("pw"))
+            verify_password("pw", stored)
 
 
 # ---------------------------------------------------------------- jwt
