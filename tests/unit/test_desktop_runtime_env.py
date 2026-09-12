@@ -88,7 +88,9 @@ def test_frozen_launcher_uses_shared_source():
 def test_service_wrapper_script_uses_shared_source():
     import desktop.service_manager as service_manager
 
-    source = inspect.getsource(service_manager.install_service)
+    # 模板已抽为纯函数 build_service_wrapper_script，检查对象随之迁移；
+    # 契约不变：包装脚本必须经共享的 apply_desktop_runtime_env 注入运行时。
+    source = inspect.getsource(service_manager.build_service_wrapper_script)
     assert "apply_desktop_runtime_env" in source
     assert 'os.environ["OFFICE_AGENT_LOCAL"]' not in source
 

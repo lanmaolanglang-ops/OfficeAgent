@@ -43,17 +43,6 @@ class FileInfo:
 class FileManager:
     """文件管理器"""
 
-    # 文件类型映射
-    TYPE_MAP = {
-        ".docx": "word",
-        ".pptx": "ppt",
-        ".xlsx": "excel",
-        ".pdf": "pdf",
-        ".txt": "text", ".md": "text",
-        ".png": "image", ".jpg": "image", ".jpeg": "image",
-        ".gif": "image", ".bmp": "image", ".webp": "image",
-    }
-
     def __init__(self, upload_dir: str | None = None, output_dir: str | None = None):
         self.upload_dir = upload_dir or settings.upload_dir
         self.output_dir = output_dir or settings.output_dir

@@ -26,6 +26,10 @@ class TaskStatus(str, Enum):
     CANCELLED = "cancelled"
 
 
+# step 记录的终态集合：进入这些状态的步骤在终态闭合时不得被覆盖。
+_TERMINAL_STEP_STATUSES = frozenset({"completed", "failed", "cancelled", "skipped"})
+
+
 def normalize_task_status(status: str | TaskStatus) -> str:
     """Return the canonical task status while accepting legacy waiting."""
     value = status.value if isinstance(status, TaskStatus) else str(status)
@@ -104,15 +108,37 @@ class Task:
         if progress is not None:
             self.progress = min(100, max(0, progress))
         if step is not None:
+            # 步骤切换即闭合上一步：旧实现只追加新的 running 步骤、从不
+            # 关闭前一步，任务成功后除最后一步外的步骤永久悬挂 running。
+            now_iso = datetime.now(timezone.utc).isoformat()
+            for existing in reversed(self.steps):
+                if existing["status"] == "running":
+                    existing["status"] = "completed"
+                    existing["completed_at"] = now_iso
+                    break
             self.current_step = step
             self.steps.append({
                 "step_id": f"step_{len(self.steps)}",
                 "name": step,
                 "status": "running",
-                "started_at": datetime.now(timezone.utc).isoformat(),
+                "started_at": now_iso,
             })
         if status is not None:
             self.status = normalize_task_status(status)
+
+    def _close_steps(self, last_status: str, superseded_status: str) -> None:
+        """任务进入终态时闭合所有未终态 step（幂等）。
+
+        最后一个未终态 step 是任务的落点，用 ``last_status``；其余仍
+        悬挂的 step（防御性兜底，正常路径已在切换时闭合）用
+        ``superseded_status``。已处于终态的 step 一律不覆盖。
+        """
+        for index, step in enumerate(self.steps):
+            if step["status"] in _TERMINAL_STEP_STATUSES:
+                continue
+            step["status"] = last_status if index == len(self.steps) - 1 \
+                else superseded_status
+            step["completed_at"] = datetime.now(timezone.utc).isoformat()
 
     def complete(self, result: Dict | None = None, output_files: List[str] | None = None,
                  quality_score: float | None = None):
@@ -127,10 +153,8 @@ class Task:
         self.completed_at = datetime.now(timezone.utc).isoformat()
         if self._start_time:
             self.duration_ms = int((time.time() - self._start_time) * 1000)
-        # 标记最后一步完成
-        if self.steps:
-            self.steps[-1]["status"] = "completed"
-            self.steps[-1]["completed_at"] = self.completed_at
+        # 成功 = 所有 step 都收敛到 completed（含切换时未闭合的历史步骤）
+        self._close_steps("completed", "completed")
 
     def fail(self, error: str):
         self.status = TaskStatus.FAILED.value
@@ -139,9 +163,9 @@ class Task:
         self.completed_at = datetime.now(timezone.utc).isoformat()
         if self._start_time:
             self.duration_ms = int((time.time() - self._start_time) * 1000)
-        if self.steps:
-            self.steps[-1]["status"] = "failed"
-            self.steps[-1]["completed_at"] = self.completed_at
+        # 失败落点 = 当前（最后一个）step 标记 failed；其余悬挂步骤
+        # 标记 skipped，不再永久停留在 running。
+        self._close_steps("failed", "skipped")
 
 
 class TaskManager:
@@ -230,6 +254,9 @@ class TaskManager:
                 return False
             task.status = TaskStatus.CANCELLED.value
             task.completed_at = datetime.now(timezone.utc).isoformat()
+            # 取消是终态：所有未终态 step 一并收敛为 cancelled，
+            # 不允许任务终态后仍挂着 running 步骤。
+            task._close_steps("cancelled", "cancelled")
             return True
 
     def snapshot_tasks(self, status: str | None = None, agent: str | None = None,

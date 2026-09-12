@@ -31,36 +31,49 @@ def is_admin() -> bool:
         return False
 
 
+def elevated_command_line(argv: list[str]) -> str:
+    """按 Windows 命令行引用规则渲染"脚本 + 参数"命令行。
+
+    旧实现 ``" ".join(sys.argv)`` 对含空格/引号/末尾反斜杠的路径
+    （例如 ``--app-dir "C:\\Program Files\\App\\"``）会被提权后的解释器
+    重新切分成错误参数。统一走 stdlib ``subprocess.list2cmdline``
+    （微软官方规则：空格包裹、内嵌引号加倍、末尾反斜杠转义）。
+    ``argv[0]`` 是脚本路径，必须保留在参数里——可执行文件是
+    ``sys.executable`` 本身，二者不重复。``&`` 等字符仅对 cmd.exe 有
+    特殊含义，ShellExecuteW 不经过 shell，无需转义。
+    """
+    return subprocess.list2cmdline(list(argv))
+
+
 def run_as_admin():
     """以管理员权限重新运行"""
     import ctypes
     ctypes.windll.shell32.ShellExecuteW(
-        None, "runas", sys.executable, " ".join(sys.argv), None, 1
+        None, "runas", sys.executable, elevated_command_line(sys.argv), None, 1
     )
     sys.exit(0)
 
 
-def install_service(app_dir: Path, port: int = 8765):
-    """安装Windows服务"""
-    if not is_admin():
-        print("需要管理员权限，正在请求提升...")
-        run_as_admin()
-        return
-    try:
-        import win32serviceutil  # type: ignore[import-untyped]  # noqa: F401
-        import win32service  # type: ignore[import-untyped]  # noqa: F401
-        import win32event  # type: ignore[import-untyped]  # noqa: F401
-        import servicemanager  # type: ignore[import-untyped]  # noqa: F401
-    except ImportError:
-        print("安装pywin32: pip install pywin32")
-        return False
-    # 创建服务脚本
-    service_script = app_dir / "service_wrapper.py"
-    service_data_dir = get_desktop_data_root()
-    script_content = f'''
+def build_service_wrapper_script(app_dir: Path, port: int,
+                                 service_data_dir) -> str:
+    """渲染 service_wrapper.py 的完整内容（纯函数，便于对生成代码直接测试）。
+
+    生命周期契约（SvcDoRun / SvcStop）：
+    - SvcStop 先于 SvcDoRun 就绪的竞态：SvcStop 时 ``_mgr`` 尚为 None
+      无法清理，SvcDoRun 的 finally 必须兜底停止后端；
+    - 后端清理恰好一次（取走引用的幂等语义），清理失败只记录事件日志，
+      绝不阻塞服务退出；
+    - 启动失败收口：记录事件日志、清理半启动状态、明确上报
+      SERVICE_STOPPED，而不是以未处理异常结束；
+    - 等待停止信号用阻塞的 WaitForSingleObject（5s 超时重查），不是
+      busy spin。
+    """
+    desktop_dir = Path(__file__).resolve().parent
+    return f'''
 import sys
 import os
 sys.path.insert(0, r"{app_dir}")
+sys.path.insert(0, r"{desktop_dir}")
 os.chdir(r"{app_dir}")
 from office_agent.runtime_config import apply_desktop_runtime_env
 apply_desktop_runtime_env(r"{service_data_dir}")
@@ -81,28 +94,74 @@ class OfficeAgentService(win32serviceutil.ServiceFramework):
         self.hWaitStop = win32event.CreateEvent(None, 0, 0, None)
         self._mgr = None
 
+    def _stop_backend_once(self):
+        # 幂等清理：取走引用，保证每个后端实例只被 stop 一次。
+        # SvcStop（另一线程）与 SvcDoRun 退出路径都可能调用。
+        mgr = self._mgr
+        if mgr is None:
+            return
+        self._mgr = None
+        try:
+            mgr.stop()
+        except Exception as exc:
+            servicemanager.LogErrorMsg(f"OfficeAgent 后端停止失败: {{exc}}")
+
     def SvcStop(self):
         self.ReportServiceStatus(win32service.SERVICE_STOP_PENDING)
         win32event.SetEvent(self.hWaitStop)
-        if self._mgr:
-            self._mgr.stop()
+        self._stop_backend_once()
 
     def SvcDoRun(self):
         servicemanager.LogMsg(servicemanager.EVENTLOG_INFORMATION_TYPE,
                               servicemanager.PYS_SERVICE_STARTED,
                               (self._svc_name_, ""))
-        from office_agent.runtime_manager import AppConfig, ApplicationRuntimeManager
-        config = AppConfig(port={port}, backend_dir=r"{app_dir}")
-        self._mgr = ApplicationRuntimeManager(config)
-        self._mgr.start()
-        while True:
-            rc = win32event.WaitForSingleObject(self.hWaitStop, 5000)
-            if rc == win32event.WAIT_OBJECT_0:
-                break
+        try:
+            from office_agent.runtime_manager import AppConfig, ApplicationRuntimeManager
+            config = AppConfig(port={port}, backend_dir=r"{app_dir}")
+            self._mgr = ApplicationRuntimeManager(config)
+            self._mgr.start()
+        except Exception as exc:
+            # 启动失败必须收口：记录事件日志、清理半启动状态并明确上报
+            # SERVICE_STOPPED，而不是以未处理异常结束。
+            servicemanager.LogErrorMsg(f"OfficeAgent 后端启动失败: {{exc}}")
+            self._stop_backend_once()
+            self.ReportServiceStatus(win32service.SERVICE_STOPPED)
+            return
+        try:
+            while True:
+                rc = win32event.WaitForSingleObject(self.hWaitStop, 5000)
+                if rc == win32event.WAIT_OBJECT_0:
+                    break
+        finally:
+            # SvcStop 早于后端就绪的竞态（当时 _mgr 为 None、SvcStop 无法
+            # 清理）在这里兜底，避免孤儿后端进程。
+            self._stop_backend_once()
+            self.ReportServiceStatus(win32service.SERVICE_STOPPED)
 
 if __name__ == "__main__":
     win32serviceutil.HandleCommandLine(OfficeAgentService)
 '''
+
+
+def install_service(app_dir: Path, port: int = 8765):
+    """安装Windows服务"""
+    if not is_admin():
+        print("需要管理员权限，正在请求提升...")
+        run_as_admin()
+        return
+    try:
+        import win32serviceutil  # type: ignore[import-untyped]  # noqa: F401
+        import win32service  # type: ignore[import-untyped]  # noqa: F401
+        import win32event  # type: ignore[import-untyped]  # noqa: F401
+        import servicemanager  # type: ignore[import-untyped]  # noqa: F401
+    except ImportError:
+        print("安装pywin32: pip install pywin32")
+        return False
+    # 创建服务脚本
+    service_script = app_dir / "service_wrapper.py"
+    service_data_dir = get_desktop_data_root()
+    script_content = build_service_wrapper_script(
+        app_dir, port, service_data_dir)
     service_script.write_text(script_content, encoding="utf-8")
     # 安装服务
     try:
