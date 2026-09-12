@@ -15,6 +15,12 @@ from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 
 
+# Excel 函数名语法：以字母/下划线开头，后续可含字母、数字、点、下划线。
+# 覆盖 RANK.EQ / STDEV.P / _xlfn.CONCAT 等带点或下划线的合法函数名，
+# 同时仍然拒绝 "="、"+1"、"SUM 1"、"" 这类非函数名片段。
+_EXCEL_FUNCTION_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9._]*$")
+
+
 @dataclass
 class ExcelScoreResult:
     """Excel评分结果"""
@@ -264,7 +270,12 @@ class ExcelQualityScorer:
         return False
 
     def _extract_function_name(self, formula: str) -> Optional[str]:
-        """从公式中提取函数名"""
+        """从公式中提取函数名。
+
+        Excel 函数名允许字母、数字、点与下划线（例如 ``RANK.EQ``、
+        ``STDEV.P``、``_xlfn.CONCAT``），但必须以字母或下划线开头。
+        旧实现用 ``func.isalpha()`` 判定，会把带 ``.`` 的合法函数名整类丢弃。
+        """
         # 去掉=号
         f = formula.lstrip("=")
         # 找第一个(
@@ -273,7 +284,7 @@ class ExcelQualityScorer:
             # 去掉可能的前缀（如工作表名!）
             if "!" in func:
                 func = func.split("!")[-1]
-            if func and func.isalpha():
+            if func and _EXCEL_FUNCTION_NAME_RE.match(func):
                 return func
         return None
 

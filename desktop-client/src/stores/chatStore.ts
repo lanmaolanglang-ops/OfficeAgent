@@ -99,6 +99,13 @@ export const useChatStore = create<ChatState>((set, get) => {
       // 并发守卫：上一轮任务仍在轮询时忽略新的发送，避免 sending 状态竞态
       if (get().sending) return;
       const generation = ++pollGeneration;
+      // 请求级身份守卫：generation 只在"发起新请求"或"清空会话"时自增。
+      // 请求在 await 期间若会话已被清空/取代，本链的**共享状态写入**
+      // （conversationId / sending / lastOutputFileId / 附件清空）必须整体作废，
+      // 否则会用一个已作废的响应去覆盖新会话的状态。
+      // 消息本身按 id 更新（updateMessage），天然只作用于自己那条占位消息，
+      // 因此无需也不应受此守卫限制。
+      const isCurrent = () => generation === pollGeneration;
       // 在插入占位消息之前快照历史，避免把“正在理解…”占位内容发给后端
       const history = get().messages
         .filter((m) => m.role === 'user' || (m.role === 'assistant' && (m.task_status === 'completed' || m.task_status === 'failed' || m.task_status === 'cancelled')))
@@ -154,10 +161,14 @@ export const useChatStore = create<ChatState>((set, get) => {
 
         // The Backend accepted the task, so these attachments no longer belong
         // to the next message. Request failures leave the snapshot attached.
-        useFileStore.getState().clearAttachments();
+        // 仅当本次请求仍是当前请求时才清空：否则会把用户在等待期间新附加的
+        // 文件当成"已消费"而清掉。
+        if (isCurrent()) {
+          useFileStore.getState().clearAttachments();
+        }
 
         taskId = response.task_id;
-        if (response.conversation_id) {
+        if (response.conversation_id && isCurrent()) {
           set({ conversationId: response.conversation_id });
         }
         const agentName = response.agent || '智能助手';
@@ -180,7 +191,9 @@ export const useChatStore = create<ChatState>((set, get) => {
             task_status: 'completed',
             task_progress: 100,
           });
-          set({ sending: false });
+          if (isCurrent()) {
+            set({ sending: false });
+          }
           return;
         }
 
@@ -191,7 +204,10 @@ export const useChatStore = create<ChatState>((set, get) => {
           content: `❌ 错误：${error instanceof Error ? error.message : '未知错误'}`,
           task_status: 'failed',
         });
-        set({ sending: false });
+        // 迟到的失败不得解锁"更新的一次请求"的发送框
+        if (isCurrent()) {
+          set({ sending: false });
+        }
       }
     },
 
@@ -227,7 +243,9 @@ function startPollLoop(initialTaskId: string, assistantId: string, generation: n
       task_status: 'failed',
       task_error: message,
     });
-    set({ sending: false });
+    if (generation === pollGeneration) {
+      set({ sending: false });
+    }
   };
 
   const poll = async () => {
@@ -235,6 +253,12 @@ function startPollLoop(initialTaskId: string, assistantId: string, generation: n
       if (generation !== pollGeneration) return; // 已被新消息/清空会话取代
       pollCount++;
       const task = await getTask(taskId!);
+
+      // 轮询是"异步等待 + 写回共享状态"的链路：await 期间会话可能已被
+      // 清空或被更新的一次请求取代。此处必须重新校验代际，否则本链的
+      // 完成/失败态会去清空新请求的 sending、覆盖 conversationId /
+      // lastOutputFileId（旧请求覆盖新状态）。
+      if (generation !== pollGeneration) return;
 
       // 更新进度
       const updates: Partial<ChatMessage> = {
@@ -394,7 +418,9 @@ function startPollLoop(initialTaskId: string, assistantId: string, generation: n
         get().updateMessage(assistantId, {
           content: '⚠️ 无法获取任务状态，请在任务历史中查看',
         });
-        set({ sending: false });
+        if (generation === pollGeneration) {
+          set({ sending: false });
+        }
       }
     }
   };

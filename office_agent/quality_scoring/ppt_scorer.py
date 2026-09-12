@@ -204,13 +204,19 @@ class PPTQualityScorer:
                                 except (AttributeError, ValueError):
                                     pass
 
-                    # 判断是否为标题
+                    # 判断是否为标题。
+                    # title_count 的口径是"有标题的**页数**"（下游
+                    # title_ratio / title_coverage 都用它除以页数），
+                    # 因此同一页命中多个 title-like 形状时只能计 1 次。
                     title_shape = slide.shapes.title
-                    if (title_shape is not None and shape._element is title_shape._element) or (
-                        shape.top and shape.top < Emu(2000000) and
-                        any(run.font.size and run.font.size.pt >= 24
-                            for para in shape.text_frame.paragraphs
-                            for run in para.runs)
+                    if not slide_info["has_title"] and (
+                        (title_shape is not None and shape._element is title_shape._element)
+                        or (
+                            shape.top and shape.top < Emu(2000000) and
+                            any(run.font.size and run.font.size.pt >= 24
+                                for para in shape.text_frame.paragraphs
+                                for run in para.runs)
+                        )
                     ):
                         slide_info["has_title"] = True
                         slide_info["title_text"] = shape.text_frame.text[:50]
@@ -220,7 +226,15 @@ class PPTQualityScorer:
 
             text_lengths.append(slide_info["text_length"])
 
-            if slide_info["text_length"] == 0 and slide_info["pictures"] == 0:
+            # "空页"判定必须覆盖本评分器已识别的全部内容载体。
+            # 只看向 text + picture 会把"只有表格/只有图表"的页误判为空白。
+            has_visual_content = (
+                slide_info["text_length"] > 0
+                or slide_info["pictures"] > 0
+                or slide_info["charts"] > 0
+                or slide_info["tables"] > 0
+            )
+            if not has_visual_content:
                 empty_slides += 1
 
             # 转换set为list以便序列化
