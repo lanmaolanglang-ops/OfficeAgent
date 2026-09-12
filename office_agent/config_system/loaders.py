@@ -15,6 +15,29 @@ from ..runtime_config import get_data_root
 
 logger = get_logger("config.loader")
 
+# ConfigManager 初始化对这五类配置的语义是"加载全部记录"：固定 limit
+# 会把超限的配置行静默截断（第 1001 个模型永远不可见，且无任何告警）。
+# 全量加载一律走 _iter_all 的稳定分页循环，单页结果保持有界。
+LOAD_PAGE_SIZE = 500
+
+
+def _iter_all(repo, order_by: str):
+    """按唯一键稳定排序、以有界页遍历仓库全部记录。
+
+    - 每页 limit=LOAD_PAGE_SIZE，不无界拉取；
+    - order_by 取各类配置的唯一业务键，页序稳定、不重不漏；
+    - 取完（短页）即停。
+    """
+    offset = 0
+    while True:
+        page = repo.find(offset=offset, limit=LOAD_PAGE_SIZE, order_by=order_by)
+        if not page:
+            return
+        yield from page
+        offset += len(page)
+        if len(page) < LOAD_PAGE_SIZE:
+            return
+
 
 class EnvLoader:
     """从环境变量加载配置"""
@@ -179,7 +202,8 @@ class DatabaseLoader:
         session = self.session_factory()
         try:
             repo = ModelConfigRepository(session)
-            models = repo.get_enabled() if only_enabled else repo.find(limit=1000)
+            models = (repo.get_enabled() if only_enabled
+                      else list(_iter_all(repo, "model_id")))
             return [repo.to_dict(m) for m in models]
         finally:
             session.close()
@@ -189,7 +213,8 @@ class DatabaseLoader:
         session = self.session_factory()
         try:
             repo = AgentConfigRepository(session)
-            agents = repo.get_enabled() if only_enabled else repo.find(limit=100)
+            agents = (repo.get_enabled() if only_enabled
+                      else list(_iter_all(repo, "agent_name")))
             return [repo.to_dict(a) for a in agents]
         finally:
             session.close()
@@ -199,7 +224,8 @@ class DatabaseLoader:
         session = self.session_factory()
         try:
             repo = PromptConfigRepository(session)
-            prompts = repo.get_active() if only_active else repo.find(limit=1000)
+            prompts = (repo.get_active() if only_active
+                       else list(_iter_all(repo, "name")))
             return [repo.to_dict(p) for p in prompts]
         finally:
             session.close()
@@ -209,7 +235,8 @@ class DatabaseLoader:
         session = self.session_factory()
         try:
             repo = SkillConfigRepository(session)
-            skills = repo.get_enabled() if only_enabled else repo.find(limit=100)
+            skills = (repo.get_enabled() if only_enabled
+                      else list(_iter_all(repo, "skill_name")))
             return [repo.to_dict(s) for s in skills]
         finally:
             session.close()
@@ -219,7 +246,8 @@ class DatabaseLoader:
         session = self.session_factory()
         try:
             repo = WorkflowConfigRepository(session)
-            wfs = repo.get_enabled() if only_enabled else repo.find(limit=100)
+            wfs = (repo.get_enabled() if only_enabled
+                   else list(_iter_all(repo, "workflow_name")))
             return [repo.to_dict(w) for w in wfs]
         finally:
             session.close()

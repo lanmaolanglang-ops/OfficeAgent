@@ -273,7 +273,9 @@ class GlobalConfig(BaseModel):
     """全局配置"""
     # 基础
     environment: str = "development"
-    debug: bool = True
+    # fail-safe 默认：debug 会放宽错误脱敏/增加敏感日志，生产缺省必须
+    # 关闭。显式 debug=True、DEBUG 环境变量与 YAML 覆盖均不受影响。
+    debug: bool = False
     service_name: str = "office-agent"
 
     # 存储

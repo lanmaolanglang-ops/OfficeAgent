@@ -18,6 +18,12 @@ from ...security.error_sanitizer import sanitize_error
 
 logger = logging.getLogger("office_agent.tasks.rag")
 
+# 词法命中的分数地板：LEXICAL 命中但没有可比向量（旧 hashing 模型 /
+# 维度不匹配）的记录，以及词法与向量分合并时，给到一个不低于纯向量
+# 结果底部的合并分。历史上以 0.35 字面量散落多处，收敛为唯一常量；
+# search_knowledge 的 lexical_score_floor 参数可显式覆盖。
+DEFAULT_LEXICAL_SCORE_FLOOR = 0.35
+
 
 def _rag_error_message(exc: Exception) -> str:
     """Return a user-facing RAG error without leaking backend internals."""
@@ -361,12 +367,16 @@ def search_knowledge(query: str, top_k: int = 5,
                      category: str | None = None, max_candidates: int = 10000,
                      progress=None,
                      _task_id: str | None = None, *,
-                     min_ann_candidates: int | None = None, **kwargs) -> dict:
+                     min_ann_candidates: int | None = None,
+                     lexical_score_floor: float | None = None, **kwargs) -> dict:
     """使用持久化向量执行余弦检索，并回退到文本匹配。
 
     候选集达到 :data:`ANN_MIN_CANDIDATES` 时优先使用持久化 usearch ANN
     索引；索引缺失、损坏或不可用时安全回退到原有精确余弦路径。ANN 只负责
     加速，数据库仍是唯一事实来源。
+
+    ``lexical_score_floor`` 覆盖词法命中的分数地板（默认取
+    :data:`DEFAULT_LEXICAL_SCORE_FLOOR`），传入值被钳制到 [0, 1]。
     """
     result: dict = {
         "status": "success", "results": [], "candidate_count": 0,
@@ -380,6 +390,10 @@ def search_knowledge(query: str, top_k: int = 5,
             raise ValueError("检索词不能为空")
         top_k = max(1, min(int(top_k), 50))
         max_candidates = max(1, min(int(max_candidates), 100000))
+        if lexical_score_floor is None:
+            score_floor = DEFAULT_LEXICAL_SCORE_FLOOR
+        else:
+            score_floor = max(0.0, min(float(lexical_score_floor), 1.0))
         ann_threshold = ANN_MIN_CANDIDATES if min_ann_candidates is None else max(
             1, int(min_ann_candidates),
         )
@@ -424,7 +438,7 @@ def search_knowledge(query: str, top_k: int = 5,
                 if legacy or not compatible:
                     # 旧 hashing 或 model/version/dimension 不一致的向量
                     # 绝不与当前 semantic query vector 做余弦比较。
-                    score = 0.35 if lexical_match else 0.0
+                    score = score_floor if lexical_match else 0.0
                     result["rebuild_required"] = True
                     if legacy:
                         result["legacy_count"] += 1
@@ -457,9 +471,9 @@ def search_knowledge(query: str, top_k: int = 5,
                         if ann_score is None and not lexical_match:
                             continue
                         if ann_score is None:
-                            ann_score = 0.35
+                            ann_score = score_floor
                         if lexical_match:
-                            ann_score = max(ann_score, 0.35)
+                            ann_score = max(ann_score, score_floor)
                         scored.append((ann_score, item))
                 except (ANNIndexUnavailableError, ANNIndexCorruptedError) as exc:
                     result["ann_used"] = False
@@ -472,13 +486,13 @@ def search_knowledge(query: str, top_k: int = 5,
                     for item, vector, lexical_match in compatible_items:
                         score = cosine_similarity(query_vector, vector)
                         if lexical_match:
-                            score = max(score, 0.35)
+                            score = max(score, score_floor)
                         scored.append((score, item))
             else:
                 for item, vector, lexical_match in compatible_items:
                     score = cosine_similarity(query_vector, vector)
                     if lexical_match:
-                        score = max(score, 0.35)
+                        score = max(score, score_floor)
                     scored.append((score, item))
 
             for score, item in sorted(
@@ -499,7 +513,14 @@ def search_knowledge(query: str, top_k: int = 5,
 
 
 def refresh_knowledge_base(progress=None, _task_id: str | None = None, **kwargs) -> dict:
-    """幂等重算全部持久化向量。"""
+    """幂等重算全部持久化向量。
+
+    按有界批次处理：每批独立会话内取页（``id`` 稳定序，offset 分页
+    不重不漏）、整批向量化、整批写回并提交。单次 embed 调用与单批
+    工作集都被限制在 batch size 内，不再一次性物化全库；某一批失败
+    时任务如实标记 failed（已完成的批次保留，重跑幂等补齐），不会
+    把部分成功伪装成整体成功。
+    """
     result: dict = {"status": "success", "refreshed": 0, "total": 0}
     try:
         _progress(progress, 20, "扫描知识库")
@@ -507,25 +528,40 @@ def refresh_knowledge_base(progress=None, _task_id: str | None = None, **kwargs)
         from ...database.session import session_scope
         from ...knowledge_base.embeddings import create_semantic_embedder
 
-        with session_scope() as session:
-            repo = KnowledgeRepository(session)
-            items = _load_all(repo)
-            embedder = create_semantic_embedder()
-            vectors = embedder.embed([item.content for item in items])
-            ann_records = []
-            for item, vector in zip(items, vectors):
-                item.embedding = json.dumps(vector)
-                item.embedding_model = embedder.model_id
-                metadata = _item_embedding_metadata(item)
-                metadata["embedding_model"] = embedder.model_id
-                metadata["embedding_version"] = embedder.version
-                metadata["embedding_dimension"] = embedder.dimension
-                item.metadata_json = json.dumps(metadata, ensure_ascii=False)
-                if _is_finite_vector(vector, embedder.dimension):
-                    ann_records.append((item.id, vector))
-            result["total"] = len(items)
-            result["refreshed"] = len(items)
-        if result["total"] >= ANN_MIN_CANDIDATES:
+        embedder = create_semantic_embedder()
+        try:
+            refresh_batch_size = max(
+                1, int(os.environ.get("RAG_REFRESH_BATCH_SIZE", "200")))
+        except ValueError:
+            refresh_batch_size = 200
+        ann_records = []
+        offset = 0
+        while True:
+            with session_scope() as session:
+                repo = KnowledgeRepository(session)
+                page = repo.find(offset=offset, limit=refresh_batch_size,
+                                 order_by="id")
+                if not page:
+                    break
+                vectors = embedder.embed([item.content for item in page])
+                for item, vector in zip(page, vectors):
+                    item.embedding = json.dumps(vector)
+                    item.embedding_model = embedder.model_id
+                    metadata = _item_embedding_metadata(item)
+                    metadata["embedding_model"] = embedder.model_id
+                    metadata["embedding_version"] = embedder.version
+                    metadata["embedding_dimension"] = embedder.dimension
+                    item.metadata_json = json.dumps(metadata, ensure_ascii=False)
+                    if _is_finite_vector(vector, embedder.dimension):
+                        ann_records.append((item.id, vector))
+                result["total"] += len(page)
+                result["refreshed"] += len(page)
+                offset += len(page)
+            if len(page) < refresh_batch_size:
+                break
+            _progress(progress, min(90, 20 + offset // 200),
+                      f"已刷新 {offset} 条向量")
+        if ann_records and result["total"] >= ANN_MIN_CANDIDATES:
             try:
                 KnowledgeVectorIndex().rebuild(
                     ann_records,
