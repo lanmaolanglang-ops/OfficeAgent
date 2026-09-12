@@ -308,7 +308,10 @@ def create_app() -> FastAPI:
         try:
             from office_agent.database.session import SessionLocal
             from office_agent.config_system import get_config
-            config = get_config(session_factory=SessionLocal)
+            from office_agent.model_gateway.model_manager import ModelManager
+            # model_config 表只作旧数据兜底读取；模型配置的读写权威是
+            # ModelManager（models.json，与网关/健康检查/设置接口同源）。
+            config = get_config(session_factory=SessionLocal, model_store=ModelManager())
             config.initialize(strict=False)
             gc = config.global_config
             summary = config.get_summary()

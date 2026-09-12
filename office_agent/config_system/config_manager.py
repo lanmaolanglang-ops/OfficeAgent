@@ -19,6 +19,9 @@ from .loaders import EnvLoader, YamlLoader, DatabaseLoader, deep_merge
 from .validators import validate_all
 from ..logging_system import get_logger
 from ..models.model_schemas import (
+    ModelConfig as GatewayModelConfig,
+    ModelProvider,
+    _CONFIG_PRIORITY_BASE,
     default_model_catalog, normalize_model_id, normalize_provider,
 )
 
@@ -83,11 +86,14 @@ class ConfigManager:
                     cls._instance = super().__new__(cls)
         return cls._instance
 
-    def __init__(self, session_factory=None, config_dir: str | None = None):
+    def __init__(self, session_factory=None, config_dir: str | None = None,
+                 model_store=None):
         if hasattr(self, "_initialized") and self._initialized:
             # 允许更新 session_factory
             if session_factory is not None:
                 self._session_factory = session_factory
+            if model_store is not None:
+                self._model_store = model_store
             return
         self._initialized = True
 
@@ -95,6 +101,12 @@ class ConfigManager:
         self._session_factory = session_factory
         self._yaml_loader = YamlLoader(config_dir)
         self._change_listeners: List[Callable] = []
+        # 权威模型存储（ModelManager / models.json）。注入后模型配置的
+        # 读写都走它；不注入则维持旧的内存/DB 行为（测试与编程用法）。
+        self._model_store = model_store
+        # 保护热更新的读-改-写与缓存重建的原子替换。模块级 _config_lock
+        # 只保护单例创建，挡不住实例方法的并发更新。
+        self._lock = threading.RLock()
 
         # 全局配置
         self._global_config: Optional[GlobalConfig] = None
@@ -190,8 +202,23 @@ class ConfigManager:
             except Exception as e:
                 logger.warning(f"从数据库加载配置失败: {e}")
 
-        # 3. 构建索引
-        self._rebuild_cache(models, agents, prompts, skills, workflows)
+        # 权威模型存储覆盖（models.json）。模型配置的唯一权威源是
+        # ModelManager：网关、健康检查与设置接口都以它为准；数据库
+        # model_config 表只作为旧数据读取兜底，排在它之前。
+        if self._model_store is not None:
+            try:
+                store_models = [
+                    _model_store_entry_to_dict(item)
+                    for item in self._model_store.list_models()
+                ]
+                if store_models:
+                    models = _merge_list(models, store_models, "model_id")
+            except Exception as e:
+                logger.warning(f"从权威模型存储加载配置失败: {e}")
+
+        # 3. 构建索引（锁内原子替换，读者不会看到空缓存或半套缓存）
+        with self._lock:
+            self._rebuild_cache(models, agents, prompts, skills, workflows)
 
         # 4. 校验
         passed, issues = validate_all(
@@ -210,24 +237,43 @@ class ConfigManager:
         return passed
 
     def _rebuild_cache(self, models, agents, prompts, skills, workflows):
-        """重建缓存索引（历史模型 ID 归一化到权威 ID，后加载的来源覆盖先加载的）"""
-        self._models = {}
+        """重建缓存索引（历史模型 ID 归一化到权威 ID，后加载的来源覆盖先加载的）。
+
+        全部索引先在局部变量中构建完成，最后一次性赋值——旧实现先
+        `self._models = {}` 再逐个填充，并发读者会看到空缓存。Agent 的
+        别名形态（word_agent/WordAgent/word-agent）折叠到同一权威条目，
+        后加载者覆盖先加载者，避免同一 Agent 在缓存里出现两份。
+        """
+        models_index: Dict[str, Dict] = {}
         for m in models:
             if m.get("model_id"):
                 normalized = dict(m)
                 normalized["model_id"] = normalize_model_id(m["model_id"])
-                self._models[normalized["model_id"]] = normalized
-        self._agents = {a["agent_name"]: a for a in agents if a.get("agent_name")}
+                models_index[normalized["model_id"]] = normalized
+
+        agents_by_match: Dict[str, Dict] = {}
+        for a in agents:
+            name = a.get("agent_name")
+            if not name or not _agent_match_key(name):
+                continue
+            agents_by_match[_agent_match_key(name)] = a
+        agents_index = {a["agent_name"]: a for a in agents_by_match.values()}
 
         # Prompts 按 name 分组
-        self._prompts = {}
+        prompts_index: Dict[str, List[Dict]] = {}
         for p in prompts:
             name = p.get("name")
             if name:
-                self._prompts.setdefault(name, []).append(p)
+                prompts_index.setdefault(name, []).append(p)
 
-        self._skills = {s["skill_name"]: s for s in skills if s.get("skill_name")}
-        self._workflows = {w["workflow_name"]: w for w in workflows if w.get("workflow_name")}
+        skills_index = {s["skill_name"]: s for s in skills if s.get("skill_name")}
+        workflows_index = {w["workflow_name"]: w for w in workflows if w.get("workflow_name")}
+
+        self._models = models_index
+        self._agents = agents_index
+        self._prompts = prompts_index
+        self._skills = skills_index
+        self._workflows = workflows_index
 
     # ============================================================
     # 查询接口
@@ -262,16 +308,33 @@ class ConfigManager:
                 if normalize_provider(m.get("provider")) == provider
                 and m.get("enabled", True)]
 
+    def _resolve_agent_name(self, agent_name: str) -> Optional[str]:
+        """把任意别名形态解析为缓存中已有的权威 agent_name。
+
+        WordAgent / word_agent / word-agent / WORD_AGENT 命中同一条目；
+        无匹配时返回 None（调用方决定是否按新 Agent 处理）。
+        """
+        if agent_name in self._agents:
+            return agent_name
+        match = _agent_match_key(agent_name)
+        if not match:
+            return None
+        for name in self._agents:
+            if _agent_match_key(name) == match:
+                return name
+        return None
+
     def get_agent(self, agent_name: str) -> Optional[Dict]:
-        """获取 Agent 配置"""
-        return self._agents.get(agent_name)
+        """获取 Agent 配置（别名形态命中同一权威条目）"""
+        canonical = self._resolve_agent_name(agent_name)
+        return self._agents.get(canonical) if canonical else None
 
     def get_enabled_agents(self) -> List[Dict]:
         return [a for a in self._agents.values() if a.get("enabled", True)]
 
     def get_agent_prompt(self, agent_name: str) -> str:
         """获取 Agent 的 system prompt"""
-        agent = self._agents.get(agent_name)
+        agent = self.get_agent(agent_name)
         if agent and agent.get("system_prompt"):
             return agent["system_prompt"]
         # 尝试从 prompts 中查找
@@ -324,7 +387,7 @@ class ConfigManager:
 
     def get_model_for_agent(self, agent_name: str) -> Optional[Dict]:
         """获取 Agent 应该使用的模型（model_priority 中的历史 ID 兼容解析）"""
-        agent = self._agents.get(agent_name)
+        agent = self.get_agent(agent_name)
         if not agent:
             return self.get_model(self.global_config.default_model)
 
@@ -340,78 +403,97 @@ class ConfigManager:
     # ============================================================
 
     def update_model(self, model_id: str, data: Dict) -> Dict:
-        """更新模型配置并持久化（历史 ID 归一化，避免写入影子记录）"""
-        model_id = normalize_model_id(model_id)
-        candidate = {**self._models.get(model_id, {}), **data, "model_id": model_id}
-        self._persist_model(model_id, candidate)
-        self._models[model_id] = candidate
-        self._notify_listeners("model", model_id)
-        return self._models[model_id]
+        """更新模型配置并持久化（历史 ID 归一化，避免写入影子记录）。
+
+        注入了权威模型存储时，新写入只进入 models.json（网关真实消费的
+        来源），不再写数据库 model_config 表；未注入时保持旧行为（有
+        session_factory 则写 DB，否则仅内存）。
+        """
+        with self._lock:
+            model_id = normalize_model_id(model_id)
+            candidate = {**self._models.get(model_id, {}), **data, "model_id": model_id}
+            if self._model_store is not None:
+                self._persist_model_to_store(model_id, candidate)
+            else:
+                self._persist_model(model_id, candidate)
+            self._models[model_id] = candidate
+            self._notify_listeners("model", model_id)
+            return self._models[model_id]
 
     def update_agent(self, agent_name: str, data: Dict) -> Dict:
-        candidate = {**self._agents.get(agent_name, {}), **data, "agent_name": agent_name}
-        self._persist_agent(agent_name, candidate)
-        self._agents[agent_name] = candidate
-        self._notify_listeners("agent", agent_name)
-        return self._agents[agent_name]
+        """更新 Agent 配置并持久化。
+
+        别名形态（word_agent/WordAgent）先解析为缓存中已有的权威名称，
+        合并进同一份配置并持久化到权威行——不会为别名再写第二行。
+        """
+        with self._lock:
+            canonical = self._resolve_agent_name(agent_name) or agent_name
+            candidate = {**self._agents.get(canonical, {}), **data, "agent_name": canonical}
+            self._persist_agent(canonical, candidate)
+            self._agents[canonical] = candidate
+            self._notify_listeners("agent", canonical)
+            return self._agents[canonical]
 
     def update_prompt(self, name: str, content: str, version: str | None = None,
                       set_default: bool = False) -> Dict:
         """更新/新增 Prompt 版本"""
         import uuid
-        if version:
-            new_version = version
-        else:
-            numeric_versions = []
-            for item in self._prompts.get(name, []):
-                match = re.fullmatch(r"(\d+)\.(\d+)(?:\.(\d+))?", str(item.get("version", "")))
-                if match:
-                    numeric_versions.append(tuple(int(v or 0) for v in match.groups()))
-            if numeric_versions:
-                major, minor, patch = max(numeric_versions)
-                new_version = f"{major}.{minor}.{patch + 1}"
+        with self._lock:
+            if version:
+                new_version = version
             else:
-                new_version = "1.0.0"
+                numeric_versions = []
+                for item in self._prompts.get(name, []):
+                    match = re.fullmatch(r"(\d+)\.(\d+)(?:\.(\d+))?", str(item.get("version", "")))
+                    if match:
+                        numeric_versions.append(tuple(int(v or 0) for v in match.groups()))
+                if numeric_versions:
+                    major, minor, patch = max(numeric_versions)
+                    new_version = f"{major}.{minor}.{patch + 1}"
+                else:
+                    new_version = "1.0.0"
 
-        existing = next(
-            (item for item in self._prompts.get(name, [])
-             if item.get("version") == new_version),
-            None,
-        )
-        prompt = {
-            "id": existing.get("id") if existing else f"prm_{uuid.uuid4().hex[:12]}",
-            "name": name,
-            "version": new_version,
-            "content": content,
-            "status": "active",
-            "is_default": bool(set_default or (existing and existing.get("is_default"))),
-        }
-        # 先持久化；失败时不污染内存缓存，也不会向监听器宣告成功。
-        prompt = self._persist_prompt(prompt)
-        versions = self._prompts.setdefault(name, [])
-        if existing:
-            versions[versions.index(existing)] = prompt
-        else:
-            versions.append(prompt)
-        if set_default:
-            for v in versions:
-                v["is_default"] = (v is prompt)
-        self._notify_listeners("prompt", name)
-        return prompt
+            existing = next(
+                (item for item in self._prompts.get(name, [])
+                 if item.get("version") == new_version),
+                None,
+            )
+            prompt = {
+                "id": existing.get("id") if existing else f"prm_{uuid.uuid4().hex[:12]}",
+                "name": name,
+                "version": new_version,
+                "content": content,
+                "status": "active",
+                "is_default": bool(set_default or (existing and existing.get("is_default"))),
+            }
+            # 先持久化；失败时不污染内存缓存，也不会向监听器宣告成功。
+            prompt = self._persist_prompt(prompt)
+            versions = self._prompts.setdefault(name, [])
+            if existing:
+                versions[versions.index(existing)] = prompt
+            else:
+                versions.append(prompt)
+            if set_default:
+                for v in versions:
+                    v["is_default"] = (v is prompt)
+            self._notify_listeners("prompt", name)
+            return prompt
 
     def update_skill(self, skill_name: str, data: Dict) -> Dict:
-        candidate = {**self._skills.get(skill_name, {}), **data, "skill_name": skill_name}
-        self._persist_skill(skill_name, candidate)
-        self._skills[skill_name] = candidate
-        self._notify_listeners("skill", skill_name)
-        return self._skills[skill_name]
+        with self._lock:
+            candidate = {**self._skills.get(skill_name, {}), **data, "skill_name": skill_name}
+            self._persist_skill(skill_name, candidate)
+            self._skills[skill_name] = candidate
+            self._notify_listeners("skill", skill_name)
+            return self._skills[skill_name]
 
     def update_workflow(self, name: str, data: Dict) -> Dict:
-        candidate = {**self._workflows.get(name, {}), **data, "workflow_name": name}
-        self._persist_workflow(name, candidate)
-        self._workflows[name] = candidate
-        self._notify_listeners("workflow", name)
-        return self._workflows[name]
+        with self._lock:
+            candidate = {**self._workflows.get(name, {}), **data, "workflow_name": name}
+            self._persist_workflow(name, candidate)
+            self._workflows[name] = candidate
+            self._notify_listeners("workflow", name)
+            return self._workflows[name]
 
     def reload(self):
         """重新加载所有配置（热更新）"""
@@ -450,6 +532,21 @@ class ConfigManager:
             if session is not None:
                 session.rollback()
             logger.error(f"持久化模型配置失败: {e}")
+            raise RuntimeError("模型配置持久化失败，配置未更新") from e
+
+    def _persist_model_to_store(self, model_id: str, candidate: Dict):
+        """把合并后的候选写入权威模型存储（models.json）。
+
+        已有条目在其自身字段基础上应用更新（保留 api_key、model 等本轨
+        不持有的字段）；失败时抛 RuntimeError，由调用方保证内存不被污染。
+        """
+        try:
+            entry = _candidate_to_store_entry(self._model_store, model_id, candidate)
+            self._model_store.add_model(entry)
+        except RuntimeError:
+            raise
+        except Exception as e:
+            logger.error(f"持久化模型配置到权威存储失败: {e}")
             raise RuntimeError("模型配置持久化失败，配置未更新") from e
 
     def _persist_agent(self, name: str, data: Dict):
@@ -610,15 +707,18 @@ _config_manager: Optional[ConfigManager] = None
 _config_lock = threading.Lock()
 
 
-def get_config(session_factory=None) -> ConfigManager:
+def get_config(session_factory=None, model_store=None) -> ConfigManager:
     """获取全局配置管理器"""
     global _config_manager
     if _config_manager is None:
         with _config_lock:
             if _config_manager is None:
-                _config_manager = ConfigManager(session_factory)
-    elif session_factory is not None:
-        _config_manager._session_factory = session_factory
+                _config_manager = ConfigManager(session_factory, model_store=model_store)
+    else:
+        if session_factory is not None:
+            _config_manager._session_factory = session_factory
+        if model_store is not None:
+            _config_manager._model_store = model_store
     return _config_manager
 
 
@@ -634,6 +734,95 @@ def _merge_list(base: List[Dict], override: List[Dict], key: str) -> List[Dict]:
         if k:
             result[k] = {**result.get(k, {}), **item}
     return list(result.values())
+
+
+def _agent_match_key(name: str) -> str:
+    """Agent 名称的匹配键：WordAgent / word_agent / word-agent 同键。
+
+    canonical 形态取缓存中已存在的写法（当前默认清单为大驼峰
+    WordAgent/PPTAgent/ExcelAgent），不在此处发明新写法。
+    """
+    return re.sub(r"[^a-z0-9]", "", str(name or "").strip().lower())
+
+
+def _pick(candidate: Dict, key: str, fallback):
+    value = candidate.get(key)
+    return fallback if value is None else value
+
+
+def _model_store_entry_to_dict(mc) -> Dict:
+    """权威模型存储条目（ModelManager.ModelConfig）→ config 轨 dict。
+
+    priority 换算与 default_model_catalog 同一规则（config 轨数字越大
+    越优先）。api_key 属于密钥材料，绝不进入 config 轨或任何 API 响应；
+    top_p/context_length 等本轨特有字段存放于存储条目的 extra_params，
+    从那里还原，保证 reload 往返不丢。
+    """
+    extra = dict(getattr(mc, "extra_params", {}) or {})
+    entry: Dict[str, Any] = {
+        "model_id": mc.id,
+        "model_name": mc.display_name or mc.model or mc.id,
+        "provider": getattr(mc.provider, "value", mc.provider),
+        "api_endpoint": mc.base_url or None,
+        "temperature": mc.temperature,
+        "top_p": extra.get("top_p", 1.0),
+        "max_tokens": mc.max_tokens,
+        "context_length": extra.get("context_length", 8192),
+        "supports_vision": bool(getattr(mc, "supports_vision", False)),
+        "supports_streaming": True,
+        "supports_function_calling": False,
+        "enabled": bool(mc.enabled),
+        "priority": _CONFIG_PRIORITY_BASE - mc.priority,
+        "extra": extra,
+    }
+    if "api_key_env" in extra:
+        entry["api_key_env"] = extra["api_key_env"]
+    if extra.get("tags"):
+        entry["tags"] = list(extra["tags"])
+    if extra.get("description") is not None:
+        entry["description"] = extra["description"]
+    return entry
+
+
+def _candidate_to_store_entry(store, model_id: str, candidate: Dict):
+    """config 轨合并候选 → 权威存储条目（ModelManager.ModelConfig）。
+
+    已有条目在其字段基础上应用更新，保留 api_key / model / timeout 等
+    config 轨不持有的运行字段；config 轨特有字段收纳进 extra_params。
+    priority 在此做反向换算（config 轨越大越优先 → 存储轨越小越优先）。
+    """
+    existing = store.get_model(model_id)
+    extra = dict(getattr(existing, "extra_params", {}) or {})
+    extra.update(candidate.get("extra") or {})
+    for key in ("api_key_env", "top_p", "context_length", "tags", "description"):
+        if candidate.get(key) is not None:
+            extra[key] = candidate[key]
+
+    provider_raw = _pick(candidate, "provider", getattr(existing, "provider", ModelProvider.CUSTOM))
+    provider = ModelProvider(normalize_provider(getattr(provider_raw, "value", provider_raw)))
+    if candidate.get("priority") is not None:
+        gateway_priority = _CONFIG_PRIORITY_BASE - candidate["priority"]
+    else:
+        gateway_priority = getattr(existing, "priority", _CONFIG_PRIORITY_BASE)
+
+    return GatewayModelConfig(
+        id=model_id,
+        provider=provider,
+        display_name=str(_pick(candidate, "model_name",
+                               getattr(existing, "display_name", "") or model_id)),
+        api_key=getattr(existing, "api_key", "") or "",
+        base_url=str(_pick(candidate, "api_endpoint", getattr(existing, "base_url", "") or "")),
+        model=getattr(existing, "model", "") or "",
+        enabled=bool(_pick(candidate, "enabled", getattr(existing, "enabled", True))),
+        priority=gateway_priority,
+        max_tokens=_pick(candidate, "max_tokens", getattr(existing, "max_tokens", 4096)),
+        temperature=_pick(candidate, "temperature", getattr(existing, "temperature", 0.3)),
+        timeout=getattr(existing, "timeout", 60),
+        supports_vision=bool(_pick(candidate, "supports_vision",
+                                   getattr(existing, "supports_vision", False))),
+        supports_document=getattr(existing, "supports_document", False),
+        extra_params=extra,
+    )
 
 
 def _model_to_db(data: Dict) -> Dict:

@@ -253,9 +253,13 @@ def test_vision_gateway_reports_failed_pages_as_partial():
 
 
 def test_config_update_does_not_mutate_cache_when_persistence_fails():
+    import threading
+
     from office_agent.config_system.config_manager import ConfigManager
 
     manager = object.__new__(ConfigManager)
+    manager._lock = threading.RLock()
+    manager._model_store = None
     manager._models = {"m1": {"model_id": "m1", "model_name": "before"}}
     manager._agents = {}
     manager._prompts = {}

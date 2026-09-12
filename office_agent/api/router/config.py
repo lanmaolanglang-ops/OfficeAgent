@@ -1,10 +1,16 @@
-"""配置管理 API 端点"""
+"""配置管理 API 端点
+
+读写同源：全部经由 ConfigManager 单例（模型配置注入权威存储
+ModelManager 后与网关同源）。未知 key 由 pydantic extra="forbid" 拒绝，
+不静默丢弃；错误沿用 FastAPI 422 / 既有 HTTPException 协议。
+"""
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from typing import Optional, List, Dict, Any
 
 from office_agent.config_system import get_config
 from office_agent.logging_system import get_logger
+from office_agent.models.model_schemas import ModelProvider, normalize_provider
 
 logger = get_logger("api.config")
 router = APIRouter(prefix="/api/config", tags=["配置管理"])
@@ -14,36 +20,54 @@ router = APIRouter(prefix="/api/config", tags=["配置管理"])
 # 请求模型
 # ============================================================
 
+def _validate_http_url(value: Optional[str]) -> Optional[str]:
+    """端点必须为空串（回退 provider 默认）或 http(s) URL。"""
+    if value and not value.startswith(("http://", "https://")):
+        raise ValueError("api_endpoint 必须以 http:// 或 https:// 开头")
+    return value
+
+
 class ModelUpdate(BaseModel):
-    model_name: Optional[str] = None
-    provider: Optional[str] = None
+    model_config = ConfigDict(extra="forbid")
+
+    model_name: Optional[str] = Field(None, min_length=1)
+    provider: Optional[str] = Field(None, min_length=1)
     api_endpoint: Optional[str] = None
-    api_key_env: Optional[str] = None
-    temperature: Optional[float] = None
-    top_p: Optional[float] = None
-    max_tokens: Optional[int] = None
-    context_length: Optional[int] = None
+    api_key_env: Optional[str] = Field(None, min_length=1)
+    temperature: Optional[float] = Field(None, ge=0, le=2)
+    top_p: Optional[float] = Field(None, ge=0, le=1)
+    max_tokens: Optional[int] = Field(None, ge=1)
+    context_length: Optional[int] = Field(None, ge=1)
     enabled: Optional[bool] = None
     priority: Optional[int] = None
     tags: Optional[List[str]] = None
     description: Optional[str] = None
 
+    @field_validator("api_endpoint")
+    @classmethod
+    def _check_endpoint(cls, v):
+        return _validate_http_url(v)
+
 
 class AgentUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     description: Optional[str] = None
     system_prompt: Optional[str] = None
     model_priority: Optional[List[str]] = None
-    available_tools: Optional[List[Dict]] = None
-    timeout: Optional[int] = None
-    max_retries: Optional[int] = None
+    available_tools: Optional[List[Dict[str, Any]]] = None
+    timeout: Optional[int] = Field(None, ge=1)
+    max_retries: Optional[int] = Field(None, ge=0)
     enabled: Optional[bool] = None
     enable_quality_check: Optional[bool] = None
-    quality_threshold: Optional[float] = None
+    quality_threshold: Optional[float] = Field(None, ge=0, le=1)
 
 
 class PromptCreate(BaseModel):
-    name: str
-    content: str
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1)
+    content: str = Field(min_length=1)
     version: Optional[str] = None
     description: Optional[str] = None
     agent: Optional[str] = None
@@ -52,13 +76,17 @@ class PromptCreate(BaseModel):
 
 
 class PromptVersionUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     set_default: Optional[bool] = None
     status: Optional[str] = None
 
 
 class SkillUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     description: Optional[str] = None
-    workflow: Optional[List[Dict]] = None
+    workflow: Optional[List[Dict[str, Any]]] = None
     tools: Optional[List[str]] = None
     prompt: Optional[str] = None
     enabled: Optional[bool] = None
@@ -66,10 +94,12 @@ class SkillUpdate(BaseModel):
 
 
 class WorkflowUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     description: Optional[str] = None
-    steps: Optional[List[Dict]] = None
+    steps: Optional[List[Dict[str, Any]]] = None
     enabled: Optional[bool] = None
-    timeout: Optional[int] = None
+    timeout: Optional[int] = Field(None, ge=1)
 
 
 # ============================================================
@@ -128,6 +158,12 @@ def get_model(model_id: str):
 def update_model(model_id: str, update: ModelUpdate):
     """更新模型配置"""
     config = get_config()
+    if update.provider is not None:
+        normalized = normalize_provider(update.provider)
+        try:
+            ModelProvider(normalized)
+        except ValueError:
+            raise HTTPException(400, f"未知模型供应商: {update.provider}")
     data = update.model_dump(exclude_none=True)
     model = config.update_model(model_id, data)
     logger.info(f"模型配置已更新: {model_id}")

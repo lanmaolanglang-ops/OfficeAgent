@@ -316,6 +316,7 @@ class ModelManager:
                         timeout=model_data.get("timeout", default.timeout),
                         supports_vision=model_data.get("supports_vision", default.supports_vision),
                         supports_document=model_data.get("supports_document", default.supports_document),
+                        extra_params=model_data.get("extra_params", {}),
                         )
                     else:
                         config = ModelConfig(
@@ -326,6 +327,13 @@ class ModelManager:
                         base_url=model_data.get("base_url", ""),
                         model=model_data.get("model", ""),
                         enabled=model_data.get("enabled", True),
+                        priority=model_data.get("priority", 100),
+                        max_tokens=model_data.get("max_tokens", 8192),
+                        temperature=model_data.get("temperature", 0.3),
+                        timeout=model_data.get("timeout", 60),
+                        supports_vision=model_data.get("supports_vision", False),
+                        supports_document=model_data.get("supports_document", False),
+                        extra_params=model_data.get("extra_params", {}),
                         )
                 
                 # 优先级：models.json 中的 Key 优先于环境变量；
@@ -375,6 +383,7 @@ class ModelManager:
                 "timeout": config.timeout,
                 "supports_vision": config.supports_vision,
                 "supports_document": config.supports_document,
+                "extra_params": config.extra_params or {},
             }
             data["models"].append(model_data)
         
