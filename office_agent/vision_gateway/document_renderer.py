@@ -285,7 +285,10 @@ class DocumentRenderer:
             pages.append(DocumentPage(
                 page_number=i + 1,
                 image=img,
-                text_hint="\n".join(texts),
+                # 占位标注随 text_hint 进入视觉提示词：模型知道看到的是
+                # 文本大纲合成图，避免对版式/图表/配色凭空幻觉。
+                text_hint="（占位渲染图：仅含文本大纲，版式/图表/图片未呈现）\n"
+                          + "\n".join(texts),
             ))
 
         return pages
@@ -304,11 +307,20 @@ class DocumentRenderer:
         draw.text((40, 30), f"第 {page_num} 页", fill="#1F4E79", font=font_title)
         draw.line([(40, 65), (width - 40, 65)], fill="#1F4E79", width=2)
 
+        # 占位标注：直接画在图上，视觉模型不会把这张"文本大纲合成图"
+        # 误当成真实幻灯片渲染效果（图表/配色/图片均未呈现）。
+        note = "（占位渲染图：仅文本大纲，非幻灯片真实视觉效果）"
+        try:
+            note_x = max(40, width - 40 - int(font_body.getlength(note)))
+        except AttributeError:
+            note_x = width - 260
+        draw.text((note_x, height - 30), note, fill="#999999", font=font_body)
+
         y = 80
         for text in texts[:20]:
             draw.text((50, y), f"• {text[:60]}", fill="#333333", font=font_body)
             y += 24
-            if y > height - 40:
+            if y > height - 60:
                 break
 
         img_path = os.path.join(
