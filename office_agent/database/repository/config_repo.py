@@ -23,24 +23,27 @@ class ModelConfigRepository(BaseRepository[ModelConfig]):
 
     def get_enabled(self) -> List[ModelConfig]:
         return list(self.session.execute(
-            select(ModelConfig).where(ModelConfig.enabled == True)
+            select(ModelConfig).where(ModelConfig.enabled.is_(True))
             .order_by(ModelConfig.priority.desc())
         ).scalars().all())
 
     def get_by_provider(self, provider: str) -> List[ModelConfig]:
         return list(self.session.execute(
             select(ModelConfig).where(
-                and_(ModelConfig.provider == provider, ModelConfig.enabled == True)
+                and_(ModelConfig.provider == provider, ModelConfig.enabled.is_(True))
             )
         ).scalars().all())
 
     def upsert(self, model_id: str, data: dict) -> ModelConfig:
+        """新增或更新；只 flush 不 commit——事务边界归调用方（与
+        BaseRepository 的 flush-only 契约一致），避免"upsert 即提交"
+        打断调用方跨仓库的原子写入。"""
         existing = self.get_by_model_id(model_id)
         if existing:
             for k, v in data.items():
                 if hasattr(existing, k):
                     setattr(existing, k, v)
-            self.session.commit()
+            self.session.flush()
             return existing
         config = ModelConfig(model_id=model_id, **data)
         return self.create(config)
@@ -80,16 +83,17 @@ class AgentConfigRepository(BaseRepository[AgentConfigModel]):
 
     def get_enabled(self) -> List[AgentConfigModel]:
         return list(self.session.execute(
-            select(AgentConfigModel).where(AgentConfigModel.enabled == True)
+            select(AgentConfigModel).where(AgentConfigModel.enabled.is_(True))
         ).scalars().all())
 
     def upsert(self, agent_name: str, data: dict) -> AgentConfigModel:
+        """新增或更新；只 flush 不 commit（同 ModelConfigRepository.upsert）。"""
         existing = self.get_by_name(agent_name)
         if existing:
             for k, v in data.items():
                 if hasattr(existing, k):
                     setattr(existing, k, v)
-            self.session.commit()
+            self.session.flush()
             return existing
         config = AgentConfigModel(agent_name=agent_name, **data)
         return self.create(config)
@@ -127,7 +131,7 @@ class PromptConfigRepository(BaseRepository[PromptConfig]):
         if version:
             stmt = stmt.where(PromptConfig.version == version)
         else:
-            stmt = stmt.where(PromptConfig.is_default == True)
+            stmt = stmt.where(PromptConfig.is_default.is_(True))
         return self.session.execute(stmt).scalar_one_or_none()
 
     def get_by_agent(self, agent: str) -> List[PromptConfig]:
@@ -159,7 +163,7 @@ class PromptConfigRepository(BaseRepository[PromptConfig]):
         ).scalars().all()
         for o in others:
             o.is_default = (o.id == prompt_id)
-        self.session.commit()
+        self.session.flush()
 
     def to_dict(self, p: PromptConfig) -> dict:
         return {
@@ -185,7 +189,7 @@ class SkillConfigRepository(BaseRepository[SkillConfigModel]):
 
     def get_enabled(self) -> List[SkillConfigModel]:
         return list(self.session.execute(
-            select(SkillConfigModel).where(SkillConfigModel.enabled == True)
+            select(SkillConfigModel).where(SkillConfigModel.enabled.is_(True))
         ).scalars().all())
 
     def to_dict(self, s: SkillConfigModel) -> dict:

@@ -6,6 +6,11 @@ from sqlalchemy import select, and_, func
 from sqlalchemy.orm import Session
 
 from .base import BaseRepository
+
+# 失败口径的单一权威集合：ExecutionLog 的失败终态除 "error" 外还有
+# "failed"/"cancelled"（worker/任务层写入），查询统计必须按集合匹配，
+# 不能只认字面 "error"（与 ModelCallLog 的 != success 口径对齐）。
+FAILED_EXECUTION_STATUSES = ("error", "failed", "cancelled")
 from ..models.execution import ExecutionLog, ModelCallLog, ErrorLog
 
 
@@ -41,7 +46,7 @@ class ExecutionLogRepository(BaseRepository[ExecutionLog]):
     def get_errors(self, limit: int = 100) -> List[ExecutionLog]:
         limit = self._bounded_limit(limit)
         stmt = select(ExecutionLog).where(
-            ExecutionLog.status == "error"
+            ExecutionLog.status.in_(FAILED_EXECUTION_STATUSES)
         ).order_by(ExecutionLog.created_at.desc()).limit(limit)
         return list(self.session.execute(stmt).scalars().all())
 
@@ -86,7 +91,7 @@ class ExecutionLogRepository(BaseRepository[ExecutionLog]):
         errors = self.session.execute(
             select(func.count(ExecutionLog.id)).where(and_(
                 ExecutionLog.created_at >= since,
-                ExecutionLog.status == "error",
+                ExecutionLog.status.in_(FAILED_EXECUTION_STATUSES),
             ))
         ).scalar() or 0
         avg_duration = self.session.execute(
