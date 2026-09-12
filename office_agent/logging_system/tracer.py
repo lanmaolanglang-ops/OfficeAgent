@@ -122,8 +122,14 @@ class TraceContext:
             span.set_error(error)
         span.end()
 
-        if span.span_id in self._current_stack:
-            self._current_stack.remove(span.span_id)
+        if self._current_stack:
+            if self._current_stack[-1] == span.span_id:
+                # 正常 LIFO：O(1) 弹栈
+                self._current_stack.pop()
+            elif span.span_id in self._current_stack:
+                # 乱序结束（外层先于内层结束）：移除该 span，
+                # 其上层的其余层级父子语义保持不变
+                self._current_stack.remove(span.span_id)
 
         log_level = logger.error if error else logger.debug
         log_level(

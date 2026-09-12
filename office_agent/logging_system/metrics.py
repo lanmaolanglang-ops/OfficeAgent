@@ -15,6 +15,16 @@ from collections import defaultdict
 from typing import Dict, List, Tuple
 
 
+def _escape_label_value(value) -> str:
+    """按 Prometheus 文本格式转义 label 值。
+
+    值里出现反斜杠/双引号/换行会让 exposition 解析失败（agent 名等
+    来自运行时数据，不能假设安全）。
+    """
+    return (str(value).replace("\\", "\\\\")
+            .replace('"', '\\"').replace("\n", "\\n"))
+
+
 class Metric:
     """指标基类"""
     def __init__(self, name: str, description: str = "", labels: List[str] | None = None):
@@ -172,7 +182,8 @@ class MetricsRegistry:
                 lines.append(f"# HELP {counter.name} {counter.description}")
             lines.append(f"# TYPE {counter.name} counter")
             for labels, value in counter.collect():
-                label_str = ",".join(f'{k}="{v}"' for k, v in labels.items())
+                label_str = ",".join(
+                    f'{k}="{_escape_label_value(v)}"' for k, v in labels.items())
                 if label_str:
                     lines.append(f"{counter.name}{{{label_str}}} {value}")
                 else:
@@ -184,7 +195,8 @@ class MetricsRegistry:
                 lines.append(f"# HELP {gauge.name} {gauge.description}")
             lines.append(f"# TYPE {gauge.name} gauge")
             for labels, value in gauge.collect():
-                label_str = ",".join(f'{k}="{v}"' for k, v in labels.items())
+                label_str = ",".join(
+                    f'{k}="{_escape_label_value(v)}"' for k, v in labels.items())
                 if label_str:
                     lines.append(f"{gauge.name}{{{label_str}}} {value}")
                 else:
@@ -196,7 +208,8 @@ class MetricsRegistry:
                 lines.append(f"# HELP {hist.name} {hist.description}")
             lines.append(f"# TYPE {hist.name} histogram")
             for labels, data in hist.collect():
-                label_str = ",".join(f'{k}="{v}"' for k, v in labels.items())
+                label_str = ",".join(
+                    f'{k}="{_escape_label_value(v)}"' for k, v in labels.items())
                 for i, bucket in enumerate(hist.buckets):
                     le = f'le="{bucket}"'
                     full_label = f"{label_str},{le}" if label_str else le

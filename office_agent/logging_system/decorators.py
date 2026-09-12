@@ -10,17 +10,72 @@
         @log_execution(action="format_document")
         def format_document(self, content, **kwargs):
             ...
+
+同步与 async 函数均受支持：async 函数会在真正执行完毕后记录结果与
+异常，而不是把未 await 的 coroutine 当成"成功结果"。
 """
 import time
 import functools
+import inspect
 from typing import Callable
 
-from .logger import get_logger, log_agent_execution
+from .logger import log_agent_execution
 from .context import (
     set_agent_name, get_task_id,
 )
 from .metrics import registry
 from .tracer import trace_agent
+
+
+def _resolve_agent_name(func: Callable, args: tuple,
+                        agent_name: str | None) -> str:
+    """确定 agent 名称。
+
+    只有当 ``args[0]`` 是"其类型以同名方法提供被装饰函数"的实例（即它
+    真的是 self）时才读取其 ``name`` 属性；普通函数的 ``args[0]`` 是
+    业务数据（任何带 ``.name`` 属性的对象——例如 ``Path``——都会顶替
+    agent 名称），一律走 qualname 回退。
+    """
+    if agent_name:
+        return agent_name
+    if args and hasattr(args[0], "name"):
+        bound = getattr(type(args[0]), func.__name__, None)
+        if bound is not None and getattr(bound, "__wrapped__", None) is func:
+            return getattr(args[0], "name")
+    return func.__qualname__.split(".")[0]
+
+
+def _summarize_input(func: Callable, args: tuple, kwargs: dict,
+                     log_input: bool, input_max_len: int) -> str | None:
+    if not log_input:
+        return None
+    # 方法跳过 self；普通函数从第一个参数开始记录
+    start = 1 if inspect.ismethod(func) else 0
+    parts = [str(arg)[:100] for arg in args[start:]]
+    for key, value in kwargs.items():
+        if key in ("callback", "on_progress"):
+            continue
+        parts.append(f"{key}={str(value)[:100]}")
+    return ", ".join(parts)[:input_max_len]
+
+
+def _extract_token_usage(result) -> tuple[int, int]:
+    """从模型返回值提取 (input_tokens, output_tokens)。
+
+    provider 命名不一：OpenAI 系用 prompt_tokens/completion_tokens，
+    Claude 系与项目内模型客户端用 input_tokens/output_tokens，两者都认。
+    """
+    if not isinstance(result, dict):
+        return 0, 0
+    usage = result.get("usage") or {}
+    if not isinstance(usage, dict):
+        return 0, 0
+    input_tokens = usage.get("prompt_tokens", usage.get("input_tokens", 0))
+    output_tokens = usage.get("completion_tokens", usage.get("output_tokens", 0))
+    try:
+        return int(input_tokens or 0), int(output_tokens or 0)
+    except (TypeError, ValueError):
+        return 0, 0
 
 
 def log_execution(agent_name: str | None = None, action: str | None = None,
@@ -38,125 +93,139 @@ def log_execution(agent_name: str | None = None, action: str | None = None,
     - 追踪 span
 
     Args:
-        agent_name: Agent 名称（默认从 self.name 获取）
+        agent_name: Agent 名称（绑定方法默认从 self.name 获取）
         action: 动作名称（默认函数名）
         log_input: 是否记录输入摘要
         log_output: 是否记录输出摘要
     """
     def decorator(func: Callable) -> Callable:
+        is_coroutine = inspect.iscoroutinefunction(func)
+
+        def _emit_success(name, act, input_summary, output_summary,
+                          duration_ms, span):
+            log_agent_execution(
+                agent_name=name,
+                action=act,
+                task_id=get_task_id(),
+                input_summary=input_summary,
+                output_summary=output_summary,
+                duration_ms=duration_ms,
+                status="success",
+            )
+            registry.counter("agent_executions_total").inc(
+                agent=name, action=act, status="success"
+            )
+            registry.histogram("agent_duration_seconds").observe(
+                duration_ms / 1000, agent=name
+            )
+            _save_execution_log(
+                agent=name, action=act,
+                input_summary=input_summary,
+                output_summary=output_summary,
+                duration_ms=int(duration_ms),
+                status="success",
+            )
+
+        def _emit_error(name, act, input_summary, duration_ms, error):
+            log_agent_execution(
+                agent_name=name,
+                action=act,
+                task_id=get_task_id(),
+                input_summary=input_summary,
+                duration_ms=duration_ms,
+                status="error",
+                error=str(error),
+            )
+            registry.counter("agent_executions_total").inc(
+                agent=name, action=act, status="error"
+            )
+            _save_execution_log(
+                agent=name, action=act,
+                input_summary=input_summary,
+                duration_ms=int(duration_ms),
+                status="error",
+                error_message=str(error),
+            )
+
         @functools.wraps(func)
-        def wrapper(*args, **kwargs):
-            # 确定 agent 名称
-            name = agent_name
-            if not name and args and hasattr(args[0], "name"):
-                name = args[0].name
-            if not name:
-                name = func.__qualname__.split(".")[0]
-
+        async def async_wrapper(*args, **kwargs):
+            name = _resolve_agent_name(func, args, agent_name)
             act = action or func.__name__
-
-            # 设置上下文
             agent_token = set_agent_name(name)
+            input_summary = _summarize_input(func, args, kwargs,
+                                             log_input, input_max_len)
 
-            # 输入摘要
-            input_summary = None
-            if log_input:
-                parts = []
-                for i, arg in enumerate(args[1:], 1):  # 跳过 self
-                    s = str(arg)
-                    parts.append(s[:100])
-                for k, v in kwargs.items():
-                    if k in ("callback", "on_progress"):
-                        continue
-                    s = str(v)
-                    parts.append(f"{k}={s[:100]}")
-                input_summary = ", ".join(parts)[:input_max_len]
-
-            logger = get_logger(f"agent.{name.lower()}")
             start = time.time()
-
-            # 指标
             registry.counter("agent_executions_total").inc(
                 agent=name, action=act, status="started"
             )
 
-            # 追踪
-            with trace_agent(name, act) as span:
-                span.set_attribute("action", act)
-                if input_summary:
-                    span.set_attribute("input_summary", input_summary[:200])
+            try:
+                with trace_agent(name, act) as span:
+                    span.set_attribute("action", act)
+                    if input_summary:
+                        span.set_attribute("input_summary",
+                                           input_summary[:200])
+                    try:
+                        result = await func(*args, **kwargs)
+                        duration_ms = (time.time() - start) * 1000
+                        output_summary = None
+                        if log_output and result is not None:
+                            output_summary = str(result)[:output_max_len]
+                            span.set_attribute("output_summary",
+                                               output_summary[:200])
+                        _emit_success(name, act, input_summary,
+                                      output_summary, duration_ms, span)
+                        return result
+                    except Exception as e:
+                        duration_ms = (time.time() - start) * 1000
+                        _emit_error(name, act, input_summary,
+                                    duration_ms, e)
+                        raise
+            finally:
+                from .context import _agent_var
+                _agent_var.reset(agent_token)
 
-                try:
-                    result = func(*args, **kwargs)
-                    duration_ms = (time.time() - start) * 1000
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            name = _resolve_agent_name(func, args, agent_name)
+            act = action or func.__name__
+            agent_token = set_agent_name(name)
+            input_summary = _summarize_input(func, args, kwargs,
+                                             log_input, input_max_len)
 
-                    # 输出摘要
-                    output_summary = None
-                    if log_output and result is not None:
-                        output_summary = str(result)[:output_max_len]
-                        span.set_attribute("output_summary", output_summary[:200])
+            start = time.time()
+            registry.counter("agent_executions_total").inc(
+                agent=name, action=act, status="started"
+            )
 
-                    # 日志
-                    log_agent_execution(
-                        agent_name=name,
-                        action=act,
-                        task_id=get_task_id(),
-                        input_summary=input_summary,
-                        output_summary=output_summary,
-                        duration_ms=duration_ms,
-                        status="success",
-                    )
+            try:
+                with trace_agent(name, act) as span:
+                    span.set_attribute("action", act)
+                    if input_summary:
+                        span.set_attribute("input_summary",
+                                           input_summary[:200])
+                    try:
+                        result = func(*args, **kwargs)
+                        duration_ms = (time.time() - start) * 1000
+                        output_summary = None
+                        if log_output and result is not None:
+                            output_summary = str(result)[:output_max_len]
+                            span.set_attribute("output_summary",
+                                               output_summary[:200])
+                        _emit_success(name, act, input_summary,
+                                      output_summary, duration_ms, span)
+                        return result
+                    except Exception as e:
+                        duration_ms = (time.time() - start) * 1000
+                        _emit_error(name, act, input_summary,
+                                    duration_ms, e)
+                        raise
+            finally:
+                from .context import _agent_var
+                _agent_var.reset(agent_token)
 
-                    # 指标
-                    registry.counter("agent_executions_total").inc(
-                        agent=name, action=act, status="success"
-                    )
-                    registry.histogram("agent_duration_seconds").observe(
-                        duration_ms / 1000, agent=name
-                    )
-
-                    # 写入数据库
-                    _save_execution_log(
-                        agent=name, action=act,
-                        input_summary=input_summary,
-                        output_summary=output_summary,
-                        duration_ms=int(duration_ms),
-                        status="success",
-                    )
-
-                    return result
-
-                except Exception as e:
-                    duration_ms = (time.time() - start) * 1000
-
-                    log_agent_execution(
-                        agent_name=name,
-                        action=act,
-                        task_id=get_task_id(),
-                        input_summary=input_summary,
-                        duration_ms=duration_ms,
-                        status="error",
-                        error=str(e),
-                    )
-
-                    registry.counter("agent_executions_total").inc(
-                        agent=name, action=act, status="error"
-                    )
-
-                    _save_execution_log(
-                        agent=name, action=act,
-                        input_summary=input_summary,
-                        duration_ms=int(duration_ms),
-                        status="error",
-                        error_message=str(e),
-                    )
-
-                    raise
-                finally:
-                    from .context import _agent_var
-                    _agent_var.reset(agent_token)
-
-        return wrapper
+        return async_wrapper if is_coroutine else wrapper
     return decorator
 
 
@@ -164,75 +233,89 @@ def log_model_call_decorator(provider: str | None = None):
     """
     模型调用日志装饰器
 
-    用于包装模型客户端的 chat/completion 方法。
+    用于包装模型客户端的 chat/completion 方法（同步与 async 均可）。
     自动记录 token、耗时、费用。
     """
     def decorator(func: Callable) -> Callable:
-        @functools.wraps(func)
-        def wrapper(*args, **kwargs):
+        is_coroutine = inspect.iscoroutinefunction(func)
+
+        def _emit_success(model_name, prov, result, latency):
             from .logger import log_model_call as _log_model
 
+            input_tokens, output_tokens = _extract_token_usage(result)
+            cost = _estimate_cost(model_name, input_tokens, output_tokens)
+
+            _log_model(
+                model_name=model_name,
+                provider=prov,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                latency_ms=latency,
+                cost_estimate=cost,
+                status="success",
+            )
+
+            registry.counter("model_calls_total").inc(
+                model=model_name, provider=prov, status="success"
+            )
+            registry.histogram("model_call_duration_seconds").observe(
+                latency / 1000, model=model_name
+            )
+            # amount 必须作为 inc 的第一个位置参数；作为关键字传入会与
+            # 形参 amount 冲突（TypeError），token/cost 从此失去计量。
+            registry.counter("model_tokens_total").inc(
+                input_tokens, model=model_name, type="input"
+            )
+            registry.counter("model_tokens_total").inc(
+                output_tokens, model=model_name, type="output"
+            )
+            registry.counter("model_cost_total").inc(
+                cost, model=model_name
+            )
+
+        def _emit_error(model_name, prov, latency, error):
+            from .logger import log_model_call as _log_model
+
+            _log_model(
+                model_name=model_name,
+                provider=prov,
+                latency_ms=latency,
+                status="error",
+                error_message=str(error),
+            )
+            registry.counter("model_calls_total").inc(
+                model=model_name, provider=prov, status="error"
+            )
+
+        @functools.wraps(func)
+        async def async_wrapper(*args, **kwargs):
             model_name = kwargs.get("model", "unknown")
             prov = provider or "unknown"
+            start = time.time()
+            try:
+                result = await func(*args, **kwargs)
+                _emit_success(model_name, prov, result,
+                              (time.time() - start) * 1000)
+                return result
+            except Exception as e:
+                _emit_error(model_name, prov, (time.time() - start) * 1000, e)
+                raise
 
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            model_name = kwargs.get("model", "unknown")
+            prov = provider or "unknown"
             start = time.time()
             try:
                 result = func(*args, **kwargs)
-                latency = (time.time() - start) * 1000
-
-                # 从 result 提取 token 信息
-                input_tokens = 0
-                output_tokens = 0
-                if isinstance(result, dict):
-                    usage = result.get("usage", {})
-                    input_tokens = usage.get("prompt_tokens", 0)
-                    output_tokens = usage.get("completion_tokens", 0)
-
-                cost = _estimate_cost(model_name, input_tokens, output_tokens)
-
-                _log_model(
-                    model_name=model_name,
-                    provider=prov,
-                    input_tokens=input_tokens,
-                    output_tokens=output_tokens,
-                    latency_ms=latency,
-                    cost_estimate=cost,
-                    status="success",
-                )
-
-                registry.counter("model_calls_total").inc(
-                    model=model_name, provider=prov, status="success"
-                )
-                registry.histogram("model_call_duration_seconds").observe(
-                    latency / 1000, model=model_name
-                )
-                registry.counter("model_tokens_total").inc(
-                    model=model_name, type="input", amount=input_tokens
-                )
-                registry.counter("model_tokens_total").inc(
-                    model=model_name, type="output", amount=output_tokens
-                )
-                registry.counter("model_cost_total").inc(
-                    model=model_name, amount=cost
-                )
-
+                _emit_success(model_name, prov, result,
+                              (time.time() - start) * 1000)
                 return result
-
             except Exception as e:
-                latency = (time.time() - start) * 1000
-                _log_model(
-                    model_name=model_name,
-                    provider=prov,
-                    latency_ms=latency,
-                    status="error",
-                    error_message=str(e),
-                )
-                registry.counter("model_calls_total").inc(
-                    model=model_name, provider=prov, status="error"
-                )
+                _emit_error(model_name, prov, (time.time() - start) * 1000, e)
                 raise
 
-        return wrapper
+        return async_wrapper if is_coroutine else wrapper
     return decorator
 
 
