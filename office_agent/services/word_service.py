@@ -41,13 +41,22 @@ ALIGNMENT_MAP = {
     Alignment.RIGHT: WD_ALIGN_PARAGRAPH.RIGHT,
     Alignment.CENTER: WD_ALIGN_PARAGRAPH.CENTER,
     Alignment.JUSTIFY: WD_ALIGN_PARAGRAPH.JUSTIFY,
+    Alignment.DISTRIBUTE: WD_ALIGN_PARAGRAPH.DISTRIBUTE,
 }
 
+# 对齐字符串 → Alignment。这是"canonical 字符串"的唯一消费点：
+# format_parser 会把 "分散对齐" 归一为 "distribute"，
+# document_structure 会把 WD_ALIGN_PARAGRAPH.DISTRIBUTE 归一为 "distribute"，
+# 因此这里必须能接收 "distribute"——否则已知合法值会静默回退成两端对齐。
 ALIGNMENT_STR_MAP = {
     "left": Alignment.LEFT,
     "right": Alignment.RIGHT,
     "center": Alignment.CENTER,
     "justify": Alignment.JUSTIFY,
+    "distribute": Alignment.DISTRIBUTE,
+    # 别名（历史/口语写法），最终都映射到同一个枚举
+    "distributed": Alignment.DISTRIBUTE,
+    "分散对齐": Alignment.DISTRIBUTE,
     "左对齐": Alignment.LEFT,
     "右对齐": Alignment.RIGHT,
     "居中": Alignment.CENTER,

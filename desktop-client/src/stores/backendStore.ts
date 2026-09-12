@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import type { HealthResponse } from '../types';
 import { checkHealth } from '../services/api';
+import { acquirePolling, releasePolling } from './refCountedPoller';
 
 interface BackendState {
   health: HealthResponse['data'] | null;
@@ -15,8 +16,12 @@ interface BackendState {
 
 // 引用计数轮询：多个页面同时 startPolling 时共享一个 interval，
 // 只有最后一个页面卸载（计数归零）才真正停止，避免误杀共享轮询。
-let pollInterval: ReturnType<typeof setInterval> | null = null;
-let pollSubscribers = 0;
+//
+// 句柄放在进程级槽位（refCountedPoller）而不是模块作用域：模块级句柄在
+// Vite HMR / 模块重复求值时会失联，留下无法回收的孤儿 interval，使健康轮询
+// 成倍放大（P1-25，与 taskStore 同一根因）。
+const BACKEND_POLL_KEY = 'backendStore';
+const BACKEND_POLL_INTERVAL_MS = 10000;
 
 export const useBackendStore = create<BackendState>((set) => ({
   health: null,
@@ -52,19 +57,20 @@ export const useBackendStore = create<BackendState>((set) => ({
   },
 
   startPolling: () => {
-    pollSubscribers += 1;
-    if (pollInterval) return;
-    useBackendStore.getState().check();
-    pollInterval = setInterval(() => {
-      useBackendStore.getState().check();
-    }, 10000);
+    const createdTimer = acquirePolling(
+      BACKEND_POLL_KEY,
+      BACKEND_POLL_INTERVAL_MS,
+      () => {
+        void useBackendStore.getState().check();
+      },
+    );
+    // 仅在新建轮询器时做一次立即检测（保持原有"进入页面立刻探一次"的行为）
+    if (createdTimer) {
+      void useBackendStore.getState().check();
+    }
   },
 
   stopPolling: () => {
-    pollSubscribers = Math.max(0, pollSubscribers - 1);
-    if (pollSubscribers === 0 && pollInterval) {
-      clearInterval(pollInterval);
-      pollInterval = null;
-    }
+    releasePolling(BACKEND_POLL_KEY);
   },
 }));

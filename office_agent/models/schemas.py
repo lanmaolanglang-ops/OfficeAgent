@@ -68,6 +68,10 @@ class Alignment(Enum):
     RIGHT = "right"
     CENTER = "center"
     JUSTIFY = "justify"
+    # 分散对齐：与 format_parser 的 "分散对齐"→"distribute"、
+    # document_structure 的 WD_ALIGN_PARAGRAPH.DISTRIBUTE→"distribute"
+    # 使用同一个 canonical 值，两个生产者都必须有消费者接收。
+    DISTRIBUTE = "distribute"
 
 
 # 正文首行缩进的 canonical 默认值：**2 字符**（按当前正文字号换算磅值）。

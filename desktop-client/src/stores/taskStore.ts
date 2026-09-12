@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import type { Task } from '../types';
 import { listTasks } from '../services/api';
+import { acquirePolling, releasePolling } from './refCountedPoller';
 
 interface TaskState {
   tasks: Task[];
@@ -12,9 +13,13 @@ interface TaskState {
 }
 
 // 任务提交/轮询/取消/通知已全部收敛到 chatStore 的对话轮询里，
-// 这里保留「任务列表加载 + 全局共享轮询」（refcount，多个订阅者共用一个定时器）。
-let pollTimer: ReturnType<typeof setInterval> | null = null;
-let pollRefs = 0;
+// 这里保留「任务列表加载 + 全局共享轮询」（引用计数，多个订阅者共用一个定时器）。
+//
+// 句柄放在进程级槽位（refCountedPoller）而不是模块作用域：模块级句柄在
+// Vite HMR / 模块重复求值时会失联，留下无法回收的孤儿 interval（P1-25 实测
+// 见 refCountedPoller 注释）。
+const TASK_POLL_KEY = 'taskStore';
+const TASK_POLL_INTERVAL_MS = 2000;
 
 export const useTaskStore = create<TaskState>((set) => ({
   tasks: [],
@@ -22,19 +27,13 @@ export const useTaskStore = create<TaskState>((set) => ({
   loadError: false,
 
   startPolling: () => {
-    pollRefs += 1;
-    if (pollTimer) return;
-    pollTimer = setInterval(() => {
-      useTaskStore.getState().loadTasks();
-    }, 2000);
+    acquirePolling(TASK_POLL_KEY, TASK_POLL_INTERVAL_MS, () => {
+      void useTaskStore.getState().loadTasks();
+    });
   },
 
   stopPolling: () => {
-    pollRefs = Math.max(0, pollRefs - 1);
-    if (pollRefs === 0 && pollTimer) {
-      clearInterval(pollTimer);
-      pollTimer = null;
-    }
+    releasePolling(TASK_POLL_KEY);
   },
 
   loadTasks: async () => {
