@@ -5,18 +5,42 @@ import re
 from typing import List, Optional
 from dataclasses import dataclass
 
-from .models import KnowledgeChunk, KnowledgeDocument
-from .document_parser import ParsedDocument, ParsedSection
+from .models import KnowledgeChunk
+from .document_parser import ParsedDocument
 
 
 @dataclass
 class ChunkConfig:
-    """切片配置"""
+    """切片配置
+
+    不变量（构造期校验，运行期各切片算法依赖）：
+    - ``max_chunk_size >= 1``；
+    - ``0 <= overlap < max_chunk_size``——``overlap >= chunk_size`` 会让
+      ``_split_long_text`` 的 ``range(step=0)`` 崩溃/静默丢块，固定切片
+      也会静默退化为无重叠；按产品契约这类配置直接拒绝，不做静默修正。
+    """
     max_chunk_size: int = 500       # 最大字符数
     min_chunk_size: int = 10        # 最小字符数
     overlap: int = 50               # 重叠字符数
     strategy: str = "section"       # section/paragraph/fixed
     preserve_sections: bool = True  # 保留章节边界
+
+    def __post_init__(self):
+        if not isinstance(self.max_chunk_size, int) \
+                or isinstance(self.max_chunk_size, bool) \
+                or self.max_chunk_size < 1:
+            raise ValueError("max_chunk_size 必须是正整数")
+        if not isinstance(self.overlap, int) \
+                or isinstance(self.overlap, bool) \
+                or self.overlap < 0:
+            raise ValueError("overlap 不能为负数")
+        if self.overlap >= self.max_chunk_size:
+            raise ValueError(
+                "overlap 必须小于 max_chunk_size，否则切片无法前进")
+        if not isinstance(self.min_chunk_size, int) \
+                or isinstance(self.min_chunk_size, bool) \
+                or self.min_chunk_size < 0:
+            raise ValueError("min_chunk_size 不能为负数")
 
 
 class TextChunker:

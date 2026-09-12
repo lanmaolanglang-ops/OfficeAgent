@@ -85,11 +85,18 @@ def _display_stem(input_path: str, options: dict) -> str:
     return stem or "output"
 
 
-CSV_ENCODINGS = ("utf-8-sig", "utf-8", "gbk", "gb18030", "big5", "latin-1")
+# 编码探测链：utf-8-sig 兼容 BOM，gb18030 覆盖 GBK 简体超集，big5 覆盖繁体。
+# 注意 latin-1 不在链内——它能"成功"解码任意字节，会把真实编码错误
+# 静默变成乱码数据流入 Excel 处理链；全部候选失败时显式报错。
+CSV_ENCODINGS = ("utf-8-sig", "utf-8", "gbk", "gb18030", "big5")
 
 
 def _read_csv_any_encoding(csv_path: str):
-    """按常见编码链读取 CSV（中文 Excel 导出的 GBK CSV 最常见），BOM 自动剥离"""
+    """按常见编码链读取 CSV（中文 Excel 导出的 GBK CSV 最常见），BOM 自动剥离。
+
+    全部候选失败时抛 RuntimeError——绝不回退到 latin-1 这类"永不失败"
+    的解码器制造"成功但乱码"。
+    """
     import pandas as pd
     last_err = None
     for enc in CSV_ENCODINGS:
@@ -138,7 +145,11 @@ def _sanitize_csv_cell(value):
 
 
 def _csv_to_xlsx(csv_path: str) -> str:
-    """CSV → 临时 xlsx，供统一 openpyxl 处理链使用"""
+    """CSV → 临时 xlsx，供统一 openpyxl 处理链使用。
+
+    转换失败时清理自己产生的临时文件（此时调用方尚未接手 ownership，
+    不会有人替它清理）；成功后 ownership 移交调用方。
+    """
     import pandas as pd
     df = _read_csv_any_encoding(csv_path)
     df = df.where(pd.notnull(df), None)
@@ -146,7 +157,15 @@ def _csv_to_xlsx(csv_path: str) -> str:
     output_dir = str(get_output_dir())
     tmp = os.path.join(output_dir, f"csv_{int(time.time() * 1000)}_{os.getpid()}.xlsx")
     os.makedirs(output_dir, exist_ok=True)
-    df.to_excel(tmp, index=False, sheet_name="Sheet1", engine="openpyxl")
+    try:
+        df.to_excel(tmp, index=False, sheet_name="Sheet1", engine="openpyxl")
+    except BaseException:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
+        raise
     return tmp
 
 

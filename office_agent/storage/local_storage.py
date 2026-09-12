@@ -2,6 +2,7 @@
 本地文件系统存储实现
 """
 import os
+import re
 import uuid
 import shutil
 import hashlib
@@ -201,8 +202,32 @@ class LocalStorage(StorageBackend):
 
     # === 分片上传 ===
 
+    # 分片编号硬上限：与 S3/GCS 等对象存储协议一致（10000 片），
+    # 防止极端编号制造稀疏编号空间。
+    MAX_PART_NUMBER = 10000
+    # init_multipart_upload 生成的 upload_id 形如 mp_<16位hex>；
+    # 核心层校验它，防止内部调用方以路径穿越写任意位置。
+    _UPLOAD_ID_RE = re.compile(r"^mp_[0-9a-f]{16}$")
+
     def _multipart_dir(self, upload_id: str) -> str:
+        if not isinstance(upload_id, str) or not self._UPLOAD_ID_RE.match(upload_id):
+            raise ValueError(f"无效的 upload_id: {upload_id!r}")
         return os.path.join(self.root_path, "multipart", upload_id)
+
+    @staticmethod
+    def _validate_part_number(part_number) -> int:
+        """核心层不变量：协议 1-based（API 契约"分片序号，从1开始"）。
+
+        bool 是 int 子类，必须显式拒绝；上界采用对象存储协议标准。
+        """
+        if isinstance(part_number, bool) or not isinstance(part_number, int):
+            raise ValueError("part_number 必须是整数")
+        if part_number < 1:
+            raise ValueError("part_number 必须从 1 开始")
+        if part_number > LocalStorage.MAX_PART_NUMBER:
+            raise ValueError(
+                f"part_number 超过上限 {LocalStorage.MAX_PART_NUMBER}")
+        return part_number
 
     def init_multipart_upload(self, storage_path: str,
                                content_type: str | None = None) -> str:
@@ -217,6 +242,9 @@ class LocalStorage(StorageBackend):
 
     def upload_part(self, storage_path: str, upload_id: str,
                     part_number: int, content: bytes) -> dict:
+        part_number = self._validate_part_number(part_number)
+        if not isinstance(content, (bytes, bytearray)):
+            raise ValueError("分片内容必须是字节")
         mp_dir = self._multipart_dir(upload_id)
         if not os.path.exists(mp_dir):
             raise ValueError(f"无效的 upload_id: {upload_id}")
@@ -234,6 +262,21 @@ class LocalStorage(StorageBackend):
         mp_dir = self._multipart_dir(upload_id)
         if not os.path.exists(mp_dir):
             raise ValueError(f"无效的 upload_id: {upload_id}")
+
+        # 核心层不变量：按编号集合验证完整性，而不是 len(parts)。
+        # 重复编号会被合并两遍（内容翻倍），缺号会静默产出截断文件。
+        if not parts or not isinstance(parts, list):
+            raise ValueError("分片列表不能为空")
+        numbers = []
+        for part in parts:
+            if not isinstance(part, dict):
+                raise ValueError("分片条目必须是字典")
+            number = self._validate_part_number(part.get("part_number"))
+            numbers.append(number)
+        if len(set(numbers)) != len(numbers):
+            raise ValueError("分片序号重复")
+        if sorted(numbers) != list(range(1, len(numbers) + 1)):
+            raise ValueError("分片序号必须从 1 连续编号，不能缺片或多片")
 
         # 读取目标路径
         try:

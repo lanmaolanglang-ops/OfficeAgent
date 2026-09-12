@@ -230,12 +230,19 @@ class DocumentParser:
         return result
 
     def _parse_pdf(self, file_path: str, doc_type: str) -> ParsedDocument:
-        """解析 PDF 文档"""
+        """解析 PDF 文档。
+
+        PDF 解析只有 PyMuPDF 一个 backend，二进制 PDF 绝不能当文本文件
+        "降级"读取——那会把乱码当成解析成功。缺库时抛出带安装指引的
+        明确错误；损坏/加密等打开失败由 PyMuPDF 自己的异常如实上报。
+        """
         try:
             import pymupdf
-            doc = pymupdf.open(file_path)
-        except ImportError:
-            return self._parse_text(file_path, doc_type)
+        except ImportError as exc:
+            raise RuntimeError(
+                "PDF 解析需要 PyMuPDF 库，请安装依赖：pip install pymupdf"
+            ) from exc
+        doc = pymupdf.open(file_path)
 
         result = ParsedDocument(
             title=os.path.splitext(os.path.basename(file_path))[0],
