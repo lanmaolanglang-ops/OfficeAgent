@@ -166,5 +166,6 @@ def get_rate_limiter() -> RateLimiterManager:
         _rate_limiter.add_limit("api", 100, 60)
         _rate_limiter.add_limit("model", 50, 60)
         _rate_limiter.add_limit("upload", 50, 3600)
-        _rate_limiter.add_bucket("model_calls", 100, 60, burst=20)
+        # 注：曾注册过一个 "model_calls" 令牌桶，但仓库内从未有任何
+        # consume("model_calls") 调用——误导性的死配置，已移除。
     return _rate_limiter

@@ -13,7 +13,7 @@ P5-12 的三个历史子项中，``image_generation/config.py`` 的非原子
 import pytest
 from docx import Document as DocxDocument  # noqa: F401
 from pptx import Presentation
-from pptx.util import Inches, Pt as PptPt
+from pptx.util import Inches
 
 from office_agent.vision_gateway.document_renderer import DocumentRenderer
 

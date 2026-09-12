@@ -12,6 +12,13 @@ class RateLimitMiddleware:
     纯 ASGI 实现（原为 BaseHTTPMiddleware）：不为每个请求额外启动下游
     任务与消息队列，被拒请求零缓冲直接返回；通过包装 send 在
     http.response.start 上注入限流响应头，行为与原实现一致。
+
+    限流身份（policy 设计）：优先已认证用户（``request.state.user_id``，
+    由内层 AuthMiddleware 设置——注意本中间件在其外层先执行，该分支
+    是为调用序变化预留的兼容钩子，运行时通常走回退）；回退到
+    ``resolve_request_client`` 解析的客户端地址（仅信任 trusted proxy
+    的转发头）。本地桌面部署（单用户/回环）下按客户端地址限流即产品
+    语义。计数器为进程内内存态，进程重启即重置（本地产品定位）。
     """
 
     _SKIP_PATHS = frozenset({
@@ -85,9 +92,11 @@ class RateLimitMiddleware:
 
     @staticmethod
     def _identity(request: Request) -> str:
+        # 已认证身份优先（兼容钩子：user_id 由内层 AuthMiddleware 写入；
+        # 本中间件先于其执行，运行时通常落到下面的客户端地址回退）。
         authenticated_user = getattr(request.state, "user_id", "")
         if authenticated_user not in ("", "anonymous"):
             return authenticated_user
-        # 统一走权威客户端身份解析：仅 trusted proxy 的转发头会被采信
+        # 统一走权威客户端身份解析：仅 trusted proxy 的转发头会被采信。
         from ...security.client_identity import resolve_request_client
         return resolve_request_client(request)
