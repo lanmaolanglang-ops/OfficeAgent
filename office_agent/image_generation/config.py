@@ -11,6 +11,8 @@ import json
 import logging
 from typing import Optional
 
+from ..persistence import atomic_write_json
+
 logger = logging.getLogger(__name__)
 
 AGNES_DEFAULT_BASE_URL = "https://apihub.agnes-ai.com/v1"
@@ -108,8 +110,10 @@ class ImageModelConfigManager:
             "model": self._config["model"],
             "mcp_url": self._config["mcp_url"],
         }
-        with open(self.config_file, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+        # 配置里存着加密 Key，进程中断留下的半截 JSON 会让整个生图配置
+        # 丢失且无法恢复：与模型配置共用同目录临时文件 + fsync + replace
+        # 的原子写。
+        atomic_write_json(self.config_file, data, indent=2, ensure_ascii=False)
         return self.get_config()
 
 

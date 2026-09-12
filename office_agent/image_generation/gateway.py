@@ -11,6 +11,8 @@ import tempfile
 import time
 import uuid
 from pathlib import Path
+
+from ..persistence import atomic_write_bytes
 from typing import Optional, cast
 from urllib.parse import SplitResult, urljoin, urlsplit
 from urllib.request import Request, urlopen
@@ -218,7 +220,12 @@ def _response_error_message(body: str) -> str:
 
 
 def _post_json(url: str, payload: dict, headers: dict, timeout: float = 120.0) -> dict:
-    """POST JSON and parse the response (zero-dependency, urllib-based)."""
+    """POST JSON and parse the response (zero-dependency, urllib-based).
+
+    非 JSON 响应（HTML 错误页、截断响应）与非法编码必须归类为
+    ImageGenerationError 并保留原始异常 cause，不能让裸的
+    JSONDecodeError/UnicodeDecodeError 逃出网关边界。
+    """
     req = Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
     try:
         with urlopen(req, timeout=timeout) as resp:
@@ -232,7 +239,14 @@ def _post_json(url: str, payload: dict, headers: dict, timeout: float = 120.0) -
         raise ImageGenerationError(f"图像服务请求失败: HTTP {exc.code}{suffix}") from exc
     except URLError as exc:
         raise ImageGenerationError(f"图像服务连接失败: {exc.reason}") from exc
-    return json.loads(body)
+    except UnicodeDecodeError as exc:
+        raise ImageGenerationError("图像服务响应不是有效的 UTF-8 文本") from exc
+    try:
+        return json.loads(body)
+    except (ValueError, json.JSONDecodeError) as exc:
+        preview = body[:120] if isinstance(body, str) else ""
+        raise ImageGenerationError(
+            f"图像服务返回了非 JSON 响应: {preview}") from exc
 
 
 def _get_bytes(url: str, timeout: float = 120.0,
@@ -288,9 +302,10 @@ class ImageGenerationGateway:
         target_dir.mkdir(parents=True, exist_ok=True)
         target = target_dir / f"agnes_ppt_image_{uuid.uuid4().hex[:8]}.png"
         if item.get("b64_json"):
-            target.write_bytes(_decode_image_b64(item["b64_json"]))
+            # 原子落盘：进程中断不留半张图片冒充成品
+            atomic_write_bytes(target, _decode_image_b64(item["b64_json"]))
         elif item.get("url"):
-            target.write_bytes(_get_bytes(item["url"]))
+            atomic_write_bytes(target, _get_bytes(item["url"]))
         else:
             raise ImageGenerationError("图像服务返回内容为空")
         return str(target)
@@ -321,13 +336,18 @@ class ImageGenerationGateway:
                     pass
 
     def _generate_mcp(self, prompt: str, size: str, output_dir: Optional[str]) -> str:
-        """Call a configured MCP HTTP gateway using a tools/call envelope."""
+        """Call a configured MCP HTTP gateway using a tools/call envelope.
+
+        MCP 返回体的 ``result`` 可能为 null（工具执行失败时的常见形态），
+        必须判空归类为 ImageGenerationError，而不是裸 AttributeError。
+        """
         payload = _post_json(
             f"{self.mcp_url}/tools/call",
             {"name": self.mcp_tool, "arguments": {"prompt": prompt, "size": size}},
             {"Content-Type": "application/json"},
         )
-        content = payload.get("result", payload).get("content", [])
+        result = payload.get("result", payload)
+        content = result.get("content", []) if isinstance(result, dict) else []
         image_url = payload.get("url")
         image_b64 = payload.get("b64_json")
         for item in content if isinstance(content, list) else []:
@@ -337,9 +357,9 @@ class ImageGenerationGateway:
         target = (Path(output_dir or tempfile.gettempdir()) /
                   f"mcp_ppt_image_{uuid.uuid4().hex[:8]}.png")
         if image_b64:
-            target.write_bytes(_decode_image_b64(image_b64))
+            atomic_write_bytes(target, _decode_image_b64(image_b64))
         elif image_url:
-            target.write_bytes(_get_bytes(image_url))
+            atomic_write_bytes(target, _get_bytes(image_url))
         else:
             raise ImageGenerationError("MCP 图像工具未返回图片")
         return str(target)

@@ -131,13 +131,12 @@ def convert_format(input_path: str, output_path: str,
         if progress:
             progress.update(30, f"转换为{target_format}")
 
-        # 转换引擎尚未实现：与其假装成功并返回空产物，不如明确失败
+        # 转换引擎尚未实现：与其假装成功并返回空产物，不如明确失败。
+        # （实现真实转换引擎时在此接入处理链，并在成功路径上报
+        # progress.update(100, "转换完成")——此前的不可达代码已删除。）
         raise RuntimeError(
             f"文件格式转换（→{target_format}）暂未实现，请使用 Word/PPT/Excel Agent 处理"
         )
-
-        if progress:
-            progress.update(100, "转换完成")
 
     except Exception as e:
         result["status"] = "failed"

@@ -27,9 +27,18 @@ DEFAULT_SLIDES = 10
 
 
 def _parse_slide_count(instruction: str, effective: str) -> int:
-    """从用户指令/简报中解析期望页数，默认 10，限制 [1, 50]"""
+    """从用户指令/简报中解析期望总页数，默认 10，限制 [1, 50]。
+
+    - "第N页"是对既有页的引用而非总页数，先剔除再匹配，
+      否则"修改第 3 页"会被误判成只要 3 页；
+    - 英文 "N slides/slide" 同样识别；
+    - 结果钳制在 [1, MAX_SLIDES]（产品上限，防异常指令生成过多页）。
+    """
     text = f"{instruction or ''} {effective or ''}"
-    m = re.search(r'(\d{1,3})\s*页', text)
+    text = re.sub(r"第\s*\d{1,3}\s*页", "", text)
+    m = re.search(r"(\d{1,3})\s*页", text)
+    if not m:
+        m = re.search(r"(\d{1,3})\s*slides?\b", text, re.IGNORECASE)
     if m:
         return max(1, min(MAX_SLIDES, int(m.group(1))))
     return DEFAULT_SLIDES
