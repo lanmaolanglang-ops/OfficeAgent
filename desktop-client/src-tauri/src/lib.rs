@@ -6,7 +6,8 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
@@ -17,12 +18,109 @@ use tauri::{
 const BACKEND_HOST: &str = "127.0.0.1";
 const BACKEND_PORT: u16 = 8765;
 const BACKEND_STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
+// 运行期看护：只判断"本进程拉起的后端子进程是否还活着"。刻意不轮询 /ready ——
+// 依赖短暂 not-ready 就 kill 整个后端会把可自愈的抖动放大成硬重启。
+const BACKEND_RESTART_TIMEOUT: Duration = Duration::from_secs(30);
+const WATCHDOG_POLL_INTERVAL: Duration = Duration::from_secs(2);
+
+/// 重启预算：时间窗内最多重启 max_restarts 次，超出即放弃，避免后端崩溃循环
+/// 时无限高速重启。退避随失败次数指数增长并封顶。
+#[derive(Clone, Copy, Debug)]
+struct SupervisorPolicy {
+    window_ms: u64,
+    max_restarts: u32,
+    base_backoff_ms: u64,
+    max_backoff_ms: u64,
+}
+
+impl Default for SupervisorPolicy {
+    fn default() -> Self {
+        Self {
+            window_ms: 300_000,
+            max_restarts: 3,
+            base_backoff_ms: 1_000,
+            max_backoff_ms: 30_000,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SupervisorDecision {
+    /// 仍在预算内，可以立即重启
+    RestartNow,
+    /// 仍在预算内，但需先退避
+    RestartAfter { delay_ms: u64 },
+    /// 预算耗尽：停止重启，等人工介入
+    GiveUp,
+}
+
+#[derive(Debug, Default)]
+struct SupervisorState {
+    /// 时间窗内的重启时刻（毫秒，单调时钟）
+    recent_restarts: Vec<u64>,
+    failures: u32,
+}
+
+impl SupervisorState {
+    /// 子进程退出一次：给出本次应执行的动作。
+    fn on_exit(&mut self, now_ms: u64, policy: &SupervisorPolicy) -> SupervisorDecision {
+        self.recent_restarts
+            .retain(|at| now_ms.saturating_sub(*at) < policy.window_ms);
+        if self.recent_restarts.len() as u32 >= policy.max_restarts {
+            return SupervisorDecision::GiveUp;
+        }
+        self.recent_restarts.push(now_ms);
+        self.failures = self.failures.saturating_add(1);
+        let shift = self.failures.saturating_sub(1).min(16);
+        let delay = policy
+            .base_backoff_ms
+            .saturating_mul(1u64 << shift)
+            .min(policy.max_backoff_ms);
+        if delay == 0 {
+            SupervisorDecision::RestartNow
+        } else {
+            SupervisorDecision::RestartAfter { delay_ms: delay }
+        }
+    }
+
+    /// 后端恢复就绪：预算与退避全部归零，下次崩溃重新计数。
+    fn on_ready(&mut self) {
+        self.recent_restarts.clear();
+        self.failures = 0;
+    }
+}
+
+/// 进程级单调毫秒（SupervisorState 只吃纯数值，便于单测注入时间）。
+fn monotonic_ms() -> u64 {
+    static START: OnceLock<Instant> = OnceLock::new();
+    START.get_or_init(Instant::now).elapsed().as_millis() as u64
+}
+
+/// 可被"停止看护"信号打断的睡眠；返回 true 表示已被要求停止。
+fn interruptible_sleep(duration: Duration, stop: &AtomicBool) -> bool {
+    let step = Duration::from_millis(100);
+    let mut remaining = duration;
+    while !stop.load(Ordering::SeqCst) {
+        if remaining == Duration::ZERO {
+            return false;
+        }
+        let slice = remaining.min(step);
+        std::thread::sleep(slice);
+        remaining = remaining.saturating_sub(slice);
+    }
+    true
+}
 
 #[derive(Clone, Default)]
 struct BackendManager {
     // Only contains a process started by this Tauri instance. An already-running
     // healthy backend is reused and is never terminated by the desktop client.
     child: Arc<Mutex<Option<Child>>>,
+    // 看护线程的停止信号：用户主动停止后端 / 应用退出时置位，看护不得把
+    // 主动停止的后端再拉起来。
+    watchdog_stop: Arc<AtomicBool>,
+    // 保证任何时刻只有一个看护线程，避免双重看护互相抢重启。
+    watchdog_running: Arc<AtomicBool>,
 }
 
 impl BackendManager {
@@ -95,6 +193,8 @@ impl BackendManager {
     }
 
     fn stop(&self) {
+        // 先看护停止、再杀进程：否则看护会把"用户主动停止"当成崩溃并拉起。
+        self.watchdog_stop.store(true, Ordering::SeqCst);
         let Ok(mut guard) = self.child.lock() else {
             return;
         };
@@ -107,6 +207,143 @@ impl BackendManager {
             // 的记录，避免后端崩溃后由其他实例重启时误删新实例 PID 文件。
             if read_backend_pid().as_deref() == Some(child_pid.as_str()) {
                 let _ = fs::remove_file(pid_file_path());
+            }
+        }
+    }
+
+    /// 重新拉起后端并等待就绪。只在看护线程里调用。
+    ///
+    /// 拉起失败时刻意保留原子进程记录：看护下一轮仍会看到"已退出"，从而
+    /// 继续按退避策略重试，直到预算耗尽。
+    fn restart(&self, app: &tauri::AppHandle) -> Result<(), String> {
+        let child = match spawn_backend(app) {
+            Ok(child) => child,
+            Err(error) => return Err(error),
+        };
+        {
+            let mut guard = self.child.lock().map_err(|_| "Backend进程锁不可用")?;
+            if let Some(mut previous) = guard.take() {
+                let _ = previous.kill();
+                let _ = previous.wait();
+            }
+            *guard = Some(child);
+        }
+
+        let deadline = Instant::now() + BACKEND_RESTART_TIMEOUT;
+        while Instant::now() < deadline {
+            if self.watchdog_stop.load(Ordering::SeqCst) {
+                return Err("看护已在重启过程中停止".to_string());
+            }
+            {
+                let mut guard = self.child.lock().map_err(|_| "Backend进程锁不可用")?;
+                if let Some(child) = guard.as_mut() {
+                    if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
+                        return Err(format!("Backend重启后立即退出，退出码: {status}"));
+                    }
+                }
+            }
+            if backend_is_healthy() {
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        Err(format!(
+            "Backend重启后在{}秒内未通过就绪检查",
+            BACKEND_RESTART_TIMEOUT.as_secs()
+        ))
+    }
+
+    /// 启动运行期看护线程（只启动一次）。
+    ///
+    /// 只监测**本进程拉起**的后端子进程是否还活着：Python 侧 runtime_manager
+    /// 负责自己的健康重启，Tauri 不再深入内部 health，避免双重 supervisor
+    /// 互相抢重启。on_status 用于把状态回写到托盘菜单。
+    fn start_watchdog(
+        &self,
+        app: &tauri::AppHandle,
+        on_status: Option<Box<dyn Fn(&str) + Send + 'static>>,
+    ) {
+        // 没有子进程说明复用了外部已运行的后端，不归本进程看护
+        let owns_backend = self
+            .child
+            .lock()
+            .map(|guard| guard.is_some())
+            .unwrap_or(false);
+        if !owns_backend {
+            return;
+        }
+        if self.watchdog_running.swap(true, Ordering::SeqCst) {
+            return; // 已有一个看护线程
+        }
+        self.watchdog_stop.store(false, Ordering::SeqCst);
+
+        let manager = self.clone();
+        let app_handle = app.clone();
+        std::thread::spawn(move || {
+            manager.watchdog_loop(&app_handle, on_status.as_deref());
+            manager.watchdog_running.store(false, Ordering::SeqCst);
+        });
+    }
+
+    fn watchdog_loop(&self, app: &tauri::AppHandle, on_status: Option<&(dyn Fn(&str) + Send)>) {
+        let policy = SupervisorPolicy::default();
+        let mut state = SupervisorState::default();
+
+        loop {
+            if interruptible_sleep(WATCHDOG_POLL_INTERVAL, &self.watchdog_stop) {
+                return;
+            }
+
+            let exit_status = {
+                let mut guard = match self.child.lock() {
+                    Ok(guard) => guard,
+                    Err(_) => return,
+                };
+                match guard.as_mut() {
+                    // 后端已被主动停止（stop 会 take 走）→ 看护退出，不拉起
+                    None => return,
+                    Some(child) => match child.try_wait() {
+                        Ok(Some(status)) => Some(status.to_string()),
+                        _ => None,
+                    },
+                }
+            };
+
+            let Some(status) = exit_status else {
+                continue; // 子进程仍存活：不做任何动作
+            };
+
+            if let Some(callback) = on_status {
+                callback("Backend: 已断开，正在重启");
+            }
+            match state.on_exit(monotonic_ms(), &policy) {
+                SupervisorDecision::RestartNow => {}
+                SupervisorDecision::RestartAfter { delay_ms } => {
+                    if interruptible_sleep(Duration::from_millis(delay_ms), &self.watchdog_stop) {
+                        return;
+                    }
+                }
+                SupervisorDecision::GiveUp => {
+                    if let Some(callback) = on_status {
+                        callback("Backend: 已停止（重启次数超限）");
+                    }
+                    return;
+                }
+            }
+
+            match self.restart(app) {
+                Ok(()) => {
+                    state.on_ready();
+                    if let Some(callback) = on_status {
+                        callback("Backend: 已连接");
+                    }
+                }
+                Err(error) => {
+                    eprintln!("Backend 重启失败（退出码 {status}）: {error}");
+                    if let Some(callback) = on_status {
+                        callback("Backend: 重启失败");
+                    }
+                }
             }
         }
     }
@@ -170,7 +407,7 @@ fn takeover_stale_backend() -> bool {
         .output();
     let Ok(cmdline) = cmdline else { return false };
     let cmdline_text = String::from_utf8_lossy(&cmdline.stdout).to_lowercase();
-    if !cmdline_text.contains("officeagent") && !cmdline_text.contains("office_agent") {
+    if !backend_cmdline_matches(&cmdline_text) {
         return false;
     }
 
@@ -194,6 +431,18 @@ fn takeover_stale_backend() -> bool {
 #[cfg(not(target_os = "windows"))]
 fn takeover_stale_backend() -> bool {
     false
+}
+
+/// 命令行必须落到 OfficeAgent 后端的**明确入口标记**上。
+///
+/// 此前只做 `contains("officeagent")`：任何碰巧路径里带这个词、又恰好是
+/// python.exe 且占着后端端口的进程都会被当成自家后端杀掉。这里收敛到真实
+/// 入口形状——开发的 uvicorn 目标、正式包的后端可执行文件名、launcher 脚本。
+/// 调用方传入的必须是已小写化的命令行。
+fn backend_cmdline_matches(cmdline: &str) -> bool {
+    cmdline.contains("office_agent.api.main")
+        || cmdline.contains("officeagent.exe")
+        || cmdline.contains("app_launcher.py")
 }
 
 fn pid_file_path() -> PathBuf {
@@ -273,7 +522,21 @@ fn backend_is_healthy() -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{health_request, health_response_is_ready, parse_backend_pid};
+    use super::{
+        backend_cmdline_matches, health_request, health_response_is_ready, interruptible_sleep,
+        monotonic_ms, parse_backend_pid, SupervisorDecision, SupervisorPolicy, SupervisorState,
+    };
+    use std::sync::atomic::AtomicBool;
+    use std::time::Duration;
+
+    fn policy() -> SupervisorPolicy {
+        SupervisorPolicy {
+            window_ms: 10_000,
+            max_restarts: 3,
+            base_backoff_ms: 1_000,
+            max_backoff_ms: 30_000,
+        }
+    }
 
     #[test]
     fn pid_parser_accepts_only_decimal_process_ids() {
@@ -316,6 +579,153 @@ mod tests {
         assert!(request.starts_with("GET /ready HTTP/1.1\r\n"));
         assert!(request.contains("Host: 127.0.0.1:8765\r\n"));
         assert!(request.ends_with("Connection: close\r\n\r\n"));
+    }
+
+    // ===== P2-13 运行期看护：重启预算状态机 =====
+
+    #[test]
+    fn first_crash_restarts_with_backoff_not_immediately() {
+        let mut state = SupervisorState::default();
+        assert_eq!(
+            state.on_exit(1_000, &policy()),
+            SupervisorDecision::RestartAfter { delay_ms: 1_000 }
+        );
+        assert_eq!(state.failures, 1);
+    }
+
+    #[test]
+    fn backoff_grows_exponentially_within_the_budget() {
+        let mut state = SupervisorState::default();
+        let mut delays = Vec::new();
+        for tick in 0..8 {
+            if let SupervisorDecision::RestartAfter { delay_ms } =
+                state.on_exit(1_000 + tick * 10, &policy())
+            {
+                delays.push(delay_ms);
+            }
+        }
+        // 预算只有 3 次：第 4 次起是 GiveUp，不会再产生退避值
+        assert_eq!(delays, vec![1_000, 2_000, 4_000]);
+    }
+
+    #[test]
+    fn backoff_is_capped_at_the_policy_maximum() {
+        let mut state = SupervisorState::default();
+        let policy = SupervisorPolicy {
+            max_restarts: 8,
+            ..policy()
+        };
+        let mut delays = Vec::new();
+        for tick in 0..8 {
+            if let SupervisorDecision::RestartAfter { delay_ms } =
+                state.on_exit(1_000 + tick * 10, &policy)
+            {
+                delays.push(delay_ms);
+            }
+        }
+        assert_eq!(
+            delays,
+            vec![1_000, 2_000, 4_000, 8_000, 16_000, 30_000, 30_000, 30_000]
+        );
+    }
+
+    #[test]
+    fn restart_budget_is_exhausted_after_max_attempts() {
+        let mut state = SupervisorState::default();
+        let policy = policy();
+        for tick in 0..policy.max_restarts {
+            assert!(matches!(
+                state.on_exit(1_000 + tick as u64, &policy),
+                SupervisorDecision::RestartAfter { .. }
+            ));
+        }
+        // 第 4 次崩溃：预算耗尽，停止重启，绝不无限循环拉起
+        assert_eq!(state.on_exit(1_100, &policy), SupervisorDecision::GiveUp);
+        assert_eq!(state.on_exit(1_200, &policy), SupervisorDecision::GiveUp);
+    }
+
+    #[test]
+    fn recovery_resets_the_budget() {
+        let mut state = SupervisorState::default();
+        let policy = policy();
+        state.on_exit(1_000, &policy);
+        state.on_exit(1_100, &policy);
+        state.on_ready();
+        assert_eq!(state.failures, 0);
+        assert!(state.recent_restarts.is_empty());
+        // 恢复后重新计数，而不是继承历史失败
+        assert!(matches!(
+            state.on_exit(2_000, &policy),
+            SupervisorDecision::RestartAfter { delay_ms: 1_000 }
+        ));
+    }
+
+    #[test]
+    fn old_failures_fall_out_of_the_window() {
+        let mut state = SupervisorState::default();
+        let policy = policy();
+        for tick in 0..policy.max_restarts {
+            state.on_exit(1_000 + tick as u64, &policy);
+        }
+        assert_eq!(state.on_exit(1_900, &policy), SupervisorDecision::GiveUp);
+        // 越过时间窗后旧失败不再计入，允许再次重启
+        assert!(matches!(
+            state.on_exit(1_000 + policy.window_ms + 1, &policy),
+            SupervisorDecision::RestartAfter { .. }
+        ));
+    }
+
+    #[test]
+    fn zero_base_backoff_restarts_immediately() {
+        let mut state = SupervisorState::default();
+        let policy = SupervisorPolicy {
+            base_backoff_ms: 0,
+            ..policy()
+        };
+        assert_eq!(state.on_exit(0, &policy), SupervisorDecision::RestartNow);
+    }
+
+    #[test]
+    fn interruptible_sleep_returns_immediately_when_stopped() {
+        let stop = AtomicBool::new(true);
+        assert!(interruptible_sleep(Duration::from_secs(30), &stop));
+        let stop = AtomicBool::new(false);
+        assert!(!interruptible_sleep(Duration::ZERO, &stop));
+    }
+
+    #[test]
+    fn monotonic_clock_is_non_decreasing() {
+        let first = monotonic_ms();
+        let second = monotonic_ms();
+        assert!(second >= first);
+    }
+
+    // ===== P2-13 进程身份核验：命令行必须落到明确入口 =====
+
+    #[test]
+    fn backend_cmdline_accepts_real_backend_entry_points() {
+        assert!(backend_cmdline_matches(
+            r#"python -m uvicorn office_agent.api.main:app --host 127.0.0.1 --port 8765"#
+        ));
+        assert!(backend_cmdline_matches(
+            r#"c:\program files\officeagent\backend\officeagent.exe --host 127.0.0.1 --port 8765 --background"#
+        ));
+        assert!(backend_cmdline_matches(
+            r#"python c:\app\desktop\app_launcher.py --host 127.0.0.1 --port 8765"#
+        ));
+    }
+
+    #[test]
+    fn backend_cmdline_rejects_unrelated_processes() {
+        // 仅"路径里出现 officeagent"不足以证明它是自家后端
+        assert!(!backend_cmdline_matches(
+            r#"python c:\users\me\officeagent_notes\server.py --port 8765"#
+        ));
+        assert!(!backend_cmdline_matches(
+            r#"python -m http.server 8765 --directory officeagent"#
+        ));
+        assert!(!backend_cmdline_matches(""));
+        assert!(!backend_cmdline_matches("python -m uvicorn other.app:app"));
     }
 }
 
@@ -606,10 +1016,19 @@ pub fn run() {
             // render immediately while the existing frontend health poll waits.
             let app_handle = app.handle().clone();
             let status_item_for_thread = status_item.clone();
+            let watchdog_status = status_item.clone();
             let manager = setup_backend_manager.clone();
+            let watchdog_manager = setup_backend_manager.clone();
             std::thread::spawn(move || match manager.start(&app_handle) {
                 Ok(()) => {
                     let _ = status_item_for_thread.set_text("Backend: 已连接");
+                    // 启动成功后接管运行期看护：后端此后崩溃会被检测并有限重启
+                    watchdog_manager.start_watchdog(
+                        &app_handle,
+                        Some(Box::new(move |text: &str| {
+                            let _ = watchdog_status.set_text(text);
+                        })),
+                    );
                 }
                 Err(error) => {
                     use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
