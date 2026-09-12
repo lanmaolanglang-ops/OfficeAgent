@@ -141,8 +141,22 @@ class LocalWorker:
 
         logger.info(f"LocalWorker 初始化完成，总并发数: {sum(q['concurrency'] for q in config.TASK_QUEUES.values())}")
 
-    def register(self, name: str, func: Callable):
-        """注册任务函数"""
+    def register(self, name: str, func: Callable, *, replace: bool = False):
+        """注册任务函数。
+
+        幂等：同名同函数的重复注册是 no-op（init_worker/submit_task 的
+        全量注册路径会反复触发）。同名**不同**函数默认视为冲突并抛错，
+        不允许静默覆盖——那会掩盖真正的注册冲突；确需按次替换 handler
+        的调用方（scheduler 每次触发的任务闭包）显式传 replace=True。
+        """
+        existing = self._tasks.get(name)
+        if existing is not None:
+            if existing is func:
+                return
+            if not replace:
+                raise ValueError(
+                    f"任务 {name} 已注册为不同的处理函数，拒绝静默覆盖"
+                )
         self._tasks[name] = func
         logger.debug(f"注册任务: {name}")
 

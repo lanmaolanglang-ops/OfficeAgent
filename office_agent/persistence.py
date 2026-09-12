@@ -33,8 +33,19 @@ _path_locks_guard = threading.Lock()
 
 
 def _lock_for(path: Path) -> threading.RLock:
-    """返回与规范化的绝对路径绑定的可重入锁。"""
-    key = str(path)
+    """返回与规范化绝对路径绑定的可重入锁。
+
+    key 经 ``resolve + normcase`` 规范化：`.`/`..` 段、盘符与路径大小写、
+    斜杠方向、相对/绝对写法，以及（可解析时的）junction/symlink，指向
+    同一真实文件时得到同一把锁；不同真实文件不会被误合并。路径不存在
+    时 ``resolve`` 不抛错（strict=False），仍按规范化形式合并等价写法。
+    """
+    try:
+        key = os.path.normcase(str(Path(path).resolve()))
+    except OSError:
+        # 解析失败（网络盘/权限等异常环境）：退回绝对路径规范化，
+        # 尽力合并等价写法，保证锁仍然存在。
+        key = os.path.normcase(os.path.abspath(str(path)))
     lock = _path_locks.get(key)
     if lock is None:
         with _path_locks_guard:

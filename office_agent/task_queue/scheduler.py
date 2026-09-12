@@ -105,7 +105,20 @@ class TaskScheduler:
         """执行定时任务"""
         with self._lock:
             if task.running:
-                logger.warning("定时任务仍在运行，跳过重入: %s", task.name)
+                # 本轮丢弃（防重入），但 next_run 必须照常推进到下一合法
+                # 周期：否则当前任务结束后 next_run 仍停留在过去，调度器
+                # 会立即补跑一次（skip → finish → 秒补跑）。本项目调度器
+                # 仅有 interval 型周期，按既有口径顺延一个完整 interval。
+                now = datetime.now(timezone.utc)
+                base = task.next_run
+                if base.tzinfo is None:
+                    # 与 _run_loop 相同的 naive-UTC 兼容口径
+                    base = base.astimezone(timezone.utc)
+                    task.next_run = base
+                if base <= now:
+                    base = now
+                task.next_run = base + timedelta(seconds=task.interval)
+                logger.warning("定时任务仍在运行，本轮丢弃并顺延下一周期: %s", task.name)
                 return False
             task.running = True
             task.last_run = datetime.now(timezone.utc)
@@ -128,7 +141,8 @@ class TaskScheduler:
             from . import init_worker
             worker = init_worker()
             queue_name = f"scheduled.{task.name}"
-            worker.register(queue_name, _do_run)
+            # 每次触发注册携带本次任务上下文的新闭包，属有意的按次替换
+            worker.register(queue_name, _do_run, replace=True)
             worker.submit(queue_name, priority=task.priority)
         except Exception as e:
             logger.warning(f"提交定时任务到队列失败，直接执行: {e}")

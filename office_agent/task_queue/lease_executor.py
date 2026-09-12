@@ -14,6 +14,7 @@
   等待期间让出“并发额度”，等待仍在原线程上发生，唤醒后原线程继续
   后续重试；取消事件会立即唤醒停靠线程。
 """
+import logging
 import threading
 import time
 from collections import deque
@@ -21,11 +22,18 @@ from concurrent.futures import Future
 
 from .. import thread_lease
 
+logger = logging.getLogger("office_agent.lease_executor")
+
+# shutdown 等待的模块级默认上限：卡住的工作线程不允许把应用退出流程
+# 永久挂起。可通过构造参数 shutdown_timeout 覆盖。
+DEFAULT_SHUTDOWN_TIMEOUT_SECONDS = 30.0
+
 
 class LeaseThreadPool:
     """支持停靠让出并发额度的执行器（base 常驻 + 有界替补）。"""
 
-    def __init__(self, max_workers: int, thread_name_prefix: str = "lease"):
+    def __init__(self, max_workers: int, thread_name_prefix: str = "lease",
+                 shutdown_timeout: float = DEFAULT_SHUTDOWN_TIMEOUT_SECONDS):
         self._base = max(1, int(max_workers))
         self._parked = 0
         self._active = 0
@@ -35,6 +43,7 @@ class LeaseThreadPool:
         self._shutdown = False
         self._threads: list = []
         self._name_prefix = thread_name_prefix
+        self._shutdown_timeout = max(0.0, float(shutdown_timeout))
         for _ in range(self._base):
             self._spawn_locked()
 
@@ -56,19 +65,55 @@ class LeaseThreadPool:
             self._cond.notify_all()
         return future
 
-    def shutdown(self, wait: bool = True):
-        """停止接收新任务；wait=True 时等待排队与运行中的任务完成。"""
+    def shutdown(self, wait: bool = True, *, cancel_futures: bool = False,
+                 timeout: float | None = None) -> dict:
+        """停止接收新任务，并在有限时间内等待工作线程退出。
+
+        语义：
+        1. 置停止标志并唤醒全部工作线程（此后 submit 一律拒绝）；
+        2. ``cancel_futures=True`` 时丢弃尚未开始的任务并取消其 Future
+           （对齐 ThreadPoolExecutor.shutdown 的同名语义——运行中的任务
+           不受影响）；
+        3. ``wait=True`` 时最多等待 ``timeout`` 秒（None 用模块默认），
+           到期后放弃等待并返回可诊断状态，**永不无限阻塞**调用方的
+           退出流程（工作线程均为 daemon，进程可以照常退出）。
+
+        返回 ``{"timed_out": bool, "alive_threads": [线程名],
+        "queued": 仍排队数}``；``timed_out=True`` 时记录 warning 日志。
+        """
         with self._cond:
             self._shutdown = True
+            if cancel_futures:
+                while self._queue:
+                    future, *_rest = self._queue.popleft()
+                    future.cancel()
             self._cond.notify_all()
-        if wait:
-            while True:
-                with self._cond:
-                    threads = list(self._threads)
-                if not any(thread.is_alive() for thread in threads):
-                    break
-                for thread in threads:
-                    thread.join()
+        if not wait:
+            with self._cond:
+                return {"timed_out": False, "alive_threads": [],
+                        "queued": len(self._queue)}
+
+        effective_timeout = (self._shutdown_timeout
+                             if timeout is None else max(0.0, float(timeout)))
+        deadline = time.monotonic() + effective_timeout
+        while True:
+            with self._cond:
+                threads = list(self._threads)
+                queued = len(self._queue)
+            alive = [thread for thread in threads if thread.is_alive()]
+            if not alive:
+                return {"timed_out": False, "alive_threads": [], "queued": queued}
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                names = [thread.name for thread in alive]
+                logger.warning(
+                    "LeaseThreadPool 关闭等待超时（%.1fs）：卡住线程 %s，"
+                    "仍有 %d 个任务排队", effective_timeout, names, queued,
+                )
+                return {"timed_out": True, "alive_threads": names,
+                        "queued": queued}
+            # 分片 join：让其它线程先退出，也保证整体不超过 deadline
+            alive[0].join(timeout=min(0.1, remaining))
 
     # ------------------------------------------------------------
     # 停靠
