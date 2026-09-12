@@ -508,9 +508,17 @@ class ModelManager:
         return None
     
     def set_routing(self, task_type: AITaskType, model_ids: list[str]):
-        """设置路由策略"""
+        """设置路由策略。
+
+        ``model_ids`` 必须是非空字符串列表（校验历史缺失）；存储时做
+        防御性拷贝——调用方继续持有的列表与本配置互不共享。
+        """
+        if not isinstance(model_ids, list) or not model_ids:
+            raise ValueError("model_ids 必须是非空列表")
+        if not all(isinstance(mid, str) and mid.strip() for mid in model_ids):
+            raise ValueError("model_ids 必须全部为非空字符串")
         previous = self._routing.get(task_type.value)
-        self._routing[task_type.value] = model_ids
+        self._routing[task_type.value] = list(model_ids)
         try:
             self._save_config()
         except Exception:
@@ -519,18 +527,21 @@ class ModelManager:
             else:
                 self._routing[task_type.value] = previous
             raise
-    
+
     def get_routing(self, task_type) -> list[str]:
-        """获取路由策略"""
+        """获取路由策略（防御性副本）。
+
+        历史 bug：直接返回 ``self._routing``/``DEFAULT_ROUTING`` 的活
+        引用——任何调用方为单次请求做重排/剔除，都会永久改写全局默认
+        路由并污染后续请求。现在每次返回副本；canonical 路由只在
+        ``set_routing`` 中改变。
+        """
         if isinstance(task_type, str):
             task_type = AITaskType(task_type)
-        # 先查自定义路由
         if task_type.value in self._routing:
-            return self._routing[task_type.value]
-        # 再查默认路由
+            return list(self._routing[task_type.value])
         if task_type in DEFAULT_ROUTING:
-            return DEFAULT_ROUTING[task_type]
-        # 返回所有可用模型
+            return list(DEFAULT_ROUTING[task_type])
         return [m.id for m in self.list_available_models()]
     
     def test_model(self, model_id: str) -> tuple[bool, str]:

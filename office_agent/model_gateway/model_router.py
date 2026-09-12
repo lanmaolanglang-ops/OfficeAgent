@@ -2,6 +2,7 @@
 Model Router - 智能路由器
 根据任务类型和模型能力选择最合适的模型
 """
+import re
 from typing import Any, Optional
 
 from office_agent.api.routing import PPT_STRONG, WORD_STRONG
@@ -19,8 +20,18 @@ VISION_KEYWORDS = ("图片", "照片", "截图", "模板分析", "视觉", "看�
                    "image", "picture", "photo", "ppt模板", "设计风格")
 CODE_KEYWORDS = ("代码", "脚本", "python", "函数", "编程", "开发",
                  "code", "script", "programming", "写个工具")
-FORMULA_KEYWORDS = ("公式", "函数", "vlookup", "sum", "计算",
-                    "增长率", "占比", "求和", "平均", "excel公式")
+# 公式路由的词表：中文词保持子串匹配（公式/求和/增长率/占比歧义小），
+# ASCII 词必须词边界+公式调用语法（"SUM("）匹配——裸子串会把
+# "summary"/"assume"（含 sum）、"总结报告"（含 计算/平均 的泛化词）
+# 全部误路由到 FORMULA_GENERATION；Excel 语境用 "excel函数" 表达。
+FORMULA_KEYWORDS = ("公式", "vlookup", "求和", "增长率", "占比")
+FORMULA_PATTERN = re.compile(
+    r"公式|excel\s*函数|vlookup|\bsum\s*\(|求和|增长率|占比",
+    re.IGNORECASE,
+)
+# Excel 专属公式信号：先于通用代码词（"函数"）判定，
+# "帮我写 excel 函数" 不是编程任务。
+EXCEL_FORMULA_PATTERN = re.compile(r"excel\s*函数|vlookup", re.IGNORECASE)
 DOCUMENT_KEYWORDS = tuple(dict.fromkeys(WORD_STRONG + (
     "分析结构", "理解文档", "长文档", "总结报告", "文档结构", "章节", "大纲",
 )))
@@ -168,12 +179,14 @@ class ModelRouter:
         if any(kw in text for kw in VISION_KEYWORDS):
             return AITaskType.VISION
 
-        # 代码生成
+        # 代码生成（Excel 专属公式信号先于通用"函数"词判定）
+        if EXCEL_FORMULA_PATTERN.search(text):
+            return AITaskType.FORMULA_GENERATION
         if any(kw in text for kw in CODE_KEYWORDS):
             return AITaskType.CODE_GENERATION
 
         # Excel 公式
-        if any(kw in text for kw in FORMULA_KEYWORDS):
+        if FORMULA_PATTERN.search(text):
             return AITaskType.FORMULA_GENERATION
 
         # 文档理解（长文档/论文分析）

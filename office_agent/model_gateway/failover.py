@@ -1,8 +1,18 @@
 """
 Failover Manager - 故障转移管理器
 当模型调用失败时，自动切换到备用模型
+
+术语约定（本项目 canonical 语义）：
+- retry：同一模型目标上的再次尝试（受 max_retries 约束）；
+- failover：当前模型失败后切换到候选列表中的下一个模型；
+- fallback：候选耗尽后落到非首选模型的最终选择；
+  （``fallback_used`` 元数据标记"最终成功的不是首选模型"）
+- 冷却（cooldown）：连续失败的模型在时间窗口内被移出候选。
+错误分类：结构化 HTTP 状态码优先（5xx/429/408/425/409 可重试，
+4xx 确定性失败不重试），其余按文本标记归一。
 """
 import logging
+import re
 import time
 from typing import Optional, Callable, Any
 
@@ -10,6 +20,9 @@ from ..models.model_schemas import ModelResponse, AITaskType
 from .model_manager import ModelManager
 
 logger = logging.getLogger(__name__)
+
+# 提取错误文本中的 HTTP 状态码（客户端统一格式："HTTP {code}: {reason}"）
+_HTTP_STATUS_RE = re.compile(r"\bHTTP\s+(\d{3})\b", re.IGNORECASE)
 
 
 class FailoverManager:
@@ -260,17 +273,29 @@ class FailoverManager:
 
     @staticmethod
     def _is_retryable_error(error: str) -> bool:
-        """仅对可能自行恢复的网络、限流和服务端错误重试。"""
+        """仅对可能自行恢复的网络、限流和服务端错误重试。
+
+        结构化 HTTP 状态码优先于文本标记：客户端统一产出
+        ``"HTTP {code}: …"``（clients/base.py），按码段分类——
+        5xx/429/408/409/425 可重试，4xx 确定性失败不重试——不再依赖
+        ``"http 5"`` 这类可能误伤的子串匹配。无状态码时按文本标记。
+        """
         text = (error or "").lower()
+        match = _HTTP_STATUS_RE.search(text)
+        if match is not None:
+            code = int(match.group(1))
+            if code == 429 or code in (408, 409, 425) or 500 <= code <= 599:
+                return True
+            if 400 <= code <= 499:
+                return False
+            # 1xx/2xx/3xx 出现在失败信息中不构成分类依据，继续文本判定
         permanent = (
-            "http 400", "http 401", "http 403", "http 404",
             "authentication", "api key", "invalid_request", "invalid api",
             "鉴权", "认证失败",
         )
         if any(marker in text for marker in permanent):
             return False
         transient = (
-            "http 408", "http 409", "http 425", "http 429", "http 5",
             "timeout", "timed out", "connection", "连接错误", "连接超时",
             "temporar", "rate limit", "限流", "服务繁忙",
         )
