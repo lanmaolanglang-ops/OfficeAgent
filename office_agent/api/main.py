@@ -293,6 +293,17 @@ def create_app() -> FastAPI:
         except Exception as e:
             logger.warning(f"启动恢复任务失败: {e}", exc_info=True)
 
+        # 收口永久删除中途留下的 deleting 记录：其物理内容仍占用磁盘，
+        # 而记录已对所有查询不可见，没有 GC 就会永久悬挂。
+        try:
+            from office_agent.storage.storage_service import reconcile_pending_deletions
+            outcome = reconcile_pending_deletions()
+            if outcome["scanned"]:
+                logger.info("启动恢复：已收口 %s 条 deleting 文件记录（失败 %s）",
+                            outcome["resolved"], outcome["failed"])
+        except Exception as e:
+            logger.warning(f"启动恢复 deleting 文件记录失败: {e}", exc_info=True)
+
         # 初始化配置系统
         try:
             from office_agent.database.session import SessionLocal

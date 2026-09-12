@@ -120,6 +120,9 @@ def process_word(input_path: str, output_path: str | None = None,
     """
     options = options or {}
     result: dict = {"status": "success", "output_files": [], "steps": []}
+    # ensure_docx_input 对文本类输入会新建临时 .docx（所有权归本任务），
+    # 所有退出路径都必须删掉它；用户原始 docx 是借用的，绝不能删。
+    converted_input: str | None = None
 
     try:
         if progress:
@@ -130,8 +133,12 @@ def process_word(input_path: str, output_path: str | None = None,
             raise FileNotFoundError(f"文件不存在: {input_path}")
 
         # 1.1 文本类输入（txt/md/pdf）统一转换为 docx，全仓唯一转换接缝
-        from ...services.input_conversion import ensure_docx_input
+        from ...services.input_conversion import (
+            ensure_docx_input, is_owned_temp_input,
+        )
         input_path = ensure_docx_input(input_path)
+        if is_owned_temp_input(input_path):
+            converted_input = input_path
 
         if not output_path:
             output_path = _safe_output()
@@ -216,6 +223,15 @@ def process_word(input_path: str, output_path: str | None = None,
         logger.error("Word任务 %s 失败: %s", _task_id, sanitize_error(e))
         result["status"] = "failed"
         result["error"] = sanitize_error(e)
+
+    finally:
+        # 成功/失败/取消都走到这里；清理自身失败不得掩盖主错误（只 warning）。
+        if converted_input:
+            try:
+                os.remove(converted_input)
+            except OSError as cleanup_error:
+                logger.warning("清理Word临时转换输入失败 %s: %s",
+                               converted_input, cleanup_error)
 
     if options.get("model_call"):
         result["model_call"] = options["model_call"]

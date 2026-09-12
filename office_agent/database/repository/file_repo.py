@@ -2,7 +2,7 @@
 import json
 from typing import Optional, List
 from datetime import datetime, timedelta
-from sqlalchemy import select, and_
+from sqlalchemy import select, and_, or_
 from sqlalchemy.orm import Session
 from ..time import utc_now
 
@@ -84,6 +84,28 @@ class FileRepository(BaseRepository[File]):
             "access_count": File.access_count + 1,
             "last_accessed_at": utc_now(),
         })
+
+    def get_deleting(self, older_than: Optional[datetime] = None,
+                     limit: int = 500) -> List[File]:
+        """取出仍停留在 deleting 中间态的记录。
+
+        ``delete(permanent=True)`` 先把记录置为 deleting 再删物理内容，
+        任一步失败（或进程在两步之间崩溃）记录就会永久停在 deleting。
+        本查询是 GC 的入口，只按状态筛选，不做任何副作用。
+
+        ``older_than`` 用来避让**正在并发进行**的删除：刚写下的 tombstone
+        updated_at 是当下时间，未超过冷却窗口的不应被 GC 抢走。
+        ``updated_at`` 为 NULL 的遗留行无法判定年龄，按"足够老"处理，
+        否则它们永远不会被收口。
+        """
+        stmt = select(File).where(File.status == "deleting")
+        if older_than is not None:
+            stmt = stmt.where(
+                or_(File.updated_at.is_(None), File.updated_at <= older_than)
+            )
+        return list(self.session.execute(
+            stmt.order_by(File.updated_at).limit(limit)
+        ).scalars().all())
 
     def get_expired_temp_files(self, hours: int = 24) -> List[File]:
         """获取过期的临时文件"""

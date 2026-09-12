@@ -17,7 +17,7 @@ import json
 import logging
 import threading
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional, BinaryIO, Tuple, List, Dict, Iterator
 
 from .storage_backend import StorageBackend
@@ -34,6 +34,16 @@ from .path_generator import (
 from ..runtime_config import get_data_root
 
 logger = logging.getLogger("office_agent.storage")
+
+# 永久删除的 tombstone 冷却窗口（秒）。
+#
+# delete(permanent=True) 分两步：先把记录置为 deleting 并提交，再删物理内容。
+# 这两个步骤之间不存在锁，因此 GC 必须避让**正在并发进行**的删除：刚写下的
+# tombstone updated_at 就是当下时间，短于本窗口的视为"进行中"，不抢。
+# 这里刻意不引入 lease / 后台调度器：updated_at + 冷却窗口已能覆盖单机与
+# 多 worker 场景，且不需要新状态。
+DELETING_GRACE_SECONDS = 300.0
+
 
 class StorageConfig:
     """存储配置"""
@@ -1131,6 +1141,67 @@ class StorageService:
 
     # ===== 生命周期管理 =====
 
+    def cleanup_deleting(self, min_age_seconds: float | None = None,
+                         limit: int = 500) -> dict:
+        """收口停留在 deleting 中间态的记录（永久删除的 GC）。
+
+        delete(permanent=True) 先写 tombstone 再删物理内容，两步之间失败或
+        进程崩溃都会让记录永久停在 deleting：既不再对业务可见（所有查询都
+        notin_(deleted, deleting)），又持续占着数据库行与磁盘内容。
+
+        语义：
+        - 只处理 status == "deleting"；ready/soft-deleted 的记录绝不触碰。
+        - 物理内容还在 → 重试删除（backend.delete 对"已不存在"幂等）。
+        - 物理内容已不存在 → 直接完成 DB 收口（删版本行 + 删主记录）。
+        - 单条失败回滚并继续下一条，不阻断整批；失败记录保持 deleting 可重试。
+        - 幂等：重复运行第二次扫到 0 条。
+        """
+        from ..database.time import utc_now
+
+        if min_age_seconds is None:
+            min_age_seconds = DELETING_GRACE_SECONDS
+        try:
+            min_age_seconds = max(0.0, float(min_age_seconds))
+        except (TypeError, ValueError):
+            min_age_seconds = DELETING_GRACE_SECONDS
+        cutoff = utc_now() - timedelta(seconds=min_age_seconds)
+
+        session = self._get_session()
+        result = {"scanned": 0, "resolved": 0, "failed": 0, "freed_bytes": 0}
+        try:
+            from ..database.repository import FileRepository, FileVersionRepository
+            repo = FileRepository(session)
+            vrepo = FileVersionRepository(session)
+            records = repo.get_deleting(older_than=cutoff, limit=limit)
+            result["scanned"] = len(records)
+
+            for record in records:
+                record_id = record.id
+                size = int(record.file_size or 0)
+                try:
+                    versions = vrepo.get_by_file(record_id)
+                    paths = {record.storage_path, *(v.storage_path for v in versions)}
+                    for path in sorted(p for p in paths if p and self.backend.exists(p)):
+                        self.backend.delete(path)
+                    # 物理内容已清空（或本就不存在）→ 完成永久删除的 DB 收口。
+                    # FileVersion 没有 delete-orphan cascade，必须显式删除。
+                    for version in versions:
+                        session.delete(version)
+                    session.delete(record)
+                    session.commit()
+                    result["resolved"] += 1
+                    result["freed_bytes"] += size
+                    logger.info("GC 收口 deleting 记录 %s（回收 %s 字节）", record_id, size)
+                except Exception as e:
+                    session.rollback()
+                    result["failed"] += 1
+                    # 保持 deleting：记录仍处于"可安全重试"状态，不假装修复成功
+                    logger.warning("GC 处理 deleting 记录 %s 失败，保持可重试: %s",
+                                   record_id, e)
+            return result
+        finally:
+            session.close()
+
     def cleanup_temp_files(self, hours: int | None = None) -> dict:
         """清理过期临时文件"""
         if not hours or hours <= 0:
@@ -1221,3 +1292,8 @@ def get_storage_service() -> StorageService:
     if _storage_service is None:
         _storage_service = StorageService()
     return _storage_service
+
+
+def reconcile_pending_deletions(**kwargs) -> dict:
+    """对全局单例执行一次 deleting GC（启动期收口入口，供 startup 调用）。"""
+    return get_storage_service().cleanup_deleting(**kwargs)

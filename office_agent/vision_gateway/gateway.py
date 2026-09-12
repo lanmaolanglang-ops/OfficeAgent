@@ -59,6 +59,34 @@ class VisionGateway:
         self.default_model = default_model
         self.renderer = DocumentRenderer(dpi=dpi, output_dir=output_dir)
         self._renderer_lock = threading.RLock()
+        self._closed = False
+
+    # === 生命周期 ===
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    def close(self):
+        """释放渲染器自建的临时目录。
+
+        gateway 是长生命周期对象，持有唯一的 DocumentRenderer；渲染器在
+        ``output_dir`` 缺省时会自建临时根目录（每页 PNG 都落在其中）。此前
+        没有任何出口调用 ``renderer.close()``，于是每个 gateway 实例都会在
+        系统临时目录留下一个永久残留的 ``vision_*`` 根目录。
+
+        幂等：重复调用安全；关闭后渲染会受控失败而不是静默写坏目录。
+        """
+        if self._closed:
+            return
+        self._closed = True
+        self.renderer.close()
+
+    def __enter__(self) -> "VisionGateway":
+        return self
+
+    def __exit__(self, _exc_type, _exc, _tb):
+        self.close()
 
     # === 模型管理 ===
 

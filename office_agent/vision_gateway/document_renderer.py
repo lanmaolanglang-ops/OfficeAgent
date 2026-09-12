@@ -70,13 +70,30 @@ class DocumentRenderer:
         self.last_total_pages = 0
         self._owns_output_dir = output_dir is None
         self.output_dir = output_dir or tempfile.mkdtemp(prefix="vision_")
+        self._closed = False
         os.makedirs(self.output_dir, exist_ok=True)
 
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
     def close(self):
-        """清理由渲染器自行创建的临时目录。"""
+        """清理由渲染器自行创建的临时目录。
+
+        幂等：重复调用不会重复删除，也不会把调用方的目录（调用时传入
+        ``output_dir`` 的借用场景）当成自己的清理掉。关闭后渲染器不再
+        可用，调用方不应继续 render。
+        """
+        if self._closed:
+            return
+        self._closed = True
         if self._owns_output_dir and self.output_dir:
             shutil.rmtree(self.output_dir, ignore_errors=True)
-            self.output_dir = ""
+        self.output_dir = ""
+
+    def _ensure_open(self):
+        if self._closed:
+            raise RuntimeError("文档渲染器已关闭，无法继续渲染")
 
     def __enter__(self):
         return self
@@ -94,6 +111,7 @@ class DocumentRenderer:
         Returns:
             DocumentPage 列表
         """
+        self._ensure_open()
         ext = Path(file_path).suffix.lower()
 
         if ext in self.IMAGE_EXTENSIONS:
@@ -301,6 +319,7 @@ class DocumentRenderer:
 
     def render_images_from_bytes(self, data: bytes, filename: str = "") -> List[DocumentPage]:
         """从字节数据渲染"""
+        self._ensure_open()
         ext = Path(filename).suffix.lower() if filename else ".png"
         tmp_path = os.path.join(self.output_dir, f"input-{uuid.uuid4().hex}{ext}")
         with open(tmp_path, "wb") as f:
