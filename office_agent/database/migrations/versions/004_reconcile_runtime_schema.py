@@ -117,6 +117,17 @@ def upgrade() -> None:
             "UPDATE execution_log SET output_summary = output_text "
             "WHERE output_summary IS NULL"
         ))
+
+    # start_time 对 001 时代的行全为 NULL，必须先回填再收紧 NOT NULL，
+    # 否则 SQLite batch 重建表时旧行直接违反约束。回填来源是该行自己的
+    # 时间戳：created_at 是日志行创建时刻（最接近"执行开始"的既有事实），
+    # updated_at 兜底；两者皆无才落到迁移时刻，不伪造随机值。
+    op.execute(sa.text(
+        "UPDATE execution_log SET start_time = "
+        "COALESCE(created_at, updated_at, CURRENT_TIMESTAMP) "
+        "WHERE start_time IS NULL"
+    ))
+
     with op.batch_alter_table("execution_log") as batch_op:
         batch_op.alter_column("duration_ms", existing_type=sa.Integer(), nullable=False)
         batch_op.alter_column("start_time", existing_type=sa.DateTime(), nullable=False)

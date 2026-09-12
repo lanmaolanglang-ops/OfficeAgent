@@ -28,8 +28,11 @@ def upgrade() -> None:
             "parent_task_id" in item.get("constrained_columns", [])
             for item in foreign_keys
         ):
+            # 与 ORM 契约一致（models/task.py: ondelete="SET NULL"）：
+            # 删除父任务时子任务的 parent_task_id 置空而不是阻止删除。
             batch_op.create_foreign_key(
-                "fk_task_parent_task_id", "task", ["parent_task_id"], ["id"]
+                "fk_task_parent_task_id", "task", ["parent_task_id"], ["id"],
+                ondelete="SET NULL",
             )
 
 def downgrade() -> None:
