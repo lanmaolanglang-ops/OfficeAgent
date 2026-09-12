@@ -165,29 +165,57 @@ class TestMemoryMirrorConcurrency:
             "并发 append 不得丢事件"
 
     def test_flush_and_append_concurrently(self, factory):
+        """flush 与 append 并发：flush 的契约是"排空在途事件、超时返回 False"，
+        而非"生产者持续写入时也必然返回 True"。
+
+        原断言 ``audit.flush(2.0) is True`` 隐含了"写线程吞吐恒大于生产
+        速率"这一机器相关假设：``batch_window=0.0`` 会把写线程退化为逐条
+        commit + fsync（本机实测约 20.6ms/条 ≈ 48 条/秒），而生产线程约
+        100 条/秒，队列必然积压、``unfinished_tasks`` 不归零，flush 只能
+        超时返回 False。生产契约本身正确：``main.py`` 仅在关闭收尾、生产
+        者已停止后调用 ``flush``，并对 False 记录告警；失败来自测试假定了
+        未定义顺序。这里改为按真实契约做确定性同步——用 ``threading.Event``
+        作为显式完成信号，不使用 sleep 轮询、不放宽 timeout、不做 retry。
+        """
         audit = AuditLogger(session_factory=factory, batch_window=0.0,
                             queue_maxsize=100000)
         stop = threading.Event()
+        appended = threading.Event()
+        produced = [0]
 
         def appender():
             index = 0
             while not stop.is_set():
                 audit.log("model_call", status="success", user_id=f"u{index}")
                 index += 1
-                time.sleep(0.01)
+                produced[0] += 1
+                appended.set()          # 显式信号：已发生并发 append
+                stop.wait(0.01)         # 可被 stop 立即唤醒的节流
 
         writer = threading.Thread(target=appender, daemon=True)
         writer.start()
         try:
-            for _ in range(20):
-                assert audit.flush(2.0) is True, \
-                    "flush 与 append 并发不得永久阻塞"
+            assert appended.wait(5.0), "appender 未产生并发写入"
+            # 并发 append 下 flush 不得永久阻塞：必须在有界时间内返回，
+            # 返回值可为 True（已排空）或 False（超时仍有在途事件）。
+            for _ in range(10):
+                started = time.monotonic()
+                drained = audit.flush(0.25)
+                elapsed = time.monotonic() - started
+                assert isinstance(drained, bool)
+                assert elapsed < 5.0, "flush 与 append 并发不得永久阻塞"
+                if drained:
+                    assert audit._queue.unfinished_tasks == 0, \
+                        "flush 返回 True 时队列必须已排空"
         finally:
             stop.set()
             writer.join(timeout=5)
+        # 生产者停止后，flush 必须排空队列（关闭/收尾的真实语义）。
+        assert audit.flush(30.0) is True, "生产者停止后 flush 必须排空队列"
         audit.close(5.0)
-        assert audit.flush(5.0) is True
-        assert len(_db_rows(factory)) > 0
+        rows = _db_rows(factory)
+        assert len(rows) == produced[0], \
+            f"并发期间不得丢事件（produced={produced[0]} rows={len(rows)}）"
 
 
 def _no_db_factory():

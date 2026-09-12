@@ -6,12 +6,12 @@ from sqlalchemy import select, and_, func
 from sqlalchemy.orm import Session
 
 from .base import BaseRepository
+from ..models.execution import ExecutionLog, ModelCallLog, ErrorLog
 
 # 失败口径的单一权威集合：ExecutionLog 的失败终态除 "error" 外还有
 # "failed"/"cancelled"（worker/任务层写入），查询统计必须按集合匹配，
 # 不能只认字面 "error"（与 ModelCallLog 的 != success 口径对齐）。
 FAILED_EXECUTION_STATUSES = ("error", "failed", "cancelled")
-from ..models.execution import ExecutionLog, ModelCallLog, ErrorLog
 
 
 class ExecutionLogRepository(BaseRepository[ExecutionLog]):
