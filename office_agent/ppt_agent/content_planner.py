@@ -137,6 +137,13 @@ class ContentPlanner:
 
         优先使用 LLM 生成真实内容；LLM 不可用时回退到模板。
         """
+        # 0. 标量净化：上游（Agent 指令解析 / API 请求）可能传来 list/dict/None，
+        #    统一走既有 _scalar_text，避免非字符串进入 PPTOutline 后被渲染成
+        #    Python repr（如 "['a', 'b']"）写进成品。
+        theme = self._scalar_text(theme)
+        subtitle = self._scalar_text(subtitle)
+        author = self._scalar_text(author)
+
         # 1. 清理标题：从用户指令中提取真正的主题
         clean_title = self._extract_title(theme)
 
@@ -179,6 +186,9 @@ class ContentPlanner:
         - 普通段落 → 要点
         - - 或 • → 列表项
         """
+        # 标量净化：文本与标题可能来自不可信输入，非字符串不进入大纲
+        text = self._scalar_text(text)
+        title = self._scalar_text(title)
         outline = PPTOutline(
             title=title or "演示文稿",
             theme=style,
@@ -337,8 +347,13 @@ class ContentPlanner:
                             bullets.append(child.text.strip())
 
                     if not bullets:
-                        # 从原文找
-                        bullets = [f"{section.text}相关内容"]
+                        # 文档里确实没有可提取的正文时，不伪造「XX相关内容」
+                        # 这类占位文本冒充用户内容；保留空要点页，由预检
+                        # 以结构化提示（内容较少）呈现，属受控缺失状态。
+                        logger.warning(
+                            "章节 %r 未提取到正文，保留空内容页（不生成占位文本）",
+                            section.text,
+                        )
 
                     outline.add_slide(SlideContent(
                         layout="content",
@@ -351,7 +366,10 @@ class ContentPlanner:
                 bullets = [p.text.strip()[:80] for p in paragraphs
                            if p.text and len(p.text.strip()) > 10][:5]
                 if not bullets:
-                    bullets = [f"{chapter.text}相关内容"]
+                    logger.warning(
+                        "章节 %r 未提取到正文，保留空内容页（不生成占位文本）",
+                        chapter.text,
+                    )
                 outline.add_slide(SlideContent(
                     layout="content",
                     title=chapter.text,
@@ -370,31 +388,35 @@ class ContentPlanner:
 
         slides_data: [{"layout": "content", "title": "...", "bullets": [...]}]
         """
+        title = self._scalar_text(title)
         outline = PPTOutline(title=title, theme=style)
 
         for data in slides_data:
+            if not isinstance(data, dict):
+                logger.warning("跳过非字典的大纲项: %r", type(data).__name__)
+                continue
             slide = SlideContent(
                 layout=data.get("layout", "content"),
-                title=data.get("title", ""),
-                subtitle=data.get("subtitle", ""),
-                bullets=data.get("bullets", []),
-                body_text=data.get("body_text", ""),
-                left_content=data.get("left_content", []),
-                right_content=data.get("right_content", []),
-                image_path=data.get("image_path", ""),
-                image_alt=data.get("image_alt", ""),
-                image_prompt=data.get("image_prompt", ""),
+                title=self._scalar_text(data.get("title")),
+                subtitle=self._scalar_text(data.get("subtitle")),
+                bullets=self._normalize_str_list(data.get("bullets")),
+                body_text=self._scalar_text(data.get("body_text")),
+                left_content=self._normalize_str_list(data.get("left_content")),
+                right_content=self._normalize_str_list(data.get("right_content")),
+                image_path=self._scalar_text(data.get("image_path")),
+                image_alt=self._scalar_text(data.get("image_alt")),
+                image_prompt=self._scalar_text(data.get("image_prompt")),
                 data=data.get("data", []),
-                table_data=data.get("table_data", []),
+                table_data=self._normalize_table(data.get("table_data")),
                 table_header=data.get("table_header", True),
-                chart_type=data.get("chart_type", "bar"),
-                chart_title=data.get("chart_title", ""),
-                chart_categories=data.get("chart_categories", []),
+                chart_type=self._scalar_text(data.get("chart_type")) or "bar",
+                chart_title=self._scalar_text(data.get("chart_title")),
+                chart_categories=self._normalize_str_list(data.get("chart_categories")),
                 chart_series=data.get("chart_series", []),
-                quote_text=data.get("quote_text", ""),
-                quote_source=data.get("quote_source", ""),
+                quote_text=self._scalar_text(data.get("quote_text")),
+                quote_source=self._scalar_text(data.get("quote_source")),
                 timeline_items=data.get("timeline_items", []),
-                notes=data.get("notes", ""),
+                notes=self._scalar_text(data.get("notes")),
             )
             outline.add_slide(slide)
 
@@ -695,7 +717,8 @@ class ContentPlanner:
             return self._generate_from_template(title, 10, style, "", "")
 
         if outline.slides[0].layout != "cover":
-            cover = SlideContent(layout="cover", title=title, subtitle=data.get("subtitle", ""))
+            cover = SlideContent(layout="cover", title=title,
+                                 subtitle=self._scalar_text(data.get("subtitle")))
             outline.slides.insert(0, cover)
 
         has_summary = any(s.layout == "summary" for s in outline.slides)
@@ -712,6 +735,9 @@ class ContentPlanner:
     def _generate_from_template(self, theme: str, slide_count: int,
                                  style: str, subtitle: str, author: str) -> PPTOutline:
         """模板回退方案（原逻辑）"""
+        theme = self._scalar_text(theme)
+        subtitle = self._scalar_text(subtitle)
+        author = self._scalar_text(author)
         template = self._match_template(theme)
 
         outline = PPTOutline(

@@ -25,6 +25,7 @@ from .embeddings import (
     EmbeddingError,
     EmbeddingBackendUnavailableError,
     InvalidEmbeddingVectorError,
+    EmbeddingProviderResponseError,
     create_semantic_embedder,
     cosine_similarity,
     batch_cosine_similarity,
@@ -44,7 +45,8 @@ __all__ = [
     "BaseEmbedder", "HashingEmbedder", "TfidfEmbedder", "KeywordEmbedder",
     "APIEmbedder", "LocalSemanticEmbedder",
     "EmbeddingError", "EmbeddingBackendUnavailableError",
-    "InvalidEmbeddingVectorError", "create_semantic_embedder",
+    "InvalidEmbeddingVectorError", "EmbeddingProviderResponseError",
+    "create_semantic_embedder",
     "cosine_similarity", "batch_cosine_similarity",
     # Store
     "VectorStore",

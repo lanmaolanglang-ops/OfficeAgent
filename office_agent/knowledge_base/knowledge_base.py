@@ -479,9 +479,19 @@ class OfficeKnowledgeBase:
             except Exception as exc:
                 logger.warning("加载知识文档文件失败 %s: %s", docs_path, exc)
 
-        # 重建 incremental lexical index。chunks.json 是 source of truth，
-        # 这里只做一次可靠的启动重建，不依赖进程内隐藏状态。
-        self.store.rebuild_index()
+        # 重建索引。chunks.json 是 source of truth，这里只做一次可靠的启动恢复，
+        # 不依赖进程内隐藏状态。**但不能无条件走 TF-IDF 路径**：
+        # rebuild_index() 内部调用 self._tfidf()，对非 TfidfEmbedder 会直接 raise，
+        # 导致"用户配置了远端/稠密 embedding 时知识库加载即失败"。
+        if self.store._is_incremental():
+            self.store.rebuild_index()
+        elif self.store._chunks:
+            # 稠密/远端 embedding：持久向量已随 chunk 载入（见上面的 emb），
+            # 只需重建 id -> chunk 映射；不偷偷替换用户配置的 embedding backend。
+            self.store._chunk_by_id = {
+                stored.chunk.id: stored for stored in self.store._chunks
+            }
+            self.store._fitted = True
 
     def info(self) -> str:
         """知识库信息"""

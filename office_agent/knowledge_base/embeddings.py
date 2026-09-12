@@ -25,6 +25,16 @@ class InvalidEmbeddingVectorError(EmbeddingError):
     """An embedding vector is empty, non-finite, or has the wrong dimension."""
 
 
+class EmbeddingProviderResponseError(EmbeddingError):
+    """The provider response cannot satisfy the request.
+
+    Raised when a non-empty batch comes back with an empty ``data`` list, a
+    malformed item, or a vector count that does not match the input count.
+    Silently returning ``[]`` here would let callers believe an embedding
+    succeeded while no vector exists downstream.
+    """
+
+
 class BaseEmbedder(ABC):
     """Embedding 基类"""
 
@@ -309,10 +319,17 @@ class APIEmbedder(BaseEmbedder):
     外部 API Embedding（OpenAI/豆包等兼容接口）
 
     使用 urllib，不依赖 requests。
+
+    请求按 ``batch_size`` 分批发送，避免一次性把上千条文本交给 provider
+    （见 ``DEFAULT_BATCH_SIZE`` 与 ``OFFICE_AGENT_EMBEDDING_BATCH_SIZE``）。
     """
 
+    #: provider 一次请求可安全承载的文本条数上限（可被构造参数/环境变量覆盖）
+    DEFAULT_BATCH_SIZE = 64
+
     def __init__(self, api_key: str, base_url: str = "https://api.openai.com/v1",
-                 model: str = "text-embedding-3-small", dimension: int = 1536):
+                 model: str = "text-embedding-3-small", dimension: int = 1536,
+                 batch_size: Optional[int] = None):
         if not api_key:
             raise EmbeddingBackendUnavailableError(
                 "API embedding backend requires an API key",
@@ -321,8 +338,38 @@ class APIEmbedder(BaseEmbedder):
         self.base_url = base_url.rstrip("/")
         self.model = model
         self._dimension = dimension
+        self.batch_size = self._resolve_batch_size(batch_size)
+
+    @classmethod
+    def _resolve_batch_size(cls, value) -> int:
+        """解析批次大小：显式参数 > 环境变量 > 默认值；非法值回落默认。"""
+        if value is None:
+            raw = os.environ.get("OFFICE_AGENT_EMBEDDING_BATCH_SIZE")
+            if raw is not None:
+                try:
+                    value = int(raw)
+                except (TypeError, ValueError):
+                    value = None
+        try:
+            size = int(value) if value is not None else cls.DEFAULT_BATCH_SIZE
+        except (TypeError, ValueError):
+            size = cls.DEFAULT_BATCH_SIZE
+        return max(1, size)
 
     def embed(self, texts: List[str]) -> List[List[float]]:
+        if not texts:
+            # 合法空输入：没有文本就没有向量，这与 provider 返回空结果不同。
+            return []
+
+        vectors: List[List[float]] = []
+        for start in range(0, len(texts), self.batch_size):
+            batch = texts[start:start + self.batch_size]
+            # 任一批失败即抛出，不返回部分结果（fail-closed），
+            # 下游不会拿到"条数与输入不一致"的向量列表。
+            vectors.extend(self._embed_batch(batch))
+        return vectors
+
+    def _embed_batch(self, texts: List[str]) -> List[List[float]]:
         import json
         import urllib.request
 
@@ -340,7 +387,26 @@ class APIEmbedder(BaseEmbedder):
         with urllib.request.urlopen(req, timeout=30) as resp:
             data = json.loads(resp.read().decode("utf-8"))
 
-        result = [item["embedding"] for item in data["data"]]
+        items = data.get("data")
+        if not isinstance(items, list):
+            raise EmbeddingProviderResponseError(
+                "embedding provider response is missing the 'data' list",
+            )
+
+        result: List[List[float]] = []
+        for item in items:
+            if not isinstance(item, dict) or "embedding" not in item:
+                raise EmbeddingProviderResponseError(
+                    "embedding provider item is missing the 'embedding' field",
+                )
+            result.append(item["embedding"])
+
+        if len(result) != len(texts):
+            raise EmbeddingProviderResponseError(
+                f"embedding provider returned {len(result)} vectors "
+                f"for {len(texts)} inputs",
+            )
+
         if result:
             self._dimension = len(result[0])
         for vector in result:

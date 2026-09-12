@@ -178,6 +178,13 @@ class VectorStore:
             texts = [chunk.content for chunk in chunks]
             embeddings = self.embedder.embed(texts)
             for chunk, embedding in zip(chunks, embeddings):
+                existing = self._chunk_by_id.get(chunk.id)
+                if existing is not None:
+                    # 与增量路径同一去重语义：同 id 覆盖写，不留重复项，
+                    # 并丢弃该 id 的过期关键词缓存。
+                    if existing in self._chunks:
+                        self._chunks.remove(existing)
+                    self._keyword_cache.pop(chunk.id, None)
                 stored = StoredChunk(chunk=chunk, embedding=embedding)
                 self._chunks.append(stored)
                 self._chunk_by_id[chunk.id] = stored
@@ -436,19 +443,28 @@ class VectorStore:
 
             for raw_chunk in data.get("chunks", []):
                 chunk_data = dict(raw_chunk)
-                chunk_data.pop("embedding", None)
+                raw_embedding = chunk_data.pop("embedding", [])
                 chunk = KnowledgeChunk(**{
                     key: value for key, value in chunk_data.items()
                     if key in KnowledgeChunk.__dataclass_fields__
                 })
-                stored = StoredChunk(
-                    chunk=chunk,
-                    embedding=self._new_embedding() if self._is_incremental() else [],
-                )
+                if self._is_incremental():
+                    embedding = self._new_embedding()
+                else:
+                    # 稠密/远端 embedding：复用持久化向量，不伪造零向量。
+                    embedding = list(raw_embedding) if raw_embedding else []
+                stored = StoredChunk(chunk=chunk, embedding=embedding)
                 self._chunks.append(stored)
                 self._chunk_by_id[chunk.id] = stored
                 self._cache_chunk_keywords(chunk)
 
             if self._is_incremental():
+                # TF-IDF：chunks 是 source of truth，重建 lexical inverted index。
                 self.rebuild_index()
+            else:
+                # 非 TF-IDF embedder 不支持增量 lexical 索引：向量已随 chunk
+                # 持久化，这里只重建 id 映射；绝不能调用只属于 TfidfEmbedder
+                # 的 _tfidf()（会直接 raise）。
+                self._chunk_by_id = {sc.chunk.id: sc for sc in self._chunks}
+                self._fitted = bool(self._chunks)
             return len(self._chunks)
