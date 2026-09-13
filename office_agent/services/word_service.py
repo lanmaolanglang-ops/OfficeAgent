@@ -684,12 +684,17 @@ class WordService:
                 tcPr.append(borders)
 
     def _set_cell_bottom_border(self, cell, size_pt: float):
-        """设置单元格底边框"""
+        """设置单元格底边框：先移除已有的 w:bottom，再写入新值，
+        避免在已有 tcBorders 上追加第二个 w:bottom 导致重复元素。"""
         tcPr = cell._tc.get_or_add_tcPr()
         tcBorders = tcPr.find(qn("w:tcBorders"))
         if tcBorders is None:
             tcBorders = OxmlElement("w:tcBorders")
             tcPr.append(tcBorders)
+
+        # 移除已有的 bottom，防止重复
+        for existing in tcBorders.findall(qn("w:bottom")):
+            tcBorders.remove(existing)
 
         sz = str(int(size_pt * 8))
         bottom = OxmlElement("w:bottom")

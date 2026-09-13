@@ -73,6 +73,27 @@ class TestThreeLineTableBorders:
             children = list(tbl_pr)
             assert children.index(borders[0]) < children.index(look)
 
+    def test_cell_bottom_border_dedup(self):
+        """P5-9：_set_cell_bottom_border 应先移除已有 w:bottom 再写入新值，
+        避免在已有 tcBorders 上追加第二个 w:bottom。"""
+        doc = Document()
+        table = doc.add_table(rows=1, cols=1)
+        cell = table.cell(0, 0)
+        tcPr = cell._tc.get_or_add_tcPr()
+        # 预先写入一个旧的 bottom
+        tcBorders = parse_xml(
+            '<w:tcBorders %s><w:bottom w:val="single" w:sz="4" '
+            'w:space="0" w:color="FF0000"/></w:tcBorders>' % nsdecls("w")
+        )
+        tcPr.append(tcBorders)
+
+        WordService()._set_cell_bottom_border(cell, 0.75)
+
+        bottoms = tcBorders.findall(qn("w:bottom"))
+        assert len(bottoms) == 1, f"应只剩 1 个 w:bottom，实际有 {len(bottoms)} 个"
+        assert bottoms[0].get(qn("w:sz")) == "6", "0.75pt × 8 = 6"
+        assert bottoms[0].get(qn("w:color")) == "000000"
+
 
 class TestWordContentPreservation:
     def test_heading_numbering_preserves_run_formatting(self):
