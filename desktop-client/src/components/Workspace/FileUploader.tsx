@@ -85,7 +85,9 @@ export default function FileUploader({ registerOpen }: FileUploaderProps) {
     let unlisten: (() => void) | null = null;
     let disposed = false;
     onTauriDragDrop(async (paths) => {
-      for (const path of paths.slice(0, 1)) {
+      // P5-17：此前只取 paths.slice(0, 1)，其余拖入文件被静默丢弃；
+      // 现与浏览器 drop 路径一致，逐个处理全部拖入文件。
+      for (const path of paths) {
         const data = await readLocalFile(path);
         if (data) {
           const name = path.split(/[\\/]/).pop() || 'file';
@@ -123,11 +125,11 @@ export default function FileUploader({ registerOpen }: FileUploaderProps) {
         aria-label="选择或拖放任务文件"
         className={`upload-zone ${dragOver ? 'upload-zone-active' : ''}`}
       >
-        <input ref={fileInputRef} type="file" accept=".docx,.pptx,.xlsx,.pdf,.txt,.md,.csv,.json,.xml,.html,.png,.jpg,.jpeg,.gif,.bmp,.webp,.svg" onClick={(e) => { e.currentTarget.value = ''; }} onChange={async (e) => { const file = e.target.files?.[0]; if (file) await handleUploadFile(file); }} className="hidden" />
+        <input ref={fileInputRef} type="file" multiple accept=".docx,.pptx,.xlsx,.pdf,.txt,.md,.csv,.json,.xml,.html,.png,.jpg,.jpeg,.gif,.bmp,.webp,.svg" onClick={(e) => { e.currentTarget.value = ''; }} onChange={async (e) => { const selected = Array.from(e.target.files ?? []); for (const file of selected) await handleUploadFile(file); }} className="hidden" />
         <div className="upload-icon"><UploadCloud className="w-5 h-5" /></div>
         <div className="min-w-0 text-left">
           <p className="text-sm font-semibold text-fg">拖放文件到这里，或点击上传</p>
-          <p className="text-xs text-fg-muted mt-1">每次附加 1 个主文件；支持 DOCX、XLSX、PPTX、PDF</p>
+          <p className="text-xs text-fg-muted mt-1">支持一次选择/拖入多个文件；支持 DOCX、XLSX、PPTX、PDF</p>
         </div>
       </div>
 

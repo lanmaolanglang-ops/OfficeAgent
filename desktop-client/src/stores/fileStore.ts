@@ -18,6 +18,31 @@ interface FileState {
   clearFiles: () => void;
 }
 
+/** 上传结果的稳定标识（后端 file_id 优先）。 */
+export function uploadedFileKey(file: UploadedFile): string {
+  return file.file_id || file.id || '';
+}
+
+/**
+ * 合并上传结果到已有列表：按 file_id 去重，重复上传覆盖旧条目而不是追加。
+ * （P5-5：修复前是 `[...state.files, ...uploaded]`，同一文件重复上传会累积出多条。）
+ */
+export function mergeUploadedFiles(
+  existing: UploadedFile[],
+  uploaded: UploadedFile[],
+): UploadedFile[] {
+  const byId = new Map<string, UploadedFile>();
+  for (const file of existing) {
+    const key = uploadedFileKey(file);
+    if (key) byId.set(key, file);
+  }
+  for (const file of uploaded) {
+    const key = uploadedFileKey(file);
+    if (key) byId.set(key, file);
+  }
+  return Array.from(byId.values());
+}
+
 export const useFileStore = create<FileState>((set) => ({
   files: [],
   attachedFileIds: [],
@@ -27,10 +52,24 @@ export const useFileStore = create<FileState>((set) => ({
 
   uploadFiles: async (fileList: File[], onProgress?: (p: number) => void, signal?: AbortSignal) => {
     set({ uploading: true, uploadProgress: 0 });
+    const total = fileList.length;
+    const progressByIndex = new Map<number, number>();
+    // 并发上传时每个文件独立记录进度并折算为整体进度，
+    // 避免"最后一个文件的回调覆盖其它文件"（P5-5）。
+    const reportProgress = (index: number, value: number) => {
+      progressByIndex.set(index, value);
+      if (total === 0) return;
+      let sum = 0;
+      for (let i = 0; i < total; i += 1) sum += progressByIndex.get(i) ?? 0;
+      const aggregate = Math.round(sum / total);
+      set({ uploadProgress: aggregate });
+      onProgress?.(aggregate);
+    };
     try {
-      const uploaded = await Promise.all(fileList.map((f) => apiUploadFile(f, onProgress, signal)));
+      const uploaded = await Promise.all(fileList.map((f, index) =>
+        apiUploadFile(f, (progress) => reportProgress(index, progress), signal)));
       set((state) => ({
-        files: [...state.files, ...uploaded],
+        files: mergeUploadedFiles(state.files, uploaded),
         uploading: false,
         uploadProgress: 100,
       }));
@@ -60,10 +99,15 @@ export const useFileStore = create<FileState>((set) => ({
     }
   },
 
+  // P5-5：attachFile 原本是 `[fileId]` 覆盖式单选，与"多文件上传"叠加时
+  // 只有最后一个会被附加（UI 显示多个 done 却只提交一个 file_id）。
+  // 现改为集合累加 + 去重；仍未上传成功的未知 id 不附加。
   attachFile: (fileId: string) => {
-    set((state) => state.files.some((file) => file.id === fileId || file.file_id === fileId)
-      ? { attachedFileIds: [fileId] }
-      : state);
+    set((state) => {
+      const known = state.files.some((file) => file.id === fileId || file.file_id === fileId);
+      if (!known || state.attachedFileIds.includes(fileId)) return state;
+      return { attachedFileIds: [...state.attachedFileIds, fileId] };
+    });
   },
 
   detachFile: (fileId: string) => {
