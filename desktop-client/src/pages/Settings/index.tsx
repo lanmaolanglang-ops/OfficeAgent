@@ -8,6 +8,7 @@ import { useSettingsStore, useBackendStore } from '../../stores';
 import type { AgentType } from '../../types';
 import { getModelSettings, saveModelSettings, setDefaultModel, testModelConnection, getImageModelSettings, saveImageModelSettings, testImageModelConnection, getEmbeddingModelSettings, saveEmbeddingModelSettings, testEmbeddingModelConnection, type ModelSettingsStatus, type ModelConnectionTest, type ImageModelSettings, type ImageModelConnectionTest, type EmbeddingModelSettings, type EmbeddingModelConnectionTest } from '../../services/api';
 import { isTauri, setAutoStart, getAutoStart } from '../../services/tauri';
+import { MODEL_OPTIONS, PROVIDER_LABELS } from './modelOptions';
 
 const agentOptions: { value: AgentType; label: string }[] = [
   { value: 'auto', label: '自动选择' },
@@ -15,14 +16,6 @@ const agentOptions: { value: AgentType; label: string }[] = [
   { value: 'ppt', label: 'PPT Agent' },
   { value: 'excel', label: 'Excel Agent' },
 ];
-const MODEL_OPTIONS: Record<string, string[]> = {
-  openai: ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'],
-  deepseek: ['deepseek-chat', 'deepseek-reasoner'],
-  doubao: ['doubao-seed-2-1-pro', 'doubao-seed-2-1-turbo',
-    'doubao-seed-2-0-pro', 'doubao-seed-2-0-lite', 'doubao-seed-2-0-mini', 'doubao-seed-2-0-code'],
-  qwen: ['qwen3.8-max-preview', 'qwen3.7-max', 'qwen3.7-plus', 'qwen3.7-flash'],
-  agnes: ['agnes-2.0-flash', 'agnes-2.5-flash', 'agnes-1.5-flash'],
-};
 
 export default function SettingsPage() {
   const { settings, updateSettings, setBackendUrl, setDefaultAgent, resetSettings } = useSettingsStore();
@@ -371,13 +364,13 @@ export default function SettingsPage() {
                 <select id="model-provider" value={modelForm.provider} onChange={(e) => {
                   const nextProvider = e.target.value;
                   const nextModels = MODEL_OPTIONS[nextProvider] || [];
-                  setModelForm((f) => ({ ...f, provider: nextProvider, model: nextModels.length ? nextModels[0] : f.model }));
+                  // 供应商与模型必须联动：切换供应商后重置为该供应商的模型，
+                  // 不能把上一个供应商的 model 一起提交（M36③）。
+                  setModelForm((f) => ({ ...f, provider: nextProvider, model: nextModels[0] ?? '' }));
                 }} className={inputCls}>
-                  <option value="deepseek">DeepSeek</option>
-                  <option value="openai">OpenAI</option>
-                  <option value="doubao">豆包</option>
-                  <option value="qwen">通义千问</option>
-                  <option value="agnes">Agnes AI</option>
+                  {Object.keys(MODEL_OPTIONS).map((provider) => (
+                    <option key={provider} value={provider}>{PROVIDER_LABELS[provider] || provider}</option>
+                  ))}
                 </select>
               </div>
               <div>
