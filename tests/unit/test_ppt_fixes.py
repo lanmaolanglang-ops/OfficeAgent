@@ -217,8 +217,104 @@ class TestSlideBudget:
         assert dense.body_font_size is not None
         assert dense.bullets == outline.slides[0].bullets
 
+    def test_fill_content_clamps_level(self):
+        """P5-11：_fill_content 对 level 做 [0,8] 钳制，防负值/超大值。"""
+        from pptx import Presentation
+        from office_agent.ppt_agent.template_analyzer import TemplateAnalyzer
+
+        prs = Presentation()
+        blank = prs.slide_layouts[6]  # blank
+        slide = prs.slides.add_slide(blank)
+        placeholder = slide.shapes.add_textbox(
+            0, 0, prs.slide_width, prs.slide_height
+        )
+        ta = TemplateAnalyzer()
+
+        # 负 level → 0
+        ta._fill_content(placeholder, {"bullets": [
+            {"text": "a", "level": -3},
+            {"text": "b", "level": 5},
+            {"text": "c", "level": 99},
+            {"text": "d", "level": "x"},
+        ]})
+        levels = [p.level for p in placeholder.text_frame.paragraphs]
+        assert levels == [0, 5, 8, 0]
+
+    def test_two_column_and_timeline_paginate_without_losing_items(self, temp_dir):
+        """P5-11：固定几何版式超容量时分页，不能把条目挤出页面。"""
+        output = temp_dir / "overflow.pptx"
+        left = [f"左栏-{i}" for i in range(13)]
+        right = [f"右栏-{i}" for i in range(11)]
+        timeline = [(f"T{i}", f"节点-{i}", f"描述-{i}") for i in range(11)]
+        outline = PPTOutline(slides=[
+            SlideContent(
+                layout="two_column", title="两栏", left_content=left,
+                right_content=right, page_number=1,
+            ),
+            SlideContent(
+                layout="timeline", title="时间线", timeline_items=timeline,
+                page_number=2,
+            ),
+        ])
+
+        result = PPTService().generate(outline, str(output))
+        assert result.success, result.message
+        prs = Presentation(str(output))
+        # 两栏 3 页（13/6），时间线 3 页（11/5）。
+        assert len(prs.slides) == 6
+        assert result.slide_count == 6
+        text = "\n".join(
+            shape.text_frame.text
+            for slide in prs.slides
+            for shape in slide.shapes
+            if shape.has_text_frame
+        )
+        lines = [line.strip() for line in text.splitlines()]
+        for item in left + right:
+            assert lines.count(f"• {item}") == 1, f"条目丢失或重复: {item}"
+        for item in [part for row in timeline for part in row]:
+            assert lines.count(item) == 1, f"条目丢失或重复: {item}"
+        assert "两栏（续 2）" in text
+        assert "时间线（续 2）" in text
+
 
 class TestTemplateBaseDeck:
+    def test_template_layout_indices_reject_negative_and_invalid_values(self, temp_dir):
+        """P5-11：负/非法 layout_index 不得触发 Python 的负索引或类型错误。"""
+        from office_agent.ppt_agent.template_analyzer import (
+            LayoutInfo, TemplateAnalyzer, TemplateConfig,
+        )
+
+        config = TemplateConfig(layouts=[
+            LayoutInfo(
+                index=0, name="only", has_title=True,
+                title_left=1.0, title_top=2.0,
+                title_width=3.0, title_height=0.5,
+            ),
+        ])
+        assert config.get_title_position(-1) == (0.5, 0.3, 12.333, 1.0)
+        assert config.get_content_position(-1) == (0.5, 1.5, 12.333, 5.5)
+
+        template = temp_dir / "layout-index-template.pptx"
+        source = Presentation()
+        source.save(str(template))
+        expected_layout_name = source.slide_layouts[1].name
+        output = temp_dir / "layout-index-output.pptx"
+        TemplateAnalyzer().create_from_template(
+            str(template),
+            [
+                {"layout_index": -1, "title": "negative"},
+                {"layout_index": "bad", "title": "invalid"},
+            ],
+            str(output),
+        )
+        generated = Presentation(str(output))
+        assert len(generated.slides) == 2
+        assert all(
+            slide.slide_layout.name == expected_layout_name
+            for slide in generated.slides
+        )
+
     def test_theme_inherited_and_slides_cleared(self, temp_dir):
         """以模板为基底：主题部件继承、模板内容页清除、输出尺寸继承"""
         from office_agent.ppt_agent.ppt_orchestrator import PPTOrchestrator

@@ -3,6 +3,7 @@ PPT Service - PPT 底层生成服务
 封装 python-pptx，提供幻灯片创建、布局、样式等原子操作
 """
 import logging
+from dataclasses import replace
 from pathlib import Path
 from typing import Optional
 
@@ -76,6 +77,10 @@ DEFAULT_FONTS = FontScheme()
 TOC_ITEMS_PER_PAGE = 6
 # 列表页：2 列 × 4 行的序号卡片网格。
 CONTENT_LIST_ITEMS_PER_PAGE = 8
+# 两栏页：每栏 6 项，保留足够的垂直空间给中文正文和子要点。
+TWO_COLUMN_ITEMS_PER_PAGE = 6
+# 时间线页：节点文本框宽约 2.4 英寸，5 个节点仍能保持可读间距。
+TIMELINE_ITEMS_PER_PAGE = 5
 
 
 def _paginate_items(items: list, per_page: int) -> list:
@@ -217,12 +222,13 @@ class PPTService:
                 self._render_slide(slide_content)
 
             self.prs.save(output_path)
+            actual_slide_count = len(self.prs.slides)
 
             return PPTGenerationResult(
                 success=True,
-                message=f"PPT 生成成功，共 {len(outline.slides)} 页",
+                message=f"PPT 生成成功，共 {actual_slide_count} 页",
                 output_path=output_path,
-                slide_count=len(outline.slides),
+                slide_count=actual_slide_count,
                 changes=self.changes,
             )
 
@@ -263,7 +269,47 @@ class PPTService:
             logger.warning("未知版式 %r，回退 content 渲染", layout)
             self.changes.append(f"第{content.page_number}页: 未知版式 {layout} 已回退为标准内容页")
             renderer = self._render_content
-        renderer(content)
+
+        # 两栏与时间线使用固定几何布局；把超出单页容量的内容拆成续页，
+        # 不让 python-pptx 把多余段落挤出文本框或把时间线节点压成重叠。
+        if layout == "two_column":
+            left_items = list(content.left_content or [])
+            right_items = list(content.right_content or content.bullets or [])
+            left_pages = _paginate_items(left_items, TWO_COLUMN_ITEMS_PER_PAGE) or [[]]
+            right_pages = _paginate_items(right_items, TWO_COLUMN_ITEMS_PER_PAGE) or [[]]
+            page_count = max(len(left_pages), len(right_pages))
+            for page_idx in range(page_count):
+                page = replace(
+                    content,
+                    title=_continuation_title(content.title, page_idx),
+                    left_content=left_pages[page_idx] if page_idx < len(left_pages) else [],
+                    right_content=right_pages[page_idx] if page_idx < len(right_pages) else [],
+                    bullets=[],
+                    page_number=content.page_number + page_idx,
+                )
+                self._render_two_column(page)
+            if page_count > 1:
+                self.changes.append(
+                    f"第{content.page_number}页: 两栏内容分页为 {page_count} 页"
+                )
+        elif layout == "timeline":
+            timeline_pages = _paginate_items(
+                list(content.timeline_items or []), TIMELINE_ITEMS_PER_PAGE
+            ) or [[]]
+            for page_idx, items in enumerate(timeline_pages):
+                page = replace(
+                    content,
+                    title=_continuation_title(content.title, page_idx),
+                    timeline_items=items,
+                    page_number=content.page_number + page_idx,
+                )
+                self._render_timeline(page)
+            if len(timeline_pages) > 1:
+                self.changes.append(
+                    f"第{content.page_number}页: 时间线内容分页为 {len(timeline_pages)} 页"
+                )
+        else:
+            renderer(content)
         self.changes.append(f"第{content.page_number}页: {content.title or layout}")
 
     # ==========================================
@@ -856,6 +902,7 @@ class PPTService:
         items = content.timeline_items or []
         n = len(items)
         if n == 0:
+            self._add_page_number(slide, content.page_number)
             return
 
         # 时间线主轴（节点文本框左右各占约 1.2 英寸，

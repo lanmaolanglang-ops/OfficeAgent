@@ -281,7 +281,8 @@ class TemplateConfig:
 
     def get_title_position(self, layout_idx: int = 1) -> Tuple[float, float, float, float]:
         """获取指定版式的标题位置 (left, top, width, height)"""
-        if layout_idx < len(self.layouts):
+        if (isinstance(layout_idx, int) and not isinstance(layout_idx, bool)
+                and 0 <= layout_idx < len(self.layouts)):
             layout = self.layouts[layout_idx]
             if layout.has_title:
                 return (layout.title_left, layout.title_top,
@@ -291,7 +292,8 @@ class TemplateConfig:
 
     def get_content_position(self, layout_idx: int = 1) -> Tuple[float, float, float, float]:
         """获取指定版式的正文位置"""
-        if layout_idx < len(self.layouts):
+        if (isinstance(layout_idx, int) and not isinstance(layout_idx, bool)
+                and 0 <= layout_idx < len(self.layouts)):
             layout = self.layouts[layout_idx]
             if layout.has_content:
                 return (layout.content_left, layout.content_top,
@@ -418,10 +420,18 @@ class TemplateAnalyzer:
         # 清空现有幻灯片（保留母版和版式）
         self._clear_slides(prs)
 
+        layout_count = len(prs.slide_layouts)
+        if layout_count == 0:
+            raise ValueError("模板未提供任何幻灯片版式")
+        fallback_layout_idx = min(1, layout_count - 1)
+
         for slide_data in slides_data:
-            layout_idx = slide_data.get("layout_index", 1)
-            if layout_idx >= len(prs.slide_layouts):
-                layout_idx = 1
+            layout_idx = slide_data.get("layout_index", fallback_layout_idx)
+            if (not isinstance(layout_idx, int) or isinstance(layout_idx, bool)
+                    or not 0 <= layout_idx < layout_count):
+                # 负索引不能解释为“倒数第 N 个版式”；所有越界/非法值
+                # 统一回退到标题+正文（若模板只有一个版式则回退 0）。
+                layout_idx = fallback_layout_idx
 
             layout = prs.slide_layouts[layout_idx]
             slide = prs.slides.add_slide(layout)
@@ -867,6 +877,12 @@ class TemplateAnalyzer:
         tf = placeholder.text_frame
         tf.clear()
 
+        def _clamp_level(v):
+            try:
+                return max(0, min(8, int(v)))
+            except (TypeError, ValueError):
+                return 0
+
         if isinstance(content, (list, tuple)):
             for i, item in enumerate(content):
                 if i == 0:
@@ -884,7 +900,7 @@ class TemplateAnalyzer:
                     p = tf.add_paragraph()
                 if isinstance(item, dict):
                     p.text = str(item.get("text", ""))
-                    p.level = item.get("level", 0)
+                    p.level = _clamp_level(item.get("level", 0))
                 else:
                     p.text = str(item)
         else:

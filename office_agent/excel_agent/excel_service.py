@@ -641,6 +641,12 @@ class ExcelService:
                 color="638EC6", showValue=True
             )
             ws.conditional_formatting.add(range_str, rule)
+        else:
+            # 不再把“未知规则未做任何事”记录成成功变更；调用方应显式
+            # 得到错误，避免生成一个看似已格式化、实际没有规则的工作簿。
+            raise ValueError(
+                f"不支持的条件格式类型: {rule_type!r}，可选值为 color_scale/data_bar"
+            )
 
         self.changes.append(f"条件格式: {range_str} ({rule_type})")
 

@@ -18,6 +18,7 @@ import zipfile
 from pathlib import Path
 
 import openpyxl
+import pytest
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -359,6 +360,13 @@ class TestRemainingExcelCorrectness:
             ws = generated[name]
             assert ws["A4"].value == "合计"
             assert len(ws.conditional_formatting) == 4
+
+    def test_unknown_conditional_format_type_fails_closed(self):
+        """P5-10：未知条件格式不能静默 no-op 后伪造成功变更记录。"""
+        service = ExcelService().create("unused.xlsx")
+        with pytest.raises(ValueError, match="不支持的条件格式类型"):
+            service.add_conditional_format("Sheet1", "A1:A2", "gradient")
+        assert not any("gradient" in change for change in service.changes)
 
     def test_formula_and_summary_are_not_mutually_exclusive(self, temp_dir):
         src = temp_dir / "summary.xlsx"
