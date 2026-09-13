@@ -386,12 +386,19 @@ export async function getTask(taskId: string): Promise<Task> {
   return mapBackendTask(result.data || {});
 }
 
-// 列出任务
-export async function listTasks(params?: {
+// 分页列出任务（P5-6：后端 /api/task/ 已返回 total/page/page_size）
+export interface TaskListPage {
+  tasks: Task[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export async function listTasksPage(params?: {
   status?: string;
   page?: number;
   page_size?: number;
-}): Promise<Task[]> {
+}): Promise<TaskListPage> {
   const query = new URLSearchParams();
   if (params?.status) query.set('status', params.status);
   if (params?.page) query.set('page', String(params.page));
@@ -402,10 +409,30 @@ export async function listTasks(params?: {
 
   const result = await request<{
     success: boolean;
-    data?: { tasks?: Array<Record<string, unknown>> };
+    data?: {
+      tasks?: Array<Record<string, unknown>>;
+      total?: number;
+      page?: number;
+      page_size?: number;
+    };
   }>(path);
 
-  return (result.data?.tasks || []).map(mapBackendTask);
+  const tasks = (result.data?.tasks || []).map(mapBackendTask);
+  return {
+    tasks,
+    total: result.data?.total ?? tasks.length,
+    page: result.data?.page ?? params?.page ?? 1,
+    page_size: result.data?.page_size ?? params?.page_size ?? 50,
+  };
+}
+
+// 兼容只需要单页数组的调用方
+export async function listTasks(params?: {
+  status?: string;
+  page?: number;
+  page_size?: number;
+}): Promise<Task[]> {
+  return (await listTasksPage(params)).tasks;
 }
 
 // 发送聊天消息

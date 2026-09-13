@@ -12,6 +12,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const api = vi.hoisted(() => ({
   listTasks: vi.fn(async () => []),
+  // P5-6：taskStore 改为读取分页元数据，mock 必须覆盖同一入口
+  listTasksPage: vi.fn(async () => ({ tasks: [], total: 0, page: 1, page_size: 20 })),
   checkHealth: vi.fn(async () => ({ success: true, data: { status: 'healthy' } })),
   listFilesPage: vi.fn(async () => ({ files: [], total: 0 })),
   sendChatMessage: vi.fn(),
@@ -32,7 +34,7 @@ async function freshPoller() {
 
 beforeEach(() => {
   vi.useFakeTimers();
-  api.listTasks.mockClear();
+  api.listTasksPage.mockClear();
   api.checkHealth.mockClear();
 });
 
@@ -160,10 +162,10 @@ describe('模块重复求值（HMR）不产生孤儿 interval', () => {
     second.useTaskStore.getState().startPolling();
     expect(vi.getTimerCount()).toBe(baseline + 1);
 
-    api.listTasks.mockClear();
+    api.listTasksPage.mockClear();
     await vi.advanceTimersByTimeAsync(6000);
     // 单一 interval（2000ms）→ 6 秒 3 次；旧实现是 2 个 interval → 6 次
-    expect(api.listTasks).toHaveBeenCalledTimes(3);
+    expect(api.listTasksPage).toHaveBeenCalledTimes(3);
 
     second.useTaskStore.getState().stopPolling();
     first.useTaskStore.getState().stopPolling();
@@ -200,14 +202,14 @@ describe('store 轮询对外行为不回归', () => {
     const { useTaskStore } = await import('./taskStore');
 
     useTaskStore.getState().startPolling();
-    api.listTasks.mockClear();
+    api.listTasksPage.mockClear();
     await vi.advanceTimersByTimeAsync(2000);
-    expect(api.listTasks).toHaveBeenCalledTimes(1);
+    expect(api.listTasksPage).toHaveBeenCalledTimes(1);
 
     useTaskStore.getState().stopPolling();
-    api.listTasks.mockClear();
+    api.listTasksPage.mockClear();
     await vi.advanceTimersByTimeAsync(10000);
-    expect(api.listTasks).not.toHaveBeenCalled();
+    expect(api.listTasksPage).not.toHaveBeenCalled();
   });
 
   it('backendStore 首次订阅立即探测一次，之后按间隔探测', async () => {

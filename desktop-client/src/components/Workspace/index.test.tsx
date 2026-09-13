@@ -17,6 +17,8 @@ import Workspace from './index';
 
 const api = vi.hoisted(() => ({
   listTasks: vi.fn(async () => []),
+  // P5-6：taskStore 改为读取分页元数据，mock 必须覆盖同一入口
+  listTasksPage: vi.fn(async () => ({ tasks: [], total: 0, page: 1, page_size: 20 })),
   checkHealth: vi.fn(async () => ({ success: true, data: { status: 'healthy' } })),
   listFilesPage: vi.fn(async () => ({ files: [], total: 0 })),
   sendChatMessage: vi.fn(),
@@ -75,7 +77,7 @@ function renderWorkspace() {
 beforeEach(() => {
   vi.useFakeTimers();
   localStorage.clear();
-  api.listTasks.mockClear();
+  api.listTasksPage.mockClear();
 });
 
 afterEach(async () => {
@@ -175,9 +177,9 @@ describe('Workspace 轮询资源生命周期', () => {
     const { unmount } = renderWorkspace();
     unmount();
 
-    api.listTasks.mockClear();
+    api.listTasksPage.mockClear();
     await vi.advanceTimersByTimeAsync(30000);
-    expect(api.listTasks).not.toHaveBeenCalled();
+    expect(api.listTasksPage).not.toHaveBeenCalled();
   });
 
   it('12 次挂载/卸载后，后续 30 秒仍零请求', async () => {
@@ -185,17 +187,17 @@ describe('Workspace 轮询资源生命周期', () => {
       renderWorkspace().unmount();
     }
 
-    api.listTasks.mockClear();
+    api.listTasksPage.mockClear();
     await vi.advanceTimersByTimeAsync(30000);
-    expect(api.listTasks).not.toHaveBeenCalled();
+    expect(api.listTasksPage).not.toHaveBeenCalled();
   });
 
   it('挂载期间按 2 秒节奏轮询任务列表', async () => {
     const { unmount } = renderWorkspace();
-    api.listTasks.mockClear();
+    api.listTasksPage.mockClear();
 
     await vi.advanceTimersByTimeAsync(6000);
-    expect(api.listTasks).toHaveBeenCalledTimes(3);
+    expect(api.listTasksPage).toHaveBeenCalledTimes(3);
 
     unmount();
   });
