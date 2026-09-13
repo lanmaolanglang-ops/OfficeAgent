@@ -770,35 +770,6 @@ class FormulaGenerator:
 
         return formulas
 
-    def generate_growth_formulas(self, col_idx: int, sheet: SheetInfo,
-                                  data_start_row: int = 2,
-                                  growth_type: str = "mom") -> List[FormulaSpec]:
-        """生成增长率公式（逐行）"""
-        formulas = []
-        end_row = data_start_row + sheet.row_count - 1
-        col_letter = self._col_letter(col_idx)
-        result_col = self._col_letter(sheet.col_count)
-
-        label = "环比增长率" if growth_type == "mom" else "同比增长率"
-        formulas.append(FormulaSpec(
-            formula=label,
-            target_cell=f"{result_col}{data_start_row}",
-            description=label,
-            category="header",
-        ))
-
-        for row in range(data_start_row + 1, end_row + 1):
-            cur = f"{col_letter}{row}"
-            prev = f"{col_letter}{row - 1}"
-            formulas.append(FormulaSpec(
-                formula=f'=IFERROR(({cur}-{prev})/{prev},"")',
-                target_cell=f"{result_col}{row}",
-                description=f"第{row}行{label}",
-                category="growth",
-            ))
-
-        return formulas
-
     def generate_rank_formulas(self, col_idx: int, sheet: SheetInfo,
                                 data_start_row: int = 2) -> List[FormulaSpec]:
         """生成排名公式"""

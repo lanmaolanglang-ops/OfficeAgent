@@ -88,7 +88,8 @@ def test_logical_growth_and_rank_results_use_first_empty_column():
     assert logical and all(f.target_cell.startswith("D") for f in logical)
 
     generator = FormulaGenerator(profile)
-    assert all(f.target_cell.startswith("D") for f in generator.generate_growth_formulas(1, sheet))
+    growth = generator.generate_from_text("计算销售额环比", "数据")
+    assert growth and all(f.target_cell.startswith("D") for f in growth)
     assert all(f.target_cell.startswith("D") for f in generator.generate_rank_formulas(1, sheet))
 
 
