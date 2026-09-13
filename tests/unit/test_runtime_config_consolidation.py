@@ -64,8 +64,12 @@ def test_desktop_root_is_shared_by_launcher_runtime_and_explicit_override(tmp_pa
     monkeypatch.delenv("OFFICE_AGENT_DATA_DIR", raising=False)
     monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
     monkeypatch.setattr(runtime_config.sys, "platform", "win32")
+    # P5-14：安装版（frozen）解析到平台原生根，且 backend/desktop 共用同一 resolver
+    monkeypatch.setattr(runtime_config.sys, "frozen", True, raising=False)
     expected = tmp_path / "appdata" / "OfficeAgent"
     assert runtime_config.get_desktop_data_root() == expected
+    assert runtime_config.get_data_root() == expected
+    assert runtime_config.resolve_data_root() == expected
 
     monkeypatch.setattr(runtime_manager, "get_desktop_data_root", lambda: expected)
     assert runtime_manager.AppConfig().data_dir == expected
@@ -73,6 +77,7 @@ def test_desktop_root_is_shared_by_launcher_runtime_and_explicit_override(tmp_pa
     explicit = tmp_path / "portable"
     monkeypatch.setenv("OFFICE_AGENT_DATA_DIR", str(explicit))
     assert runtime_config.get_desktop_data_root() == explicit
+    assert runtime_config.get_data_root() == explicit
 
 
 def test_release_version_has_one_python_source():
