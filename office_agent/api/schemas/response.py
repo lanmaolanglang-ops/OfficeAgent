@@ -134,6 +134,10 @@ class AgentListResponse(BaseModel):
     """Agent列表响应"""
     agents: List[AgentInfo]
     total: int
+    # P5-15：True 表示数据库不可用、返回的是内置降级清单（不是用户配置的
+    # agent 集合）。调用方可据此区分 requested / effective，不再把降级结果
+    # 静默当作已配置结果。
+    degraded: bool = False
 
 
 class VersionInfo(BaseModel):

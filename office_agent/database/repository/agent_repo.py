@@ -59,3 +59,7 @@ class AgentRepository(BaseRepository[AgentConfig]):
         if agent:
             self.update(agent.id, {"enabled": False})
         return agent
+
+    def get_disabled_agent_ids(self) -> set[str]:
+        """返回被显式禁用的 agent_id 集合（P5-15 降级清单过滤用）。"""
+        return {agent.agent_id for agent in self.find(enabled=False)}
