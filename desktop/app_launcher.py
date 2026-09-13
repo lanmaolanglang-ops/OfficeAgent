@@ -93,12 +93,27 @@ def run_uvicorn_direct(host: str, port: int, data_dir: Path):
     )
 
 
-def main():
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="OfficeAgent Desktop")
     parser.add_argument("--port", type=int, default=8765, help="Backend port")
     parser.add_argument("--host", default="127.0.0.1", help="Backend host")
     parser.add_argument("--data-dir", type=str, default=None, help="Data directory")
     parser.add_argument("--no-autostart", action="store_true", help="Don't auto-start backend")
+    # 桌面 supervisor（desktop-client/src-tauri）以被看护的后台进程方式启动
+    # frozen backend，并固定追加 --background（见 src-tauri/src/lib.rs 的
+    # spawn_backend）。frozen 路径本就在当前进程内运行 uvicorn、无独立控制台，
+    # 因此这里必须显式接受该契约参数；否则 argparse 遇到未知参数会以退出码 2
+    # 在初始化日志之前终止，正式安装版后端将永远无法通过就绪检查。
+    parser.add_argument(
+        "--background",
+        action="store_true",
+        help="Supervised background launch by the desktop shell (accepted no-op in frozen mode)",
+    )
+    return parser
+
+
+def main():
+    parser = build_parser()
     args = parser.parse_args()
 
     # 数据目录
@@ -110,6 +125,7 @@ def main():
     setup_logging(data_dir / "logs")
     logger = logging.getLogger("office_agent.launcher")
     logger.info(f"Starting OfficeAgent v{APP_VERSION} (frozen={FROZEN})")
+    logger.info(f"Supervised background launch: {args.background}")
     logger.info(f"Data dir: {data_dir}")
     logger.info(f"App dir: {APP_DIR}")
     logger.info(f"Python: {sys.executable}")
