@@ -99,7 +99,6 @@ def main():
     parser.add_argument("--host", default="127.0.0.1", help="Backend host")
     parser.add_argument("--data-dir", type=str, default=None, help="Data directory")
     parser.add_argument("--no-autostart", action="store_true", help="Don't auto-start backend")
-    parser.add_argument("--background", action="store_true", help="Run in background")
     args = parser.parse_args()
 
     # 数据目录

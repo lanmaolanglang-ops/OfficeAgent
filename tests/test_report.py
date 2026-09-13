@@ -9,6 +9,8 @@ from datetime import datetime
 from pathlib import Path
 from enum import Enum
 
+from office_agent._version import __version__ as APP_VERSION
+
 
 class TestStatus(str, Enum):
     __test__ = False
@@ -49,7 +51,7 @@ class TestReport:
     __test__ = False
     """测试报告"""
     project: str = "Office Agent"
-    version: str = "0.45.0"
+    version: str = APP_VERSION
     start_time: float = field(default_factory=time.time)
     end_time: float = 0
     results: list[TestCaseResult] = field(default_factory=list)
@@ -192,7 +194,7 @@ class TestRunner:
     __test__ = False
     """测试运行器"""
 
-    def __init__(self, project: str = "Office Agent", version: str = "0.45.0"):
+    def __init__(self, project: str = "Office Agent", version: str = APP_VERSION):
         self.report = TestReport(project=project, version=version)
 
     @staticmethod

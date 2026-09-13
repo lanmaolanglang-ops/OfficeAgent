@@ -8,6 +8,8 @@ import json
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+from office_agent._version import __version__ as APP_VERSION  # noqa: E402
 DATASET_DIR = PROJECT_ROOT / "test_dataset"
 
 
@@ -220,7 +222,7 @@ def generate_dataset():
     print("  Excel: 3 files")
     # 清单
     manifest = {
-        "version": "0.47.5",
+        "version": APP_VERSION,
         "generated_at": os.path.getmtime(str(DATASET_DIR)),
         "files": {
             "word": {

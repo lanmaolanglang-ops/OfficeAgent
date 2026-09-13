@@ -37,57 +37,6 @@ async function getTauriWindow() {
 }
 
 // ========== 文件对话框 ==========
-export async function openFileDialog(
-  filters?: { name: string; extensions: string[] }[]
-): Promise<string | null> {
-  const core = await getTauriCore();
-  if (!core) {
-    return new Promise((resolve) => {
-      const input = document.createElement('input');
-      input.type = 'file';
-      if (filters && filters.length > 0) {
-        input.accept = filters.map(f => f.extensions.map(e => '.' + e).join(',')).join(',');
-      }
-      input.onchange = () => {
-        const file = input.files?.[0];
-        resolve(file ? file.name : null);
-      };
-      input.click();
-    });
-  }
-  try {
-    const dialog = await import('@tauri-apps/plugin-dialog');
-    const result = await dialog.open({
-      multiple: false,
-      filters: filters || [
-        { name: 'Office Files', extensions: ['docx', 'doc', 'pptx', 'ppt', 'xlsx', 'xls', 'pdf', 'txt', 'md', 'csv'] },
-      ],
-    });
-    return result as string | null;
-  } catch {
-    return null;
-  }
-}
-
-export async function openMultipleFilesDialog(
-  filters?: { name: string; extensions: string[] }[]
-): Promise<string[]> {
-  const core = await getTauriCore();
-  if (!core) return [];
-  try {
-    const dialog = await import('@tauri-apps/plugin-dialog');
-    const result = await dialog.open({
-      multiple: true,
-      filters: filters || [
-        { name: 'Office Files', extensions: ['docx', 'doc', 'pptx', 'ppt', 'xlsx', 'xls', 'pdf', 'txt', 'md', 'csv'] },
-      ],
-    });
-    return Array.isArray(result) ? result : result ? [result] : [];
-  } catch {
-    return [];
-  }
-}
-
 export async function saveFileDialog(
   defaultPath?: string,
   filters?: { name: string; extensions: string[] }[]
