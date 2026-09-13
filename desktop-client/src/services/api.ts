@@ -6,6 +6,7 @@ import type {
   UploadedFile,
   FileVersionInfo,
 } from '../types';
+import { getAuthHeaders, handleUnauthorized } from './auth';
 
 const DEFAULT_BASE_URL = 'http://127.0.0.1:8765';
 
@@ -78,6 +79,9 @@ async function request<T>(
       headers: {
         'Content-Type': 'application/json',
         ...options.headers,
+        // 认证头最后合并：调用方自定义 header 不得覆盖安全头。
+        // 无凭据时为空对象（本地免认证模式）。
+        ...getAuthHeaders(),
       },
       signal: options.signal ?? controller.signal,
     });
@@ -88,6 +92,12 @@ async function request<T>(
     throw err;
   } finally {
     clearTimeout(timer);
+  }
+
+  if (response.status === 401) {
+    // 凭据已失效：立即作废，避免后续请求继续携带旧凭据。
+    handleUnauthorized();
+    throw new Error('HTTP 401: 认证失败，请重新提供凭据');
   }
 
   if (!response.ok) {
@@ -300,6 +310,12 @@ export async function uploadFile(
         return;
       }
 
+      if (xhr.status === 401) {
+        handleUnauthorized();
+        reject(new Error('上传失败: 认证失败，请重新提供凭据'));
+        return;
+      }
+
       if (xhr.status < 200 || xhr.status >= 300) {
         reject(new Error(`上传失败: ${getBackendError(result, `HTTP ${xhr.status}`)}`));
         return;
@@ -349,6 +365,11 @@ export async function uploadFile(
     });
 
     xhr.open('POST', `${getBaseUrl()}/api/file/upload`);
+    // 与 request() 共用同一凭据来源；multipart 不设置 Content-Type，
+    // 由浏览器补 boundary。无凭据时不加头（本地免认证模式）。
+    for (const [name, value] of Object.entries(getAuthHeaders())) {
+      xhr.setRequestHeader(name, value);
+    }
     xhr.send(formData);
   });
 }
