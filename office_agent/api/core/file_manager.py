@@ -50,6 +50,7 @@ class FileManager:
         os.makedirs(self.output_dir, exist_ok=True)
         self.files: Dict[str, FileInfo] = {}
         self._lock = threading.RLock()
+        self._degraded_metadata = False
         self._metadata_path = os.path.join(self.upload_dir, "file_metadata.json")
         self._load_metadata()
 
@@ -60,6 +61,8 @@ class FileManager:
                     payload = json.load(f)
                 if not isinstance(payload, list):
                     logger.warning("忽略无效文件元数据根节点（应为数组）: %s", self._metadata_path)
+                    # 损坏原件必须保留：不得用空索引覆盖（P2-16）
+                    self._backup_corrupt_metadata()
                     return
                 for item in payload:
                     if not isinstance(item, dict) or not item.get("file_id"):
@@ -78,11 +81,31 @@ class FileManager:
             except FileNotFoundError:
                 return
             except (ValueError, TypeError, KeyError, OSError) as exc:
-                logger.warning("加载文件元数据失败，保留空索引: %s", exc)
+                logger.warning("加载文件元数据失败，保留损坏原件并进入 degraded 状态: %s", exc)
+                # fail-safe：备份损坏文件，禁止静默空索引再 save 覆盖
+                self._backup_corrupt_metadata()
+                self._degraded_metadata = True
+
+    def _backup_corrupt_metadata(self) -> None:
+        """把损坏的 metadata 原件旁路保存，避免后续 save_metadata 覆盖。"""
+        src = self._metadata_path
+        if not os.path.isfile(src):
+            return
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        backup = f"{src}.corrupt.{stamp}"
+        try:
+            os.replace(src, backup)
+            logger.warning("已备份损坏的文件元数据到 %s", backup)
+        except OSError as exc:
+            logger.error("备份损坏元数据失败: %s", exc)
 
     def save_metadata(self) -> None:
         """在锁内用 fsync + replace 原子持久化当前元数据索引。"""
         with self._lock:
+            if getattr(self, "_degraded_metadata", False) and not self.files:
+                # 损坏且无可重建索引：拒绝用空索引覆盖（P2-16 fail-safe）
+                logger.error("元数据处于 degraded 状态且索引为空，拒绝覆盖写回")
+                return
             payload = []
             for info in self.files.values():
                 item = info.to_dict()

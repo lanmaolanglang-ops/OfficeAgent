@@ -92,9 +92,11 @@ class File(Base, TimestampMixin):
 
     # 关系
     owner = relationship("User", back_populates="files")
+    # FK 已 ON DELETE CASCADE：交给数据库级联，避免 ORM 再逐条 load 版本
     versions = relationship("FileVersion", back_populates="parent_file",
                             foreign_keys="FileVersion.parent_file_id",
-                            order_by="FileVersion.version_number")
+                            order_by="FileVersion.version_number",
+                            passive_deletes=True)
 
     def __repr__(self):
         return f"<File {self.original_name} v{self.version} ({self.file_type})>"

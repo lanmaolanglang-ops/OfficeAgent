@@ -13,7 +13,9 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from .models import PPTOutline, SlideContent, SlideLayout
+from .models import (
+    PPTOutline, SlideContent, SlideLayout, items_per_page,
+)
 
 logger = logging.getLogger("office_agent.ppt.content_planner")
 
@@ -42,10 +44,10 @@ THEME_TEMPLATES = {
         ("toc", "目录", ""),
         ("content", "产品概述", ["产品定位", "目标用户", "核心价值"]),
         ("content", "市场背景", ["市场规模", "用户痛点", "竞品分析"]),
-        ("content_image", "核心功能", ["待补充：真实的产品功能与用户价值"]),
+        ("content_image", "核心功能", []),  # 占位文案不得写入用户成品
         ("two_column", "产品优势", []),
         ("data_cards", "核心数据", []),
-        ("content", "应用场景", ["待补充：真实的应用场景与使用方式"]),
+        ("content", "应用场景", []),  # 占位文案不得写入用户成品
         ("timeline", "发展规划", []),
         ("summary", "感谢聆听", []),
     ],
@@ -53,7 +55,7 @@ THEME_TEMPLATES = {
         ("cover", "工作总结", "{subtitle}"),
         ("toc", "目录", ""),
         ("content", "工作概述", ["工作背景", "职责范围", "总体评价"]),
-        ("content", "重点工作", ["待补充：已完成的具体任务与结果"]),
+        ("content", "重点工作", []),  # 占位文案不得写入用户成品
         ("data_cards", "工作成果", []),
         ("content", "经验总结", ["成功经验", "不足之处", "改进方向"]),
         ("content", "下一步计划", ["工作计划", "个人成长", "资源需求"]),
@@ -76,7 +78,7 @@ THEME_TEMPLATES = {
         ("cover", "{title}", "{subtitle}"),
         ("toc", "目录", ""),
         ("content", "背景介绍", ["背景概述", "现状分析", "核心问题"]),
-        ("content", "核心内容", ["待补充：与主题相关的事实、分析与结论"]),
+        ("content", "核心内容", []),  # 占位文案不得写入用户成品
         ("content", "详细说明", ["具体内容", "关键细节", "实施路径"]),
         ("data_cards", "数据展示", []),
         ("content", "总结", ["主要结论", "后续计划", "行动建议"]),
@@ -156,6 +158,7 @@ class ContentPlanner:
 
         # 2. 尝试用 LLM 生成完整大纲
         ai_outline = None
+        self._ai_failure_reason = ""
         if self.model_gateway:
             ai_outline = self._generate_with_ai(clean_title, slide_count, style)
 
@@ -171,11 +174,21 @@ class ContentPlanner:
             logger.warning(f"未配置LLM，使用模板生成: {clean_title}")
         outline = self._generate_from_template(clean_title, slide_count, style, subtitle, author)
         outline.used_template = True
+        # P3-41: 回退原因不再与“LLM 空响应”混同，显式记录到 changes
+        if self.model_gateway:
+            reason_text = {
+                "length_truncated": "LLM 输出被 max_tokens 截断、JSON 不完整",
+                "empty": "LLM 返回为空",
+                "invalid_json": "LLM 返回的内容不是合法 JSON",
+                "error": "LLM 生成过程出错",
+            }.get(self._ai_failure_reason, "LLM 生成失败")
+            outline.changes.append(f"已回退模板生成：{reason_text}")
         return outline
 
     def plan_from_text(self, text: str,
                        style: str = "professional",
-                       title: str = "") -> PPTOutline:
+                       title: str = "",
+                       slide_count: int | None = None) -> PPTOutline:
         """
         从文本内容生成 PPT 大纲
 
@@ -286,10 +299,13 @@ class ContentPlanner:
         for i, s in enumerate(outline.slides):
             s.page_number = i + 1
 
+        if slide_count:
+            outline = self._enforce_slide_budget(outline, slide_count)
         return outline
 
     def plan_from_word(self, docx_path: str,
-                       style: str = "professional") -> PPTOutline:
+                       style: str = "professional",
+                       slide_count: int | None = None) -> PPTOutline:
         """
         从 Word 文档生成 PPT 大纲
 
@@ -342,7 +358,8 @@ class ContentPlanner:
                         if child.type == "paragraph" and child.text:
                             text = child.text.strip()
                             if len(text) > 5:
-                                bullets.append(text[:80])
+                                # 不再 [:80] 硬截断正文，长句由渲染/自适应字号处理（P3-40）
+                                bullets.append(text)
                         elif child.type == "list_item" and child.text:
                             bullets.append(child.text.strip())
 
@@ -358,13 +375,15 @@ class ContentPlanner:
                     outline.add_slide(SlideContent(
                         layout="content",
                         title=section.text,
-                        bullets=bullets[:5],  # 每页最多5个要点
+                        # 容量口径与渲染器一致（content=8），超出由 fix_outline 续页（P3-40/47）
+                        bullets=bullets[:items_per_page("content")],
                     ))
             else:
                 # 没有子节，直接用章节内容
                 paragraphs = chapter.find_children("paragraph")
-                bullets = [p.text.strip()[:80] for p in paragraphs
-                           if p.text and len(p.text.strip()) > 10][:5]
+                bullets = [p.text.strip() for p in paragraphs
+                           if p.text and len(p.text.strip()) > 10
+                           ][:items_per_page("content")]
                 if not bullets:
                     logger.warning(
                         "章节 %r 未提取到正文，保留空内容页（不生成占位文本）",
@@ -379,6 +398,8 @@ class ContentPlanner:
         # 总结
         outline.add_slide(SlideContent(layout="summary", title="感谢聆听"))
 
+        if slide_count:
+            outline = self._enforce_slide_budget(outline, slide_count)
         return outline
 
     def plan_from_outline_data(self, title: str, slides_data: list,
@@ -562,7 +583,7 @@ class ContentPlanner:
   ]
 }}
 
-可用layout类型: cover(封面), toc(目录), section(章节页), content(内容页), content_image(图文页，需要配图，附image_prompt图片描述词), two_column(两栏), data_cards(数据卡片), table(表格页，附table_data二维数组，第一行为表头), timeline(时间线), summary(总结)
+可用layout类型: cover(封面), toc(目录), section(章节页), content(内容页，可用body_text放整段正文或bullets放要点), content_image(图文页，需要配图，附image_prompt图片描述词), two_column(两栏), content_list(要点列表), data_cards(数据卡片，附data数组), table(表格页，附table_data二维数组，第一行为表头), timeline(时间线), chart(图表页，附chart_type、chart_categories数组、chart_series系列数组), quote(金句页，附quote_text引用文字与quote_source来源), summary(总结)
 
 当某一页内容更适合用图片表达时，使用 content_image 布局，并提供一句具体的 image_prompt 描述画面（横向构图、商务风格、避免文字）。当需要展示结构化数据时，使用 table 布局并提供 table_data。请确保生成{slide_count}页左右，内容充实专业。"""
 
@@ -576,6 +597,7 @@ class ContentPlanner:
             if not result or not result.success or not result.content:
                 err = (result.error if result and getattr(result, "error", None) else "") or "unknown"
                 logger.warning("LLM返回为空: %s", err)
+                self._ai_failure_reason = "empty"
                 return None
 
             # 解析JSON
@@ -592,9 +614,16 @@ class ContentPlanner:
             return self._parse_ai_outline(data, title, style)
 
         except json.JSONDecodeError as e:
-            logger.warning(f"AI返回的JSON解析失败: {e}")
+            # P3-41: 被 max_tokens 截断的 JSON 通常缺少闭合花括号，
+            # 与“返回了乱码/非 JSON”区分开，便于上层显式标注回退原因。
+            tail = content.rstrip()[-1:]
+            self._ai_failure_reason = (
+                "length_truncated" if tail != "}" else "invalid_json"
+            )
+            logger.warning("AI返回的JSON解析失败(%s): %s", self._ai_failure_reason, e)
             return None
         except Exception as e:
+            self._ai_failure_reason = "error"
             logger.warning(f"AI生成大纲失败: {e}")
             return None
 
@@ -665,13 +694,22 @@ class ContentPlanner:
                 # 而不是静默按 content 渲染（构造点 SlideContent 是严格校验的）
                 logger.warning("LLM 返回未知版式 %r，已规范化为 content", layout)
                 layout = SlideLayout.CONTENT.value
+            chart_series_raw = slide_data.get("chart_series")
             slide = SlideContent(
                 layout=layout,
                 title=self._scalar_text(slide_data.get("title")),
                 subtitle=self._scalar_text(slide_data.get("subtitle")),
                 bullets=self._normalize_str_list(slide_data.get("bullets")),
+                body_text=self._scalar_text(slide_data.get("body_text")),
                 image_prompt=self._scalar_text(slide_data.get("image_prompt")),
                 table_data=self._normalize_table(slide_data.get("table_data")),
+                chart_type=self._scalar_text(slide_data.get("chart_type")) or "bar",
+                chart_title=self._scalar_text(slide_data.get("chart_title")),
+                chart_categories=self._normalize_str_list(slide_data.get("chart_categories")),
+                chart_series=chart_series_raw if isinstance(chart_series_raw, list) else [],
+                quote_text=self._scalar_text(slide_data.get("quote_text")),
+                quote_source=self._scalar_text(slide_data.get("quote_source")),
+                notes=self._scalar_text(slide_data.get("notes")),
             )
 
             # 数据卡片：[(label, value, unit), ...]

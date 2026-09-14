@@ -346,13 +346,12 @@ class StorageService:
         if not os.path.exists(source_path):
             raise FileNotFoundError(f"源文件不存在: {source_path}")
 
-        with open(source_path, "rb") as f:
-            content = f.read()
-
         original_name = original_name or os.path.basename(source_path)
 
-        # 如果有父文件，创建新版本
+        # 如果有父文件，创建新版本（版本化链路需要整份 bytes 计算 hash/差异）
         if parent_file_id:
+            with open(source_path, "rb") as f:
+                content = f.read()
             return self.create_version(
                 parent_file_id=parent_file_id,
                 content=content,
@@ -360,13 +359,15 @@ class StorageService:
                 changed_by=owner_id or "agent",
             )
 
-        return self.upload(
-            filename=original_name,
-            content=content,
-            owner_id=owner_id,
-            bucket=BUCKET_OUTPUTS,
-            metadata={"source": "agent_output", "change_description": change_description},
-        )
+        # P3-108: 常规输出走流式 fileobj 上传，避免 f.read() 把整份文件读进内存
+        with open(source_path, "rb") as f:
+            return self.upload_fileobj(
+                filename=original_name,
+                fileobj=f,
+                owner_id=owner_id,
+                bucket=BUCKET_OUTPUTS,
+                metadata={"source": "agent_output", "change_description": change_description},
+            )
 
     def save_new_output(self, source_path: str, original_name: str | None = None,
                         owner_id: str | None = None, change_description: str | None = None) -> FileInfo:
@@ -784,19 +785,36 @@ class StorageService:
 
             # 当前主路径本身已是不可变版本字节，直接把路径转为版本记录；
             # 不再复制一次后留下无人引用的旧主文件。
+            # UNIQUE(parent_file_id, version_number) 是跨进程唯一性的最终保护；
+            # 冲突时有限重试取号（P2-60）。
+            from sqlalchemy.exc import IntegrityError
             old_storage_path = parent.storage_path
-            vrepo.create_version(
-                parent_file_id=parent_file_id,
-                version_number=parent.version,
-                storage_path=old_storage_path,
-                file_size=parent.file_size,
-                file_hash=parent.file_hash,
-                change_description=parent.change_description,
-                changed_by=changed_by,
-            )
+            current_version = parent.version
+            for attempt in range(3):
+                try:
+                    vrepo.create_version(
+                        parent_file_id=parent_file_id,
+                        version_number=current_version,
+                        storage_path=old_storage_path,
+                        file_size=parent.file_size,
+                        file_hash=parent.file_hash,
+                        change_description=parent.change_description,
+                        changed_by=changed_by,
+                    )
+                    session.flush()
+                    break
+                except IntegrityError:
+                    session.rollback()
+                    # 重新取最新版本号后重试
+                    parent = repo.get_by_id(parent_file_id)
+                    if not parent:
+                        raise FileNotFoundError(f"父文件不存在: {parent_file_id}")
+                    current_version = parent.version
+                    if attempt == 2:
+                        raise
 
             # 新内容写入全新路径（绝不覆写旧版本路径）
-            new_version_num = parent.version + 1
+            new_version_num = current_version + 1
             new_file_id = generate_file_id()
             new_storage_path = generate_storage_path(
                 parent.bucket, new_file_id, parent.extension,
@@ -1112,11 +1130,16 @@ class StorageService:
                 except FileValidationError as exc:
                     reject_completed_upload(str(exc))
 
-            repo.update(file_id, {
-                "file_size": total_size,
-                "file_hash": file_hash,
-                "status": "ready",
-            })
+            # P3-66: 条件更新 uploading -> ready。两个并发 complete 都通过
+            # 开头的状态门后，只有一个能在此处把状态推进；另一个 rowcount=0，
+            # 必须显式失败而不是重复把已完成文件再写一次 ready（TOCTOU）。
+            won = repo.transition_status(
+                file_id, "uploading", "ready",
+                file_size=total_size, file_hash=file_hash,
+            )
+            if not won:
+                session.rollback()
+                raise ValueError("分片上传已被并发完成或状态已变更，本次完成被拒绝")
             session.commit()
 
             return self.get_info(file_id)
@@ -1215,14 +1238,22 @@ class StorageService:
 
             for f in expired:
                 try:
-                    self.backend.delete(f.storage_path)
-                    result["freed_bytes"] += f.file_size
+                    # 先落库删除标记并 commit，再删物理文件：
+                    # 文件删成功、DB 失败 → 记录还在指向幽灵文件（更糟）
+                    # DB 先成功、文件删失败 → 孤儿文件可 GC，记录状态一致
                     repo.mark_deleted(f.id)
                     result["cleaned"] += 1
+                    result["freed_bytes"] += f.file_size
                 except Exception as e:
-                    logger.warning(f"清理临时文件失败 {f.id}: {e}")
+                    logger.warning(f"标记临时文件删除失败 {f.id}: {e}")
 
             session.commit()
+
+            for f in expired:
+                try:
+                    self.backend.delete(f.storage_path)
+                except Exception as e:
+                    logger.warning(f"清理临时文件物理删除失败 {f.id}: {e}")
             logger.info(f"临时文件清理: 删除 {result['cleaned']} 个文件")
             return result
         finally:
@@ -1284,13 +1315,16 @@ class StorageService:
 
 # 全局单例
 _storage_service: Optional[StorageService] = None
+_storage_service_lock = threading.Lock()
 
 
 def get_storage_service() -> StorageService:
-    """获取全局 StorageService 单例"""
+    """获取全局 StorageService 单例（double-checked locking，P2-62）"""
     global _storage_service
     if _storage_service is None:
-        _storage_service = StorageService()
+        with _storage_service_lock:
+            if _storage_service is None:
+                _storage_service = StorageService()
     return _storage_service
 
 

@@ -26,9 +26,62 @@ def _scan_user_prompt(message: str, request: Request):
 
 def _recover_conversation_context(conversation_id: str, task_repo, storage,
                                   owner_id: str | None = None):
-    """Recover the latest artifact and routing context when the client omits it."""
+    """Recover the latest artifact and routing context when the client omits it.
+
+    优先走 conversation_id 结构化索引（P2-18）；仅当旧数据列为空时
+    才做有限 legacy 回退。
+    """
     if not conversation_id:
         return None
+
+    def _context_from_task(task, options):
+        try:
+            output_ids = json.loads(task.output_file_ids or "[]")
+        except (TypeError, ValueError):
+            output_ids = []
+        output_paths = []
+        for file_id in output_ids:
+            try:
+                path = storage.get_file_path(file_id)
+            except (FileNotFoundError, TypeError):
+                continue
+            if path and os.path.isfile(path):
+                output_paths.append(path)
+        if output_paths:
+            return {
+                "task": task,
+                "options": options,
+                "input_paths": output_paths,
+                "previous_instruction": task.instruction,
+            }
+        paths = [path for path in (options.get("input_paths") or [])
+                 if path and os.path.isfile(path)]
+        if paths:
+            return {
+                "task": task,
+                "options": options,
+                "input_paths": paths,
+                "previous_instruction": task.instruction,
+            }
+        return None
+
+    # 新路径：索引查询
+    try:
+        tasks = task_repo.get_by_conversation(
+            conversation_id, user_id=owner_id, limit=20,
+        )
+        for task in tasks:
+            try:
+                options = json.loads(task.options_json or "{}")
+            except (TypeError, ValueError):
+                options = {}
+            ctx = _context_from_task(task, options)
+            if ctx:
+                return ctx
+    except Exception:
+        pass
+
+    # Legacy：仅当结构化列尚未回填时，有限扫描（新任务不再依赖此路径）
     offset = 0
     while True:
         try:
@@ -49,34 +102,9 @@ def _recover_conversation_context(conversation_id: str, task_repo, storage,
                 continue
             if options.get("conversation_id") != conversation_id:
                 continue
-            try:
-                output_ids = json.loads(task.output_file_ids or "[]")
-            except (TypeError, ValueError):
-                output_ids = []
-            output_paths = []
-            for file_id in output_ids:
-                try:
-                    path = storage.get_file_path(file_id)
-                except (FileNotFoundError, TypeError):
-                    continue
-                if path and os.path.isfile(path):
-                    output_paths.append(path)
-            if output_paths:
-                return {
-                    "task": task,
-                    "options": options,
-                    "input_paths": output_paths,
-                    "previous_instruction": task.instruction,
-                }
-            paths = [path for path in (options.get("input_paths") or [])
-                     if path and os.path.isfile(path)]
-            if paths:
-                return {
-                    "task": task,
-                    "options": options,
-                    "input_paths": paths,
-                    "previous_instruction": task.instruction,
-                }
+            ctx = _context_from_task(task, options)
+            if ctx:
+                return ctx
     return None
 
 
@@ -258,6 +286,7 @@ def _prepare_chat_task(*, req, user_id, user_role, agent_hint, agent,
             priority=PRIORITY_TO_INT[DEFAULT_PRIORITY],
             parent_task_id=parent_task_id,
             revision_number=revision_number,
+            conversation_id=req.conversation_id or None,
         )
         task_id = db_task.id
 
@@ -376,7 +405,13 @@ async def chat(req: ChatRequest, request: Request):
         logger.error("任务队列提交失败: %s", safe_error, exc_info=True)
         with session_scope() as session:
             TaskRepository(session).fail_task(task_id, f"任务队列提交失败: {safe_error}")
-        status = "failed"
+        # 队列不可用时不得返回 200 冒充成功（P2-17）
+        from ..core.exceptions import APIError
+        raise APIError(
+            "任务队列暂时不可用，请稍后重试",
+            error_code="QUEUE_UNAVAILABLE",
+            status_code=503,
+        ) from e
 
     data = ChatResponse(
         task_id=task_id,

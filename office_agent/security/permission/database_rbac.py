@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Callable, Iterable
+from typing import Any, Callable, Iterable, cast
 
 from sqlalchemy import select
 
@@ -17,6 +17,10 @@ class PermissionDecision:
     allowed: bool
     role: str = ""
     reason: str = ""
+
+
+class PermissionConflictError(Exception):
+    """乐观锁冲突：角色版本已被其他写入者推进。"""
 
 
 def seed_default_rbac(session_factory: Callable | None = None) -> None:
@@ -54,6 +58,7 @@ def seed_default_rbac(session_factory: Callable | None = None) -> None:
                     permissions=sorted(ROLE_PERMISSIONS[role_name]),
                     is_system=True,
                     is_active=True,
+                    version=1,
                 ))
         session.commit()
     except Exception:
@@ -71,6 +76,48 @@ class DatabasePermissionResolver:
             from ...database.session import SessionLocal
             session_factory = SessionLocal
         self._session_factory = session_factory
+
+    def update_role_permissions(self, role_name: str, permissions: list[str],
+                                expected_version: int) -> dict:
+        """乐观锁更新角色权限（P2-22）。
+
+        ``UPDATE ... WHERE name=? AND version=?``；rowcount=0 时抛
+        ``PermissionConflictError``，禁止 silent last-writer-wins。
+        """
+        from sqlalchemy import update
+        from sqlalchemy.engine import CursorResult
+        from ...database.models import RoleModel
+
+        session = self._session_factory()
+        try:
+            # SQLAlchemy 2.0 静态类型恒为 Result[Any]，DML 运行时实为
+            # CursorResult 才有 rowcount（与 BaseRepository._execute_rowcount 同模式）。
+            result = cast(
+                "CursorResult[Any]",
+                session.execute(
+                    update(RoleModel)
+                    .where(RoleModel.name == role_name,
+                           RoleModel.version == expected_version)
+                    .values(permissions=list(permissions),
+                            version=expected_version + 1)
+                    .execution_options(synchronize_session="fetch"),
+                ),
+            )
+            if result.rowcount == 0:
+                session.rollback()
+                raise PermissionConflictError(
+                    f"角色 {role_name} 已被其他会话修改，请刷新后重试"
+                )
+            session.commit()
+            row = session.scalar(select(RoleModel).where(RoleModel.name == role_name))
+            return row.to_dict() if row else {}
+        except PermissionConflictError:
+            raise
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
 
     def check(self, user_id: str, required: str | Iterable[str]) -> PermissionDecision:
         required_permissions = {required} if isinstance(required, str) else set(required)

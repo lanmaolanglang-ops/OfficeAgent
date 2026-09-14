@@ -96,7 +96,8 @@ class HashingEmbedder(BaseEmbedder):
 
     @property
     def model_id(self) -> str:
-        return "hashing-512-v1"
+        # dimension 进入 model_id：不同维度不得被视为同一模型（P2-77）
+        return f"hashing-{self._dimension}-v1"
 
     @property
     def version(self) -> str:
@@ -193,8 +194,14 @@ class TfidfEmbedder(BaseEmbedder):
 
     def embed_query(self, text: str) -> List[float]:
         """查询向量化（使用已训练的词汇表）"""
+        # P3-124: 空白文本只会得到零向量、检索恒为 0，必须显式报错
+        if not text or not text.strip():
+            raise InvalidEmbeddingVectorError("embed_query 收到空白文本")
         if not self._fitted:
-            return [0.0] * self.dimension
+            # P3-125: 未 fit 返回零向量会让检索静默失效，必须显式报错
+            raise InvalidEmbeddingVectorError(
+                "TF-IDF embedder 尚未在语料上 fit，无法向量化查询"
+            )
         return self._vectorize(text)
 
     def _vectorize(self, text: str) -> List[float]:
@@ -289,8 +296,13 @@ class KeywordEmbedder(BaseEmbedder):
         return [self._vectorize(t) for t in texts]
 
     def embed_query(self, text: str) -> List[float]:
+        if not text or not text.strip():
+            raise InvalidEmbeddingVectorError("embed_query 收到空白文本")
         if not self.keywords:
-            return []
+            # P3-125: 关键词表为空时返回空向量会静默退化为零分，显式报错
+            raise InvalidEmbeddingVectorError(
+                "KeywordEmbedder 尚未在语料上 fit，无法向量化查询"
+            )
         return self._vectorize(text)
 
     def _vectorize(self, text: str) -> List[float]:
@@ -335,10 +347,28 @@ class APIEmbedder(BaseEmbedder):
                 "API embedding backend requires an API key",
             )
         self.api_key = api_key
-        self.base_url = base_url.rstrip("/")
+        self.base_url = self._validate_base_url(base_url)
         self.model = model
         self._dimension = dimension
         self.batch_size = self._resolve_batch_size(batch_size)
+
+    @staticmethod
+    def _validate_base_url(base_url: str) -> str:
+        # P3-82: 仅允许 http/https 且必须带主机；内网/LAN 地址合法（不强制公网），
+        # 但 file://、无 scheme、相对路径、内嵌 userinfo 等一律拒绝。
+        from urllib.parse import urlparse
+
+        cleaned = (base_url or "").strip().rstrip("/")
+        parsed = urlparse(cleaned)
+        if parsed.scheme.lower() not in ("http", "https") or not parsed.netloc:
+            raise EmbeddingBackendUnavailableError(
+                f"embedding base_url 必须是 http(s) 且包含主机: {base_url!r}"
+            )
+        if parsed.username or parsed.password:
+            raise EmbeddingBackendUnavailableError(
+                "embedding base_url 不得内嵌用户名/密码凭据，请改用 api_key"
+            )
+        return cleaned
 
     @classmethod
     def _resolve_batch_size(cls, value) -> int:
@@ -408,7 +438,12 @@ class APIEmbedder(BaseEmbedder):
             )
 
         if result:
-            self._dimension = len(result[0])
+            observed = len(result[0])
+            # 不能用响应长度静默覆写配置维度：旧向量会与新维度 cosine 永远 0
+            if observed != self._dimension:
+                raise InvalidEmbeddingVectorError(
+                    f"embedding dimension mismatch: expected {self._dimension}, got {observed}",
+                )
         for vector in result:
             if not _is_finite_vector(vector, self._dimension):
                 raise InvalidEmbeddingVectorError(
@@ -570,8 +605,14 @@ def create_semantic_embedder(backend: str | None = None,
 
 def cosine_similarity(a: List[float], b: List[float]) -> float:
     """计算余弦相似度"""
-    if not a or not b or len(a) != len(b):
+    if not a or not b:
+        # 空向量（合法）相似度为 0
         return 0.0
+    if len(a) != len(b):
+        # P3-101: 维度不匹配是配置/持久化损坏，必须显式报错而非伪装成 0 相似度
+        raise InvalidEmbeddingVectorError(
+            f"cosine dimension mismatch: {len(a)} != {len(b)}"
+        )
     dot = sum(x * y for x, y in zip(a, b))
     norm_a = math.sqrt(sum(x * x for x in a))
     norm_b = math.sqrt(sum(x * x for x in b))

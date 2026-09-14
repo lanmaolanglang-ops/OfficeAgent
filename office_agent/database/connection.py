@@ -8,7 +8,8 @@ import logging
 import os
 import sqlite3
 import threading
-from sqlalchemy import create_engine, Engine, event, inspect, text
+from pathlib import Path
+from sqlalchemy import create_engine, Engine, event
 from ..runtime_config import get_data_root
 
 logger = logging.getLogger(__name__)
@@ -84,6 +85,11 @@ def get_engine(url: str | None = None) -> Engine:
     db_url = url or DATABASE_URL
     if db_url.startswith("sqlite") and db_url != "sqlite:///:memory:":
         DATA_DIR.mkdir(parents=True, exist_ok=True)
+        # 自定义 sqlite 路径的父目录也必须存在（P2-31）
+        if db_url.startswith("sqlite:///"):
+            raw = db_url[len("sqlite:///"):]
+            if raw and raw != ":memory:" and not raw.startswith("file:"):
+                Path(raw).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
     kwargs = dict(_engine_kwargs)
     if db_url.startswith("sqlite"):
         for pool_option in (
@@ -152,7 +158,12 @@ def __getattr__(name: str):
 
 
 def init_db(drop_all: bool = False):
-    """初始化数据库（创建所有表）"""
+    """初始化数据库。
+
+    schema evolution 唯一 source of truth 是 Alembic（P2-30）：
+    create_all 仅覆盖全新库；已存在库走 ``alembic upgrade head``，
+    不再内联 ALTER TABLE。
+    """
     from .base import Base
     # 导入所有模型以注册到 Base.metadata
     from . import models  # noqa: F401
@@ -160,43 +171,21 @@ def init_db(drop_all: bool = False):
     engine_obj = default_engine()
     if drop_all:
         Base.metadata.drop_all(bind=engine_obj)
-    Base.metadata.create_all(bind=engine_obj)
+        Base.metadata.create_all(bind=engine_obj)
+        return engine_obj
 
-    # ``create_all`` does not alter an existing table.  The desktop build can
-    # therefore open a database created by an earlier release and still fail
-    # as soon as a repository selects a newly-added ORM column.  Keep the
-    # lightweight SQLite migration here as a startup safety net; Alembic can
-    # still be used for full production migrations.
-    if engine_obj.dialect.name == "sqlite":
-        inspector = inspect(engine_obj)
-        task_columns = {column["name"] for column in inspector.get_columns("task")}
-        missing_task_columns = {
-            "parent_task_id": "VARCHAR(32)",
-            "revision_number": "INTEGER NOT NULL DEFAULT 1",
-        }
-        file_columns = {column["name"] for column in inspector.get_columns("file")}
-        user_columns = {column["name"] for column in inspector.get_columns("user")}
-        missing_user_columns = {
-            "is_verified": "BOOLEAN NOT NULL DEFAULT 0",
-            "last_login_ip": "VARCHAR(64)",
-            "failed_login_count": "INTEGER NOT NULL DEFAULT 0",
-            "locked_until": "DATETIME",
-            "extra": "JSON",
-        }
-        with engine_obj.begin() as connection:
-            for column_name, column_definition in missing_task_columns.items():
-                if column_name not in task_columns:
-                    connection.execute(text(
-                        f"ALTER TABLE task ADD COLUMN {column_name} {column_definition}"
-                    ))
-            if "deleted_at" not in file_columns:
-                connection.execute(text("ALTER TABLE file ADD COLUMN deleted_at DATETIME"))
-            for column_name, column_definition in missing_user_columns.items():
-                if column_name not in user_columns:
-                    connection.execute(text(
-                        f'ALTER TABLE "user" ADD COLUMN {column_name} {column_definition}'
-                    ))
-            connection.execute(text(
-                "CREATE INDEX IF NOT EXISTS ix_file_deleted_at ON file (deleted_at)"
-            ))
+    # 全新库：create_all 后打 stamp head；已有库：upgrade head
+    from alembic import command
+    from alembic.config import Config as AlembicConfig
+    from pathlib import Path as _Path
+
+    versions = _Path(__file__).resolve().parent / "migrations" / "versions"
+    cfg = AlembicConfig()
+    cfg.set_main_option("script_location", str(versions.parent))
+    cfg.set_main_option("sqlalchemy.url", str(engine_obj.url))
+    Base.metadata.create_all(bind=engine_obj)
+    try:
+        command.upgrade(cfg, "head")
+    except Exception as exc:
+        logger.warning("alembic upgrade head 失败（保留 create_all 结果）: %s", exc)
     return engine_obj

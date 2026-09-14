@@ -393,17 +393,22 @@ class FileScanner:
         # 4. 内容扫描
         suspicious_count = 0
         dangerous_content = False
+        scan_incomplete = False
         if self.scan_content and filepath.exists():
             try:
-                # 全文流式扫描：可疑模式可能位于文件任意位置，截断扫描等于放行
-                # （P4-1）。总量以 max_content_scan_bytes 为界，不无增长。
+                # 全文流式扫描；超过预算未扫完时 fail-closed（P2-58）
                 matched: set[int] = set()
+                file_size = filepath.stat().st_size
+                scanned = 0
                 with open(filepath, "rb") as f:
                     for window in _iter_scan_windows(
                         f, self.max_content_scan_bytes,
                         chunk_size=SCAN_CHUNK_SIZE, overlap=CONTENT_SCAN_OVERLAP,
                     ):
-                        # 尝试解码为文本
+                        # 用流位置统计“唯一已读字节”：窗口含 overlap 尾部，
+                        # 累加 len(window) 会把重叠段重复计入，在预算 < 文件时
+                        # 虚增 scanned、漏报尾部未扫（P2-58）。f.tell() 不受重叠影响。
+                        scanned = f.tell()
                         text = window.decode("utf-8", errors="ignore")
                         for pattern_index, (pattern, desc) in enumerate(
                                 _COMPILED_SUSPICIOUS_PATTERNS):
@@ -413,16 +418,22 @@ class FileScanner:
                                 matched.add(pattern_index)
                                 threats.append(f"可疑内容: {desc}")
                                 suspicious_count += 1
-                                if pattern_index in {1, 2, 3, 4, 5}:
+                                if pattern_index in {0, 1, 2, 3, 4, 5}:
                                     dangerous_content = True
                         if len(matched) == len(_COMPILED_SUSPICIOUS_PATTERNS):
                             break
+                if file_size > scanned and not dangerous_content:
+                    scan_incomplete = True
+                    threats.append(
+                        f"SCAN_INCOMPLETE: 文件 {file_size} 字节超过扫描预算 "
+                        f"{scanned} 字节，拒绝放行未完整扫描的内容"
+                    )
             except OSError:
                 threats.append("文件内容无法读取")
                 dangerous_content = True
 
         # 判定威胁等级
-        if dangerous_content:
+        if dangerous_content or scan_incomplete:
             level = ThreatLevel.DANGEROUS
             allowed = False
         elif suspicious_count >= 1:

@@ -291,6 +291,8 @@ def generate_ppt(outline: str | None = None, input_path: str | None = None,
             output = getattr(ppt_result, 'output_path', None) or getattr(ppt_result, 'output_file', None)
             slides = getattr(ppt_result, 'slide_count', 0) or getattr(ppt_result, 'slides_count', 0)
             message = getattr(ppt_result, 'message', '')
+            # 模板回退必须透传到任务结果，调用方才能识别成品是否含模板骨架
+            result["used_template"] = bool(getattr(ppt_result, "used_template", False))
 
             if output and os.path.exists(str(output)):
                 image_status: dict = dict(orchestrator.image_generation)
@@ -351,6 +353,7 @@ def generate_ppt(outline: str | None = None, input_path: str | None = None,
                 result["model_call"] = last_call
                 if not last_call.get("success", True):
                     # LLM 调用失败时已回退模板，明确告知用户
+                    result["used_template"] = True
                     result["message"] = (message or "PPT已生成") + "（模型调用失败，已使用模板内容）"
 
         if progress:

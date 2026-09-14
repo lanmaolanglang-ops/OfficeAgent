@@ -10,6 +10,7 @@ import json
 import re
 import threading
 import time
+import unicodedata
 from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
@@ -80,6 +81,13 @@ INJECTION_RULES: tuple[InjectionRule, ...] = (
     InjectionRule(InjectionType.SYSTEM_OVERRIDE,
                   r"(?:忽略|无视|忘记)(?:所有)?(?:之前|以上|先前|系统)(?:的)?(?:指令|提示词|规则)",
                   "high", "尝试忽略现有指令", 75, True),
+    # 独立指令式 system override（高置信越狱口令：system override: /
+    # [SYSTEM OVERRIDE] / enable system override）。要求 system 与 override
+    # 相邻且 override 后不直接跟字母，放过 the system will override X（中间
+    # 有助词）以及 system overrides/overrode/overriding（屈折）等正常用法。
+    InjectionRule(InjectionType.SYSTEM_OVERRIDE,
+                  r"\bsystem\s+override\b(?![a-z])",
+                  "high", "伪造系统覆盖指令", 70, True),
     InjectionRule(InjectionType.PROMPT_LEAK,
                   r"\b(?:reveal|show|print|output|display|echo|repeat)\s+(?:me\s+)?(?:your\s+)?(?:system\s+|original\s+|previous\s+|above\s+)?(?:prompt|instructions?|rules?|text)\b",
                   "high", "尝试获取系统提示或内部指令", 65, True),
@@ -182,21 +190,32 @@ class PromptSecurityScanner:
         if not text:
             return SecurityScanResult(True, "safe", sanitized_text=text, source=source)
 
+        # P3-59: 关键词匹配前做 NFKC 兼容归一 + casefold，全角/兼容字符
+        # （如 ｉｇｎｏｒｅ、ＳＹＳＴＥＭ）无法绕过 ASCII 特征；原文仍用于回显。
+        scan_text = unicodedata.normalize("NFKC", text).casefold()
         matches: list[InjectionMatch] = []
         score = 0
         for rule, compiled in self._patterns:
             if source not in rule.sources:
                 continue
-            for found in compiled.finditer(text):
+            for found in compiled.finditer(scan_text):
                 contribution = rule.score
                 severity = rule.severity
                 matched_high_confidence = rule.high_confidence
-                context = text[max(0, found.start() - 80):found.start()]
-                if matched_high_confidence and _ANALYSIS_CONTEXT_RE.search(context):
-                    contribution = min(contribution, 25)
-                    severity = "medium"
-                    matched_high_confidence = False
-                if source in {"file", "external"}:
+                context = scan_text[max(0, found.start() - 80):found.start()]
+                # 分析/翻译前缀不得降级高置信指令覆盖：攻击者只需加
+                # "Please translate:" / "请翻译：" 即可把 SYSTEM_OVERRIDE
+                # 从 REJECT 压成 ALLOW。仅弱信号（非 high_confidence）
+                # 允许在分析语境下略微降权。
+                if (not matched_high_confidence
+                        and _ANALYSIS_CONTEXT_RE.search(context)):
+                    contribution = max(5, contribution // 2)
+                    if severity == "high":
+                        severity = "medium"
+                # file/external 的高置信注入不得被减分后卡在 REVIEW：
+                # 间接注入与用户输入同级阻断，否则 DOCX/PDF/RAG 中的
+                # 指令覆盖无法硬拦截。
+                if source in {"file", "external"} and not matched_high_confidence:
                     contribution = max(5, contribution // 2)
                     if severity == "high":
                         severity = "medium"
@@ -214,10 +233,10 @@ class PromptSecurityScanner:
         score = min(score, 100)
         high_confidence = any(match.high_confidence for match in matches)
         critical_token = any(match.severity == "critical" for match in matches)
-        if critical_token or (source == "user" and high_confidence and score >= 65):
+        # 高置信指令覆盖/提示泄漏对所有 source 一律 REJECT；
+        # critical 模型控制标记同样拒绝。弱信号仍走 REVIEW/ALLOW。
+        if critical_token or (high_confidence and score >= 65):
             action = PromptAction.REJECT
-        elif source in {"file", "external"} and high_confidence:
-            action = PromptAction.REVIEW
         elif score >= (25 if self.strict_mode else 40) or len(matches) >= 2:
             action = PromptAction.REVIEW
         else:

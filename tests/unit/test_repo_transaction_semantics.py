@@ -23,6 +23,7 @@ from office_agent.database.models.config import ModelConfig
 from office_agent.database.models.execution import ExecutionLog
 from office_agent.database.repository.config_repo import ModelConfigRepository
 from office_agent.database.repository.execution_repo import (
+    CANCELLED_EXECUTION_STATUSES,
     FAILED_EXECUTION_STATUSES,
     ExecutionLogRepository,
 )
@@ -122,8 +123,8 @@ class TestFailureStatusClassification:
         ))
         session.commit()
 
-    def test_failed_and_cancelled_counted_as_errors(self, session_factory):
-        """回归核心：failed/cancelled 是失败终态，统计不得漏计。"""
+    def test_failed_counted_as_errors_but_cancelled_separate(self, session_factory):
+        """error/failed 是失败终态；cancelled 是主动取消，单列而不计失败（P3-11）。"""
         session = session_factory()
         try:
             repo = ExecutionLogRepository(session)
@@ -135,10 +136,14 @@ class TestFailureStatusClassification:
         check = session_factory()
         try:
             repo = ExecutionLogRepository(check)
-            assert len(repo.get_errors(limit=100)) == 3
+            # 只有 error/failed 进入错误流；cancelled 不在其中
+            error_rows = repo.get_errors(limit=100)
+            assert sorted(r.status for r in error_rows) == ["error", "failed"]
             stats = repo.get_stats(hours=24)
-            assert stats["errors"] == 3, \
-                "失败口径必须涵盖 error/failed/cancelled"
+            assert stats["errors"] == 2, "失败口径只涵盖 error/failed"
+            assert stats["cancelled"] == 1, "cancelled 必须单列"
+            # 非取消样本 3 个（error/failed/success），成功 1 个
+            assert stats["success_rate"] == round(1 / 3 * 100, 2)
         finally:
             check.close()
 
@@ -159,4 +164,5 @@ class TestFailureStatusClassification:
             check.close()
 
     def test_failed_status_collection_is_shared_vocabulary(self):
-        assert FAILED_EXECUTION_STATUSES == ("error", "failed", "cancelled")
+        assert FAILED_EXECUTION_STATUSES == ("error", "failed")
+        assert CANCELLED_EXECUTION_STATUSES == ("cancelled",)

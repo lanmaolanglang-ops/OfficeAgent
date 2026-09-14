@@ -87,9 +87,20 @@ def session_scope() -> Generator[Session, None, None]:
 
 
 def get_db():
-    """FastAPI 依赖注入用"""
+    """FastAPI 依赖注入用。
+
+    事务契约（与 ``session_scope`` 的差异是刻意的）：
+    - **不自动 commit**：路由/服务负责在业务成功后显式 ``session.commit()``，
+      避免把半成品写入在依赖 teardown 阶段被静默提交。
+    - **异常时 rollback**：保证失败请求不留脏事务。
+    - **finally close**：归还连接。
+    需要「进出场自动提交」的脚本路径请使用 ``session_scope``。
+    """
     db = SessionLocal()
     try:
         yield db
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()

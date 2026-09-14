@@ -326,8 +326,10 @@ class AnalysisEngine:
                     or token_pattern.search(header)):
                 return i
 
-        # 第一列文本列
-        return text_cols[0] if text_cols else -1
+        # P3-31: without an explicit time column, only the leading text column
+        # is a defensible X/time axis (conventional layout). Picking an interior
+        # text column would mislabel a name/category column as the time axis.
+        return text_cols[0] if text_cols and text_cols[0] == 0 else -1
 
     # ==========================================
     # 单列统计分析

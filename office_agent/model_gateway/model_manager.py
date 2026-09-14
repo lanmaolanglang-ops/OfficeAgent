@@ -281,16 +281,21 @@ class ModelManager:
                     self._models[model_id] = config
     
     def _load_config(self):
-        """从配置文件加载"""
+        """从配置文件加载。
+
+        锁外 parse/validate → 锁内一次性 swap（P2-70），
+        避免 reader 观察到新 _models + 旧 _routing 的半更新。
+        """
         if not self.config_file.exists():
             self._save_config()
             return
-        
+
         try:
-            with self._config_lock, _advisory_file_lock(self._config_lock_file):
-                with open(self.config_file, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-            
+            with open(self.config_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+
+            new_models: dict[str, ModelConfig] = {}
+            decrypt_failures = 0
             # 加载模型配置
             for index, model_data in enumerate(data.get("models", [])):
                 try:
@@ -298,7 +303,7 @@ class ModelManager:
                     if not model_id:
                         raise ValueError("缺少 id")
                     provider = ModelProvider(normalize_provider(model_data["provider"]))
-                
+
                     # 合并默认配置
                     default = DEFAULT_MODEL_CONFIGS.get(provider)
                     if default:
@@ -335,23 +340,40 @@ class ModelManager:
                         supports_document=model_data.get("supports_document", False),
                         extra_params=model_data.get("extra_params", {}),
                         )
-                
-                # 优先级：models.json 中的 Key 优先于环境变量；
-                # 文件无 Key 时回退使用环境变量 Key
-                    if model_id in self._models and self._models[model_id].api_key and not config.api_key:
-                        config.api_key = self._models[model_id].api_key
 
-                    self._models[model_id] = config
+                    # 优先级：models.json 中的 Key 优先于环境变量；
+                    # 文件无 Key 时回退使用环境变量 Key
+                    with self._config_lock:
+                        prev = self._models.get(model_id)
+                    if prev and prev.api_key and not config.api_key:
+                        config.api_key = prev.api_key
+
+                    new_models[model_id] = config
+                except ValueError as exc:
+                    decrypt_failures += 1
+                    logger.warning("跳过模型配置 #%d（凭据解密失败，不记录密文）: %s",
+                                   index, type(exc).__name__)
                 except Exception as exc:
                     logger.warning("跳过损坏的模型配置 #%d: %s", index, exc)
-            
-            # 加载路由配置
+
+            if decrypt_failures and not new_models:
+                # 与「没有配置任何模型」区分（P2-71）
+                raise RuntimeError(
+                    "MODEL_CREDENTIAL_DECRYPTION_FAILED: "
+                    f"{decrypt_failures} 条模型密钥无法解密（主密钥不匹配或损坏）"
+                )
+
+            new_routing: dict[str, list[str]] = {}
             routing_data = data.get("routing", {})
             for task_type, model_ids in routing_data.items():
-                self._routing[task_type] = model_ids
+                new_routing[task_type] = model_ids
+            new_default = data.get("default_model_id") or None
 
-            # 加载默认模型
-            self._default_model_id = data.get("default_model_id") or None
+            # 锁内原子 swap
+            with self._config_lock:
+                self._models = new_models
+                self._routing = new_routing
+                self._default_model_id = new_default
 
             if self._encryption.migration_required:
                 self._save_config()

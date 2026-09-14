@@ -103,30 +103,19 @@ def _dummy_app():
 
 class TestLimiterUnit:
     def test_window_reset_with_injected_clock(self):
-        """窗口滑动：用注入时钟验证过期请求移出后重新放行（无真实等待）。"""
-        limiter = limiter_module.SlidingWindowLimiter(max_requests=2, window_seconds=60)
-        now = 1000.0
-        monkey_now = now
+        """窗口滑动：用注入时钟验证过期请求移出后重新放行（无真实等待）。
 
-        import office_agent.rate_limiter as rl
-        class _FakeTime:
-            @staticmethod
-            def time():
-                return monkey_now
-            @staticmethod
-            def monotonic():
-                return monkey_now
-        monkey_time = _FakeTime
-        old_time = rl.time
-        rl.time = monkey_time
-        try:
-            assert limiter.is_allowed("ip1").allowed
-            assert limiter.is_allowed("ip1").allowed
-            assert limiter.is_allowed("ip1").allowed is False  # 满了
-            monkey_now = now + 61  # 窗口滑过
-            assert limiter.is_allowed("ip1").allowed, "窗口过期后必须重新放行"
-        finally:
-            rl.time = old_time
+        SlidingWindowLimiter 使用 time.monotonic（P2-8），注入 clock 参数。
+        """
+        clock_now = [1000.0]
+        limiter = limiter_module.SlidingWindowLimiter(
+            max_requests=2, window_seconds=60, clock=lambda: clock_now[0],
+        )
+        assert limiter.is_allowed("ip1").allowed
+        assert limiter.is_allowed("ip1").allowed
+        assert limiter.is_allowed("ip1").allowed is False  # 满了
+        clock_now[0] += 61  # 窗口滑过
+        assert limiter.is_allowed("ip1").allowed, "窗口过期后必须重新放行"
 
     def test_identity_isolation_between_clients(self):
         limiter = limiter_module.SlidingWindowLimiter(max_requests=1, window_seconds=60)

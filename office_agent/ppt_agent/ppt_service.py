@@ -20,7 +20,7 @@ from pptx.oxml.ns import qn
 
 from .models import (
     PPTOutline, SlideContent, ColorScheme, FontScheme,
-    PPTGenerationResult,
+    PPTGenerationResult, LAYOUT_ITEMS_PER_PAGE, continuation_title,
 )
 
 
@@ -74,13 +74,15 @@ DEFAULT_FONTS = FontScheme()
 
 # 单页条目容量（由布局决定，不是整个 deck 的上限）。
 # 目录页：单列，起始 y=2.0、行距 0.85，第 6 项落在 y≈6.25，再往下会溢出。
-TOC_ITEMS_PER_PAGE = 6
+TOC_ITEMS_PER_PAGE = LAYOUT_ITEMS_PER_PAGE["toc"]
 # 列表页：2 列 × 4 行的序号卡片网格。
-CONTENT_LIST_ITEMS_PER_PAGE = 8
+CONTENT_LIST_ITEMS_PER_PAGE = LAYOUT_ITEMS_PER_PAGE["content_list"]
 # 两栏页：每栏 6 项，保留足够的垂直空间给中文正文和子要点。
-TWO_COLUMN_ITEMS_PER_PAGE = 6
+TWO_COLUMN_ITEMS_PER_PAGE = LAYOUT_ITEMS_PER_PAGE["two_column"]
 # 时间线页：节点文本框宽约 2.4 英寸，5 个节点仍能保持可读间距。
-TIMELINE_ITEMS_PER_PAGE = 5
+TIMELINE_ITEMS_PER_PAGE = LAYOUT_ITEMS_PER_PAGE["timeline"]
+# 数据卡片页：单排卡片，超过 4 张续页（P3-39）。
+DATA_CARDS_PER_PAGE = LAYOUT_ITEMS_PER_PAGE["data_cards"]
 
 
 def _paginate_items(items: list, per_page: int) -> list:
@@ -91,10 +93,8 @@ def _paginate_items(items: list, per_page: int) -> list:
 
 
 def _continuation_title(base: str, page_idx: int) -> str:
-    """续页标题：首页沿用原标题，之后带序号，避免多张续页分不清先后。"""
-    if page_idx <= 0:
-        return base
-    return f"{base}（续 {page_idx + 1}）"
+    """续页标题：与 quality_checker 共用同一口径（P3-47）。"""
+    return continuation_title(base, page_idx)
 
 
 def hex_to_rgb(hex_color: str) -> RGBColor:
@@ -123,6 +123,8 @@ class PPTService:
         self.fonts: FontScheme = DEFAULT_FONTS
         self.changes: list = []
         self.template_config = None  # TemplateConfig，设置后遵循模板布局
+        self._author = ""            # outline.author 透传，封面优先于 notes（P3-37）
+        self._section_seq = 0        # 章节过渡页按出现序编号（P3-38）
 
     def _x(self, v: float):
         """设计稿 x/宽度 → 实际 Emu"""
@@ -158,6 +160,9 @@ class PPTService:
         """
         try:
             self.changes = []
+            # 物理分页会插入额外页；后续大纲页的 page_number 必须整体后移，
+            # 否则会与续页共用同一编号。
+            page_offset = 0
 
             # 基底模板：以用户模板文件为容器（继承其母版/主题/背景/页面尺寸），
             # 只清空内容页。任何一步失败都回退到全新空白演示文稿。
@@ -217,9 +222,23 @@ class PPTService:
             else:
                 self.fonts = outline.font_scheme or DEFAULT_FONTS
 
+            # 封面作者与章节序号在每次生成时重置（P3-37/38）
+            self._author = getattr(outline, "author", "") or ""
+            self._section_seq = 0
+
             # 渲染每一页
             for slide_content in outline.slides:
+                before = len(self.prs.slides)
+                if page_offset:
+                    from dataclasses import replace as _dc_replace
+                    slide_content = _dc_replace(
+                        slide_content,
+                        page_number=slide_content.page_number + page_offset,
+                    )
                 self._render_slide(slide_content)
+                extra = (len(self.prs.slides) - before) - 1
+                if extra > 0:
+                    page_offset += extra
 
             self.prs.save(output_path)
             actual_slide_count = len(self.prs.slides)
@@ -230,6 +249,7 @@ class PPTService:
                 output_path=output_path,
                 slide_count=actual_slide_count,
                 changes=self.changes,
+                used_template=bool(getattr(outline, "used_template", False)),
             )
 
         except Exception as e:
@@ -334,10 +354,16 @@ class PPTService:
                     break
             except Exception:
                 continue
+        fallback_with_placeholders = layout is None
         if layout is None:
             layouts = list(prs.slide_layouts)
             layout = layouts[6] if len(layouts) > 6 else layouts[0]
         slide = prs.slides.add_slide(layout)
+        if fallback_with_placeholders:
+            # 回退到带占位符的版式时，add_slide 会把母版占位符复制到本页，
+            # 残留为“点击编辑标题”一类幽灵占位；显式移除（P3-42）。
+            for ph in list(slide.placeholders):
+                ph._element.getparent().remove(ph._element)
         # 基底模板时保留母版背景（覆盖填充会抹掉模板的背景/装饰）
         if not self._base_deck:
             bg = slide.background
@@ -471,7 +497,7 @@ class PPTService:
         return shape
 
     def _add_page_number(self, slide, num: int):
-        """添加页码"""
+        """添加页码（num 为大纲页号，物理分页偏移已在 render 循环中补偿）"""
         self._add_text_box(
             slide, 12.0, 7.0, 1.0, 0.4,
             str(num), font_size=self.fonts.caption_size,
@@ -486,18 +512,23 @@ class PPTService:
         for run in runs:
             run.font.name = font_name
             rPr = run._r.get_or_add_rPr()
+            # schema 子元素顺序要求 a:latin 在 a:ea 之前（P3-43），
+            # 反序会触发 PowerPoint“需要修复”。先 latin 后 ea。
+            latin = rPr.find(qn('a:latin'))
+            if latin is None:
+                latin = rPr.makeelement(qn('a:latin'), {})
+                ea_existing = rPr.find(qn('a:ea'))
+                if ea_existing is not None:
+                    ea_existing.addprevious(latin)
+                else:
+                    rPr.append(latin)
+            latin.set('typeface', font_name)
             # 设置东亚字体 a:ea
             ea = rPr.find(qn('a:ea'))
             if ea is None:
                 ea = rPr.makeelement(qn('a:ea'), {})
                 rPr.append(ea)
             ea.set('typeface', font_name)
-            # 设置拉丁字体 a:latin
-            latin = rPr.find(qn('a:latin'))
-            if latin is None:
-                latin = rPr.makeelement(qn('a:latin'), {})
-                rPr.append(latin)
-            latin.set('typeface', font_name)
 
     # ==========================================
     # 各版式具体实现
@@ -534,11 +565,12 @@ class PPTService:
                 anchor="middle"
             )
 
-        # 作者/日期
-        if content.notes:
+        # 作者/日期：优先 outline.author，缺省再退回该页 notes（P3-37）
+        author_line = self._author or content.notes
+        if author_line:
             self._add_text_box(
                 slide, 1.5, 5.0, 10.333, 0.5,
-                content.notes, font_size=16,
+                author_line, font_size=16,
                 color=self.colors.text_muted, alignment="center"
             )
 
@@ -605,6 +637,9 @@ class PPTService:
     def _render_section(self, content: SlideContent):
         """章节过渡页"""
         slide = self._add_blank_slide()
+        # 章节号按“第几个章节过渡页”计数，而非整份 deck 的页码（P3-38）
+        self._section_seq += 1
+        section_no = self._section_seq
 
         # 半屏深色背景
         self._add_rectangle(slide, 0, 0, 5.5, 7.5, self.colors.primary)
@@ -612,7 +647,7 @@ class PPTService:
         # 章节号
         self._add_text_box(
             slide, 0.8, 2.5, 4, 1.5,
-            f"{content.page_number:02d}", font_size=72, bold=True,
+            f"{section_no:02d}", font_size=72, bold=True,
             color=self.colors.accent, font_name=self.fonts.title_en
         )
 
@@ -686,7 +721,17 @@ class PPTService:
             )
 
         # 右侧图片占位
-        if content.image_path and Path(content.image_path).exists():
+        img_ok = False
+        if content.image_path:
+            try:
+                # 路径牢笼：只允许绝对路径且不在系统敏感根之外的常规文件
+                img_path = Path(content.image_path).resolve()
+                if img_path.is_file() and img_path.stat().st_size > 0:
+                    content.image_path = str(img_path)
+                    img_ok = True
+            except (OSError, ValueError):
+                img_ok = False
+        if img_ok:
             try:
                 slide.shapes.add_picture(
                     content.image_path,
@@ -824,29 +869,44 @@ class PPTService:
         self._add_page_number(slide, page_number)
 
     def _render_data_cards(self, content: SlideContent):
-        """数据卡片页"""
+        """数据卡片页：单排最多 4 张，超出自动续页，不静默丢弃（P3-39）。"""
+        data = list(content.data or [])
+        pages = _paginate_items(data, DATA_CARDS_PER_PAGE)
+        if not pages:
+            self._render_data_cards_page(content, [], content.title,
+                                         content.page_number)
+            return
+        for page_idx, page_items in enumerate(pages):
+            self._render_data_cards_page(
+                content, page_items,
+                _continuation_title(content.title, page_idx),
+                content.page_number + page_idx,
+            )
+
+    def _render_data_cards_page(self, content: SlideContent, data: list,
+                                title: str, page_number: int):
+        """渲染单排数据卡片（data 已按单页容量切好）。"""
         slide = self._add_blank_slide()
 
         # 标题
         self._add_text_box(
             slide, 0.8, 0.5, 11, 0.8,
-            content.title, font_size=self.fonts.title_size, bold=True,
+            title, font_size=self.fonts.title_size, bold=True,
             color=self.colors.primary, font_name=self.fonts.title_cn
         )
         self._add_decorative_line(slide, 0.8, 1.3, 11.7, 0.04, self.colors.secondary)
 
-        data = content.data or []
-        data = list(data[:4])
+        data = list(data)
 
         card_width = 2.6
         gap = 0.35
-        total_width = len(data) * card_width + (len(data) - 1) * gap
-        start_x = (13.333 - total_width) / 2
+        total_width = len(data) * card_width + max(len(data) - 1, 0) * gap
+        start_x = (13.333 - total_width) / 2 if data else 0.0
 
         colors = [self.colors.primary, self.colors.secondary,
                   self.colors.accent, self.colors.primary]
 
-        for i, item in enumerate(data[:4]):
+        for i, item in enumerate(data):
             if isinstance(item, (list, tuple)) and len(item) >= 2:
                 label = item[0]
                 value = item[1]
@@ -885,7 +945,7 @@ class PPTService:
                 color=self.colors.text_light, alignment="center"
             )
 
-        self._add_page_number(slide, content.page_number)
+        self._add_page_number(slide, page_number)
 
     def _render_timeline(self, content: SlideContent):
         """时间线页"""
@@ -1077,15 +1137,20 @@ class PPTService:
                 if max_cols == 0 or len(table_data) == 0:
                     table_data = []
             if table_data:
-                if len(table_data) > 40:
-                    overflow = len(table_data) - 40
-                    table_data = table_data[:40]
-                    if not content.body_text:
-                        content.body_text = f"（内容较长，仅显示前 40 行，省略 {overflow} 行）"
+                # 40 行压进 5.2" 会溢出页面。按可用高度估算可容纳行数
+                # （表头 + 数据行，每行约 0.28"），超出则截断并说明。
+                max_rows = max(6, int((5.2 - 0.3) / 0.28))  # ≈17 行
+                if len(table_data) > max_rows:
+                    overflow = len(table_data) - max_rows
+                    table_data = table_data[:max_rows]
+                    note = f"（表格较长，仅显示前 {max_rows} 行，省略 {overflow} 行）"
+                    content.body_text = (
+                        f"{content.body_text}；{note}" if content.body_text else note
+                    )
                 rows = len(table_data)
                 # 表格位置
                 t_left, t_top = 0.8, 1.6
-                t_width, t_height = 11.733, min(5.2, 0.5 * rows + 0.3)
+                t_width, t_height = 11.733, min(5.2, 0.35 * rows + 0.3)
                 self._add_table(
                     slide, t_left, t_top, t_width, t_height,
                     table_data, has_header=content.table_header
@@ -1273,11 +1338,22 @@ class PPTService:
         if not normalized_categories:
             raise ValueError("图表类别不能为空")
         expected_len = len(normalized_categories)
+        # 长度不匹配的系列局部降级丢弃，不让单张图表拖垮整份 deck
+        kept = []
         for name, values in normalized_series:
-            if len(values) != expected_len:
-                raise ValueError(
-                    f"图表系列 {name!r} 有 {len(values)} 个值，但类别有 {expected_len} 个"
+            if len(values) == expected_len:
+                kept.append((name, values))
+            else:
+                logger.warning(
+                    "图表系列 %r 长度 %s ≠ 类别 %s，已跳过该系列",
+                    name, len(values), expected_len,
                 )
+                self.changes.append(
+                    f"图表系列「{name}」长度不匹配已跳过"
+                )
+        if not kept:
+            raise ValueError("所有图表系列长度与类别不匹配")
+        normalized_series = kept
 
         chart_data = CategoryChartData()
         chart_data.categories = normalized_categories
@@ -1323,10 +1399,19 @@ class PPTService:
             self.colors.primary, self.colors.secondary, self.colors.accent,
             "#70AD47", "#5B9BD5", "#C0504D", "#8064A2"
         ]
+        is_pie_like = chart_type in ("pie", "doughnut")
         for i, s in enumerate(chart.series):
-            color = series_colors[i % len(series_colors)]
-            s.format.fill.solid()
-            s.format.fill.fore_color.rgb = hex_to_rgb(color)
+            if is_pie_like:
+                # 饼/环图单系列时按系列上色会得到“全片同色”，
+                # 需逐数据点（扇区）上色（P3-52）。
+                for j, point in enumerate(s.points):
+                    color = series_colors[j % len(series_colors)]
+                    point.format.fill.solid()
+                    point.format.fill.fore_color.rgb = hex_to_rgb(color)
+            else:
+                color = series_colors[i % len(series_colors)]
+                s.format.fill.solid()
+                s.format.fill.fore_color.rgb = hex_to_rgb(color)
 
         # 饼图数据标签
         if chart_type == "pie":

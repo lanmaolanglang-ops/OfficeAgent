@@ -436,7 +436,13 @@ class FormulaGenerator:
                     else:
                         # 月度是业务报表中最常见的同比粒度；没有明确粒度时采用 12 期。
                         lag = 12
-                for row in range(data_start_row + lag, end_row + 1):
+                growth_rows = range(data_start_row + lag, end_row + 1)
+                # P3-23: a series shorter than the YoY lag yields no growth
+                # rows; skip the column instead of leaving an orphan header
+                # with no formulas beneath it.
+                if data_start_row + lag > end_row:
+                    continue
+                for row in growth_rows:
                     cur = f"{col_letter}{row}"
                     prev = f"{col_letter}{row - 1}"
                     prev_year = f"{col_letter}{row - lag}"
@@ -551,9 +557,11 @@ class FormulaGenerator:
                 elif tpl.name == "averageif":
                     formula = f'=AVERAGEIF({cond_range},{criteria},{sum_range})'
                 elif tpl.name == "sumifs":
-                    formula = f'=SUMIFS({sum_range},{cond_range},{criteria})'
+                    # 本自动路径只有一个条件列：写成单条件 SUMIF（语义正确），
+                    # 而不是只填第一对参数的假 SUMIFS（模板声明双条件却缺参）。
+                    formula = f'=SUMIF({cond_range},{criteria},{sum_range})'
                 elif tpl.name == "countifs":
-                    formula = f'=COUNTIFS({cond_range},{criteria})'
+                    formula = f'=COUNTIF({cond_range},{criteria})'
                     col_letter = self._col_letter(condition_col.index + 1)
                 else:
                     formula = tpl.template.format(
@@ -849,11 +857,14 @@ class FormulaGenerator:
         """将公式写入工作表（通过 ExcelService）"""
         count = 0
         for f in formulas:
-            if f.category == "header" or f.category == "label":
-                # 标题/标签直接写值
+            if f.category in ("header", "label"):
+                # 标题/标签是纯文本，走默认数据路径（含公式注入转义）
                 service.set_cell(sheet_name, f.target_cell, f.formula)
             else:
-                service.set_cell(sheet_name, f.target_cell, f.formula)
+                # 真实公式：必须显式放行，否则会被转义成文本
+                service.set_cell(
+                    sheet_name, f.target_cell, f.formula, allow_formula=True
+                )
             count += 1
         return count
 
@@ -939,16 +950,19 @@ class FormulaGenerator:
 
         matched = []
         for col in sheet.columns:
-            if col.name and col.name in text:
+            # P3-25: require a name of at least 2 chars for direct name-in-text
+            # matching — a single-char header ("额"/"量") occurring anywhere in
+            # the request would otherwise over-match unrelated columns.
+            if col.name and len(col.name) >= 2 and col.name in text:
                 if col.data_type == "number" or col.semantic_type in ("amount", "quantity", "metric"):
                     matched.append(col)
 
         if not matched:
-            # 模糊匹配：金额/数量/指标列
+            # 模糊匹配：金额/数量/指标列（关键词至少两字，避免单字"额"横扫）
             for col in sheet.columns:
                 if col.semantic_type in ("amount", "quantity", "metric"):
-                    for kw in ["金额", "额", "数量", "销售", "收入", "支出", "价格", "分数", "得分"]:
-                        if kw in text and (kw in col.name or col.semantic_type in ("amount", "quantity")):
+                    for kw in ["金额", "数量", "销售", "收入", "支出", "价格", "分数", "得分"]:
+                        if kw in text and kw in col.name:
                             matched.append(col)
                             break
 
@@ -1015,25 +1029,22 @@ class FormulaGenerator:
         true_val = '"达标"'
         false_val = '"未达标"'
 
-        m = re.search(r"大于\s*(\d+\.?\d*)", text)
-        if m:
-            threshold = m.group(1)
-            condition = f"{{cell}}>{threshold}"
-
-        m = re.search(r"超过\s*(\d+\.?\d*)", text)
-        if m:
-            threshold = m.group(1)
-            condition = f"{{cell}}>{threshold}"
-
-        m = re.search(r"小于\s*(\d+\.?\d*)", text)
-        if m:
-            threshold = m.group(1)
-            condition = f"{{cell}}<{threshold}"
-
-        if "大于等于" in text or "不低于" in text:
-            m = re.search(r"(?:大于等于|不低于)\s*(\d+\.?\d*)", text)
+        # P3-24: order matters — negated/compound comparators must be matched
+        # before the bare 大于/小于 they contain ("不大于80" -> <=80, not >80),
+        # and the <= family was previously missing entirely. First hit wins.
+        comparator_patterns = [
+            (r"(?:大于等于|不小于|不低于)\s*(\d+\.?\d*)", ">="),
+            (r"(?:小于等于|不大于|不高于)\s*(\d+\.?\d*)", "<="),
+            (r"(?<!不)大于\s*(\d+\.?\d*)", ">"),
+            (r"超过\s*(\d+\.?\d*)", ">"),
+            (r"(?<!不)小于\s*(\d+\.?\d*)", "<"),
+            (r"低于\s*(\d+\.?\d*)", "<"),
+        ]
+        for pattern, operator in comparator_patterns:
+            m = re.search(pattern, text)
             if m:
-                condition = f"{{cell}}>={m.group(1)}"
+                condition = f"{{cell}}{operator}{m.group(1)}"
+                break
 
         return condition, true_val, false_val
 

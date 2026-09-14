@@ -71,7 +71,9 @@ class KnowledgeDocument:
             self.id = f"doc_{uuid.uuid4().hex[:12]}"
         if not self.created_at:
             self.created_at = datetime.now(timezone.utc).isoformat()
-        self.updated_at = datetime.now(timezone.utc).isoformat()
+        # P3-78: 载入已有文档时必须保留其 updated_at；仅新建（空值）时补当前时间
+        if not self.updated_at:
+            self.updated_at = datetime.now(timezone.utc).isoformat()
         self.chunk_count = len(self.chunks)
 
     def to_dict(self) -> dict:

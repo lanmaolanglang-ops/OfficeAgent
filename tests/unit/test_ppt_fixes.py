@@ -93,9 +93,32 @@ class TestPPTHostileContent:
         service = PPTService()
         service.prs = Presentation()
         slide = service.prs.slides.add_slide(service.prs.slide_layouts[6])
-        with pytest.raises(ValueError, match="类别有 2 个"):
+        with pytest.raises(ValueError, match="长度|类别"):
             service._add_chart(slide, 1, 1, 5, 3, "column",
                                ["一月", "二月"], [("销售", [1])])
+
+    def test_chart_skips_only_bad_series_when_good_one_remains(self, temp_dir):
+        """局部降级：坏系列跳过，好系列仍出图。"""
+        from office_agent.ppt_agent.models import PPTOutline, SlideContent
+
+        outline = PPTOutline(title="T")
+        outline.slides = [
+            SlideContent(layout="cover", title="封面"),
+            SlideContent(
+                layout="chart", title="图", chart_type="column",
+                chart_categories=["一", "二"],
+                chart_series=[("好", [1, 2]), ("坏", [9])],
+            ),
+        ]
+        out = temp_dir / "partial_chart.pptx"
+        result = PPTService().generate(outline, str(out))
+        assert result.success, result.message
+        prs = Presentation(str(out))
+        charts = [
+            s.chart for slide in prs.slides for s in slide.shapes
+            if isinstance(s, GraphicFrame) and s.has_chart
+        ]
+        assert charts, "好系列应仍生成图表"
 
     def test_hex_color_validation_and_short_form(self):
         assert tuple(hex_to_rgb("#abc")) == (170, 187, 204)

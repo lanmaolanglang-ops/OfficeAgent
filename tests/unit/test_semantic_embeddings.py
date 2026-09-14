@@ -357,6 +357,7 @@ class TestEmbeddingRuntimeDeployment:
             api_key="sk-test",
             base_url="https://example.com/v1",
             model="text-embedding-3-small",
+            dimension=4,
         )
         vector = embedder.embed_query("中文语义检索")
         assert embedder.semantic is True

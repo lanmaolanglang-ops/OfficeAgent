@@ -4,7 +4,7 @@ Agent Permission System - Agent权限管理
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 import threading
 import time
@@ -145,7 +145,13 @@ class ToolRegistry:
     """工具注册表"""
 
     def __init__(self, tools: dict[str, ToolInfo] | None = None):
-        self._tools: dict[str, ToolInfo] = dict(tools or DEFAULT_TOOLS)
+        source = tools or DEFAULT_TOOLS
+        # 深拷贝 ToolInfo：浅拷贝会让多个注册表共享同一 ToolInfo 实例，
+        # 一个调用方改 requires_approval/allowed_agents 会污染全局默认表。
+        self._tools: dict[str, ToolInfo] = {
+            name: replace(tool, allowed_agents=set(tool.allowed_agents or ()))
+            for name, tool in source.items()
+        }
 
     def register(self, tool: ToolInfo):
         """注册工具"""
@@ -229,8 +235,13 @@ class AgentPermissionManager:
 
     def can_use_tool(self, agent: str, tool_name: str,
                      *, user_id: str | None = None,
-                     approval_granted: bool = False) -> tuple[bool, str]:
-        """检查Agent是否可以使用工具（含频率限制）"""
+                     approval_granted: bool = False,
+                     approval_id: str | None = None) -> tuple[bool, str]:
+        """检查Agent是否可以使用工具（含频率限制）。
+
+        ``requires_approval`` 工具的信任根是 server-side ApprovalStore
+        （``approval_id``），调用方布尔仅作兼容回退且不足以放行（P2-59）。
+        """
         # 基本权限检查
         allowed, reason = self.registry.check_access(agent, tool_name)
         if not allowed:
@@ -246,10 +257,24 @@ class AgentPermissionManager:
 
             tool = self.registry.get(tool_name)
             if tool:
-                if tool.requires_approval and not approval_granted:
-                    reason = f"工具 '{tool_name}' 需要人工审批"
-                    self._audit_blocked(user_id, agent, tool_name, reason)
-                    return False, reason
+                if tool.requires_approval:
+                    approved = False
+                    if approval_id:
+                        from .approval_store import get_approval_store
+                        approved = get_approval_store().consume(
+                            approval_id,
+                            user_id=user_id or "",
+                            agent=agent,
+                            tool_name=tool_name,
+                        )
+                    # 兼容旧签名：无 approval_id 时布尔不足以放行高风险工具
+                    if not approved:
+                        reason = (
+                            f"工具 '{tool_name}' 需要有效 server-side 审批"
+                            f"（approval_id），调用方布尔不可信"
+                        )
+                        self._audit_blocked(user_id, agent, tool_name, reason)
+                        return False, reason
                 key = (agent, tool_name)
                 now = time.time()
                 self._call_counts[key] = [
@@ -263,7 +288,7 @@ class AgentPermissionManager:
                 self._call_counts[key].append(now)
 
         if tool:
-            self._audit_high_risk_call(user_id, agent, tool, approval_granted)
+            self._audit_high_risk_call(user_id, agent, tool, True)
         return True, "允许"
 
     def block_tool(self, agent: str, tool_name: str):

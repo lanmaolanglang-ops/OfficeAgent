@@ -119,9 +119,19 @@ class YamlLoader:
             str(get_data_root() / "config"),
         ))
 
+    def _resolve_within(self, filename: str) -> Path:
+        """把 filename 约束在 config_dir 内，拒绝 ../ 越界（P3-70）。"""
+        base = self.config_dir.resolve()
+        target = (base / filename).resolve()
+        try:
+            target.relative_to(base)
+        except ValueError as exc:
+            raise ValueError(f"配置路径越界: {filename}") from exc
+        return target
+
     def load(self, filename: str = "config.yaml") -> Dict[str, Any]:
         """加载 YAML 配置文件"""
-        filepath = self.config_dir / filename
+        filepath = self._resolve_within(filename)
         if not filepath.exists():
             logger.debug(f"配置文件不存在: {filepath}")
             return {}
@@ -174,7 +184,7 @@ class YamlLoader:
     def save(self, data: Dict[str, Any], filename: str = "config.yaml"):
         """保存配置到 YAML 文件（原子写入，中断不会留下半截配置）。"""
         self.config_dir.mkdir(parents=True, exist_ok=True)
-        filepath = self.config_dir / filename
+        filepath = self._resolve_within(filename)
         try:
             import yaml
         except ImportError:

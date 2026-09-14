@@ -27,11 +27,14 @@ class RoleModel(Base, TimestampMixin):
     permissions: Mapped[list] = mapped_column(JSON, default=list)
     is_system: Mapped[bool] = mapped_column(Boolean, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # 乐观锁版本号（P2-22）：UPDATE ... WHERE id=? AND version=?
+    version: Mapped[int] = mapped_column(Integer, default=1, server_default="1", nullable=False)
 
     def to_dict(self) -> dict:
         return {"id": self.id, "name": self.name, "display_name": self.display_name,
                 "description": self.description, "permissions": self.permissions or [],
-                "is_system": self.is_system, "is_active": self.is_active}
+                "is_system": self.is_system, "is_active": self.is_active,
+                "version": self.version}
 
 
 class PermissionModel(Base, TimestampMixin):

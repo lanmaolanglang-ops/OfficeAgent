@@ -69,7 +69,7 @@ def test_single_insert_then_later_action_targets_original_slide():
     )
     fixed = PPTQualityChecker().fix_outline(outline, report)
 
-    assert _titles(fixed) == ["S1", "S2", "S2（续）", "S3", "S4", "S5", "S6"]
+    assert _titles(fixed) == ["S1", "S2", "S2（续 2）", "S3", "S4", "S5", "S6"]
     # 降字号必须落在 S5（原第 5 页），而不是被前移的 S4
     assert _font_of(fixed, "S5") == 16
     assert _font_of(fixed, "S4") is None
@@ -102,7 +102,7 @@ def test_two_inserts_then_later_action():
     fixed = PPTQualityChecker().fix_outline(outline, report)
 
     assert _titles(fixed) == [
-        "S1", "S2", "S2（续）", "S3", "S4", "S4（续）", "S5", "S6", "S7",
+        "S1", "S2", "S2（续 2）", "S3", "S4", "S4（续 2）", "S5", "S6", "S7",
     ]
     assert _font_of(fixed, "S7") == 16
     assert _font_of(fixed, "S6") is None
@@ -136,7 +136,7 @@ def test_insert_after_target_does_not_move_target():
     fixed = PPTQualityChecker().fix_outline(outline, report)
 
     assert _font_of(fixed, "S2") == 16
-    assert "S4（续）" in _titles(fixed)
+    assert "S4（续 2）" in _titles(fixed)
 
 
 # --------------------------------------------------- 5. delete + 后续动作
@@ -225,7 +225,7 @@ def test_insert_on_last_slide_then_no_later_target():
     report = _report({"type": "reduce_bullets", "slide": 3, "max": 1})
     fixed = PPTQualityChecker().fix_outline(outline, report)
 
-    assert _titles(fixed) == ["S1", "S2", "S3", "S4", "S4（续）"]
+    assert _titles(fixed) == ["S1", "S2", "S3", "S4", "S4（续 2）"]
     assert fixed.slides[-1].bullets == ["b1", "b2"]
 
 
@@ -301,4 +301,4 @@ def test_add_title_targets_original_slide_after_insert():
     fixed = PPTQualityChecker().fix_outline(outline, report)
 
     # 插页后 S4 位于下标 4，标题应为"第5页"
-    assert _titles(fixed) == ["S1", "S2", "S2（续）", "S3", "第5页", "S5"]
+    assert _titles(fixed) == ["S1", "S2", "S2（续 2）", "S3", "第5页", "S5"]

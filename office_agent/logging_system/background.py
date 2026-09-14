@@ -53,16 +53,40 @@ def submit(func: Callable, *args, **kwargs) -> bool:
         return False
 
 
+def _drain_inline():
+    """在当前线程同步排空队列中剩余任务（shutdown/队列满兜底，避免丢日志）。"""
+    while True:
+        try:
+            job = _jobs.get_nowait()
+        except queue.Empty:
+            return
+        try:
+            if job is _sentinel:
+                continue
+            func, args, kwargs = job
+            try:
+                func(*args, **kwargs)
+            except Exception:
+                _logger.exception("shutdown 同步兜底写任务失败，已跳过")
+        finally:
+            _jobs.task_done()
+
+
 def shutdown(timeout: float = 2.0):
     """Best-effort drain on interpreter shutdown."""
     worker = _worker
     if worker is None or not worker.is_alive():
+        _drain_inline()
         return
     try:
         _jobs.put(_sentinel, timeout=timeout)
     except queue.Full:
+        # P3-116: sentinel 进不去说明仍有最多 1000 条积压，本线程兜底排空而非丢弃
+        _drain_inline()
         return
     worker.join(timeout=timeout)
+    if worker.is_alive():
+        _drain_inline()
 
 
 atexit.register(shutdown)

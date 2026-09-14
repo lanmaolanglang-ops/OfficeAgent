@@ -305,6 +305,13 @@ class AuditLogger:
             risk_level=risk_level,
         )
 
+        # danger/critical 或 blocked/denied 属安全事件，即便审计被关闭，
+        # 也必须至少打到日志，不能被开关一并静默（P3-58）。
+        security_critical = (
+            entry.risk_level in ("danger", "critical")
+            or entry.status in ("blocked", "denied")
+        )
+
         if self.enable:
             with self._entries_lock:
                 self._entries.append(entry)
@@ -336,6 +343,12 @@ class AuditLogger:
                     cb(entry)
                 except Exception as e:
                     logger.error(f"Audit callback error: {e}")
+        elif security_critical:
+            logger.warning(
+                "AUDIT(off) [%s] %s: user=%s resource=%s status=%s",
+                entry.risk_level.upper(), entry.action,
+                entry.user_id, entry.resource, entry.status,
+            )
 
         return entry
 
@@ -527,11 +540,14 @@ class AuditLogger:
 
 # 全局审计日志
 _audit_logger: AuditLogger | None = None
+_audit_logger_lock = threading.Lock()
 
 
 def get_audit_logger() -> AuditLogger:
-    """获取全局审计日志"""
+    """获取全局审计日志（双检锁，避免并发重复构造，P3-57）"""
     global _audit_logger
     if _audit_logger is None:
-        _audit_logger = AuditLogger()
+        with _audit_logger_lock:
+            if _audit_logger is None:
+                _audit_logger = AuditLogger()
     return _audit_logger

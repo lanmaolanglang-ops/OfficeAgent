@@ -82,7 +82,12 @@ class OpenAIClient(BaseModelClient):
             with urlopen(req, timeout=self.config.timeout) as resp:
                 result = json.loads(resp.read().decode("utf-8"))
             
-            choice = result["choices"][0]
+            # P3-85: provider 可能返回缺失/空 choices，不能用 [0] 触发
+            # IndexError 再被笼统映射成“传输错误”，应给出明确的空响应错误。
+            choices = result.get("choices") or []
+            if not choices:
+                return self._make_error("模型返回空 choices（无候选响应）", start)
+            choice = choices[0]
             message = choice.get("message", {}) or {}
             content = message.get("content") or ""
             finish_reason = choice.get("finish_reason", "")

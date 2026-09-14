@@ -240,7 +240,7 @@ class StylePresets:
         """简约风格"""
         return (
             THEME_COLORS["minimal"],
-            FontScheme(title_cn="思源黑体", body_cn="思源黑体", title_size=26, body_size=16),
+            FontScheme(title_cn="微软雅黑", body_cn="微软雅黑", title_size=26, body_size=16),
         )
 
     @staticmethod

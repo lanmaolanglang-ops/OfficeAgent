@@ -103,28 +103,34 @@ class ExcelQualityScorer:
             result.issues.append(f"无法打开文件: {e}")
             return result
 
-        # 分析工作簿
-        analysis = self._analyze_workbook(wb, wb_data)
+        # P3-95: 两个 workbook 必须确定性关闭（Windows 文件句柄），
+        # 分析过程抛错也不能泄漏。
+        try:
+            # 分析工作簿
+            analysis = self._analyze_workbook(wb, wb_data)
 
-        # 各维度评分
-        result.formula_accuracy = self._score_formulas(analysis, expected_formulas)
-        result.analysis_accuracy = self._score_analysis(analysis, expected_sheets)
-        result.chart_appropriateness = self._score_charts(analysis, expected_charts)
+            # 各维度评分
+            result.formula_accuracy = self._score_formulas(analysis, expected_formulas)
+            result.analysis_accuracy = self._score_analysis(analysis, expected_sheets)
+            result.chart_appropriateness = self._score_charts(analysis, expected_charts)
 
-        result.formula_details = analysis.get("formula", {})
-        result.analysis_details = analysis.get("analysis", {})
-        result.chart_details = analysis.get("chart", {})
+            result.formula_details = analysis.get("formula", {})
+            result.analysis_details = analysis.get("analysis", {})
+            result.chart_details = analysis.get("chart", {})
 
-        # 总分
-        result.total_score = (
-            result.formula_accuracy * self.WEIGHT_FORMULA_ACCURACY +
-            result.analysis_accuracy * self.WEIGHT_ANALYSIS_ACCURACY +
-            result.chart_appropriateness * self.WEIGHT_CHART_APPROPRIATENESS
-        )
+            # 总分
+            result.total_score = (
+                result.formula_accuracy * self.WEIGHT_FORMULA_ACCURACY +
+                result.analysis_accuracy * self.WEIGHT_ANALYSIS_ACCURACY +
+                result.chart_appropriateness * self.WEIGHT_CHART_APPROPRIATENESS
+            )
 
-        result.issues = self._collect_issues(analysis, expected_formulas,
-                                             expected_charts, expected_sheets)
-        result.suggestions = self._collect_suggestions(analysis)
+            result.issues = self._collect_issues(analysis, expected_formulas,
+                                                 expected_charts, expected_sheets)
+            result.suggestions = self._collect_suggestions(analysis)
+        finally:
+            wb.close()
+            wb_data.close()
 
         return result
 
@@ -320,11 +326,10 @@ class ExcelQualityScorer:
 
         # 检查期望公式
         if expected:
-            found = set(analysis["formula_types"])
-            matched = sum(1 for e in expected if any(
-                e.upper() in f or f in e.upper()
-                for f in found
-            ))
+            # P3-94: 函数名按精确大写等值匹配。旧的双向子串会让 SUM 与
+            # SUMIF/SUMIFS 互相误命中（"SUM" in "SUMIF" 与反向都为真）。
+            found = {str(f).upper().strip() for f in analysis["formula_types"]}
+            matched = sum(1 for e in expected if str(e).upper().strip() in found)
             match_rate = matched / len(expected)
             score += match_rate * 10
 

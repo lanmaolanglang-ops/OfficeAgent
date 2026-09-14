@@ -25,6 +25,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
     PUBLIC_PATHS = {
         "/docs", "/redoc", "/openapi.json",
         "/api/health", "/health", "/",
+        # 存活/就绪探针必须无鉴权，否则 K8s/桌面监督会把鉴权失败当进程死亡
+        "/live", "/ready", "/api/live", "/api/ready",
     }
 
     def __init__(self, app):
@@ -89,6 +91,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 return "file", parts[3]
             if (parts[2] == "upload" and len(parts) >= 5
                     and parts[3] == "multipart"):
+                # multipart/init|complete|status 不是具体文件资源，
+                # 不能把字面量 "init" 当 file_id 做 ownership 校验
+                if parts[4] in {"init", "complete", "status", "parts"}:
+                    return None
                 return "file", parts[4]
             if parts[2] not in {"upload", "trash", "stats", "cleanup"}:
                 return "file", parts[2]

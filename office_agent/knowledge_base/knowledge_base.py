@@ -17,7 +17,9 @@ from .models import (
 )
 from .document_parser import DocumentParser
 from .text_chunker import TextChunker, ChunkConfig
-from .embeddings import TfidfEmbedder, BaseEmbedder
+from .embeddings import (
+    TfidfEmbedder, BaseEmbedder, EmbeddingBackendUnavailableError,
+)
 from .vector_store import VectorStore
 from ..runtime_config import get_data_root
 
@@ -384,16 +386,18 @@ class OfficeKnowledgeBase:
         docs_path = os.path.join(self.storage_dir, "documents.json")
         _atomic_json_write(docs_path, docs_data, indent=2)
 
-        # 保存 chunks（含向量）
+        # 保存 chunks（含向量）。P3-77: 只保留 id -> StoredChunk 的引用映射，
+        # 不再一次性 list() 物化全部向量副本（chunks_data 序列化本身已持有一份，
+        # 额外的 dict 会让峰值内存翻倍）。
         chunks_data = []
-        embeddings_by_chunk_id = {
-            stored.chunk.id: list(stored.embedding)
-            for stored in self.store._chunks
+        stored_by_chunk_id = {
+            stored.chunk.id: stored for stored in self.store._chunks
         }
         for doc in self.documents.values():
             for chunk in doc.chunks:
                 cd = chunk.to_dict(include_embedding=False)
-                cd["embedding"] = embeddings_by_chunk_id.get(chunk.id, [])
+                stored = stored_by_chunk_id.get(chunk.id)
+                cd["embedding"] = list(stored.embedding) if stored is not None else []
                 chunks_data.append(cd)
 
         chunks_path = os.path.join(self.storage_dir, "chunks.json")
@@ -513,13 +517,24 @@ class OfficeKnowledgeBase:
         return "\n".join(lines)
 
 
-def create_default_kb(storage_dir: str | None = None) -> OfficeKnowledgeBase:
+def create_default_kb(storage_dir: str | None = None,
+                      embedder: Optional[BaseEmbedder] = None) -> OfficeKnowledgeBase:
     """
     创建带内置知识的默认知识库
 
-    内置一些常用办公规范，开箱即用。
+    内置一些常用办公规范，开箱即用。P3-130：显式传入 embedder 时优先使用；
+    否则尝试创建已配置的语义 embedder，离线/未配置时回退 TfidfEmbedder，
+    不再把默认知识库永久钉死在 Tfidf。
     """
-    kb = OfficeKnowledgeBase(storage_dir=storage_dir or _default_kb_storage_dir())
+    if embedder is None:
+        try:
+            from .embeddings import create_semantic_embedder
+            embedder = create_semantic_embedder()
+        except EmbeddingBackendUnavailableError:
+            embedder = TfidfEmbedder()
+    kb = OfficeKnowledgeBase(
+        storage_dir=storage_dir or _default_kb_storage_dir(), embedder=embedder
+    )
 
     # 如果已有数据，不重复添加
     if kb.stats["total_documents"] > 0:

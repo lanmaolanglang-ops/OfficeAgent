@@ -27,6 +27,7 @@ class AppStatus(str, Enum):
     STOPPED = "stopped"
     STARTING = "starting"
     RUNNING = "running"
+    STOPPING = "stopping"
     ERROR = "error"
     RESTARTING = "restarting"
     UPDATING = "updating"
@@ -52,7 +53,6 @@ class AppConfig:
     log_dir: Optional[Path] = None
     python_executable: Optional[str] = None
     backend_dir: Optional[Path] = None
-    run_in_background: bool = False
 
     def __post_init__(self):
         if self.data_dir is None:
@@ -98,6 +98,8 @@ class ApplicationRuntimeManager:
         self._status_callbacks: list[Callable] = []
         self._health_failures = 0
         self._max_health_failures = 3
+        # 状态机临界区：start/stop/健康失败路径共用；不含网络/子进程 wait。
+        self._state_lock = threading.RLock()
         self._ensure_dirs()
 
     def _ensure_dirs(self):
@@ -113,19 +115,21 @@ class ApplicationRuntimeManager:
         self._status_callbacks.append(callback)
 
     def _set_status(self, status: AppStatus, error: str = ""):
-        old = self.state.status
-        self.state.status = status
-        if error:
-            self.state.last_error = error
-        if status == AppStatus.RUNNING:
-            self.state.start_time = time.time()
-            self.state.health_ok = True
-        elif status == AppStatus.STOPPED:
-            self.state.uptime_seconds = time.time() - self.state.start_time if self.state.start_time else 0
-            self.state.pid = None
+        with self._state_lock:
+            old = self.state.status
+            self.state.status = status
+            if error:
+                self.state.last_error = error
+            if status == AppStatus.RUNNING:
+                self.state.start_time = time.time()
+                self.state.health_ok = True
+            elif status == AppStatus.STOPPED:
+                self.state.uptime_seconds = time.time() - self.state.start_time if self.state.start_time else 0
+                self.state.pid = None
+            snapshot = AppState(**vars(self.state))
         for cb in self._status_callbacks:
             try:
-                cb(status, self.state)
+                cb(status, snapshot)
             except Exception:
                 # 回调（桌面 GUI 等）边界无法穷举异常类型，保持 broad catch，
                 # 但失败必须留痕而非静默。
@@ -198,27 +202,27 @@ class ApplicationRuntimeManager:
         return self._stop_event.wait(0.5)
 
     def start(self) -> bool:
-        """启动Backend"""
-        if (self.state.status == AppStatus.RUNNING
-                and self._process is not None
-                and self._process.poll() is None):
-            # 仅在"确实持有存活子进程"时才视为已启动；状态是 RUNNING 但进程
-            # 已死/缺失时必须继续走启动流程，否则会空转返回 True（P1-3）。
-            logger.info("Already running")
-            return True
-        if self.is_port_in_use():
-            # 端口被占用，可能已经在运行
-            if self.check_health():
-                self._set_status(AppStatus.RUNNING)
+        """启动Backend。STARTING 状态阻止第二次 spawn（P2-3）。"""
+        with self._state_lock:
+            if (self.state.status == AppStatus.RUNNING
+                    and self._process is not None
+                    and self._process.poll() is None):
+                logger.info("Already running")
                 return True
-            logger.warning(f"Port {self.config.port} in use but health check failed")
-            # 端口被占且占用者不健康：不能保持 RUNNING 假象，必须落到 ERROR
-            self._set_status(
-                AppStatus.ERROR,
-                f"Port {self.config.port} is occupied by an unhealthy process",
-            )
-            return False
-        self._set_status(AppStatus.STARTING)
+            if self.state.status == AppStatus.STARTING:
+                logger.info("Start already in progress")
+                return False
+            if self.is_port_in_use():
+                if self.check_health():
+                    self._set_status(AppStatus.RUNNING)
+                    return True
+                logger.warning(f"Port {self.config.port} in use but health check failed")
+                self._set_status(
+                    AppStatus.ERROR,
+                    f"Port {self.config.port} is occupied by an unhealthy process",
+                )
+                return False
+            self._set_status(AppStatus.STARTING)
         log_handle = None
         try:
             cmd = self._build_command()
@@ -228,7 +232,7 @@ class ApplicationRuntimeManager:
             creationflags = 0
             if sys.platform == "win32":
                 creationflags = subprocess.CREATE_NO_WINDOW
-            self._process = subprocess.Popen(
+            process = subprocess.Popen(
                 cmd,
                 cwd=str(self.config.backend_dir),
                 env=env,
@@ -236,28 +240,43 @@ class ApplicationRuntimeManager:
                 stderr=subprocess.STDOUT,
                 creationflags=creationflags,
             )
-            self.state.pid = self._process.pid
-            logger.info(f"Backend started, PID={self._process.pid}")
-            # 等待启动
+            with self._state_lock:
+                # stop() 可能已在 STARTING 期间请求停止
+                if self._stop_event.is_set():
+                    self._kill_process_handle(process)
+                    self._set_status(AppStatus.STOPPED)
+                    return False
+                self._process = process
+                self.state.pid = process.pid
+            logger.info(f"Backend started, PID={process.pid}")
             start_deadline = time.time() + self.config.startup_timeout
             while time.time() < start_deadline:
                 if self._stop_event.is_set():
-                    # 启动等待途中收到停止请求：放弃启动，不留孤儿进程
                     logger.info("Startup aborted by stop request")
                     self._kill_process()
                     self._process = None
                     self._set_status(AppStatus.STOPPED)
                     return False
-                if self._process.poll() is not None:
-                    # 进程已退出
-                    self._set_status(AppStatus.ERROR, f"Backend exited with code {self._process.returncode}")
+                if process.poll() is not None:
+                    self._set_status(AppStatus.ERROR, f"Backend exited with code {process.returncode}")
                     return False
                 if self.check_health():
-                    self._set_status(AppStatus.RUNNING)
-                    # 启动监控线程
-                    self._stop_event.clear()
-                    self._monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
-                    self._monitor_thread.start()
+                    with self._state_lock:
+                        # 并发 stop 意图优先：start 尾部不得覆盖 STOPPED/STOPPING（P2-2）
+                        if self._stop_event.is_set() or self.state.status in (
+                            AppStatus.STOPPING, AppStatus.STOPPED,
+                        ):
+                            self._kill_process()
+                            self._process = None
+                            if self.state.status != AppStatus.STOPPED:
+                                self._set_status(AppStatus.STOPPED)
+                            return False
+                        self._set_status(AppStatus.RUNNING)
+                        self._stop_event.clear()
+                        self._monitor_thread = threading.Thread(
+                            target=self._monitor_loop, daemon=True
+                        )
+                        self._monitor_thread.start()
                     return True
                 if self._startup_wait_tick():
                     logger.info("Startup aborted by stop request")
@@ -272,35 +291,51 @@ class ApplicationRuntimeManager:
             self._set_status(AppStatus.ERROR, str(e))
             return False
         finally:
-            # 子进程已继承写句柄，父进程侧的句柄用完即关，避免每次 start 泄漏一个
             if log_handle is not None:
                 try:
                     log_handle.close()
                 except Exception:
                     pass
 
+    @staticmethod
+    def _kill_process_handle(process: subprocess.Popen) -> None:
+        try:
+            process.kill()
+            process.wait(timeout=3)
+        except Exception:
+            pass
+
     def stop(self, timeout: float | None = None) -> bool:
-        """停止Backend"""
+        """停止Backend。
+
+        先置 STOPPING，真正 terminate/exit 后才置 STOPPED；
+        terminate 超时强制 kill 仍算停止成功（进程已亡），但记 warning（P2-5）。
+        """
         timeout = timeout or self.config.shutdown_timeout
-        self._stop_event.set()
-        if self._process is None:
-            self._set_status(AppStatus.STOPPED)
-            return True
-        self._set_status(AppStatus.STOPPED)
+        with self._state_lock:
+            self._stop_event.set()
+            if self.state.status not in (AppStatus.STOPPED, AppStatus.ERROR):
+                self._set_status(AppStatus.STOPPING)
+            process = self._process
+            if process is None:
+                self._set_status(AppStatus.STOPPED)
+                return True
         try:
             if sys.platform == "win32":
-                self._process.terminate()
+                process.terminate()
             else:
-                self._process.send_signal(signal.SIGTERM)
+                process.send_signal(signal.SIGTERM)
             try:
-                self._process.wait(timeout=timeout)
+                process.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
                 logger.warning("Graceful shutdown timeout, killing process")
-                self._kill_process()
+                self._kill_process_handle(process)
         except Exception as e:
             logger.error(f"Error stopping: {e}")
-            self._kill_process()
-        self._process = None
+            self._kill_process_handle(process)
+        with self._state_lock:
+            self._process = None
+            self._set_status(AppStatus.STOPPED)
         return True
 
     def restart(self) -> bool:
@@ -340,13 +375,30 @@ class ApplicationRuntimeManager:
             if not self.check_health():
                 self._health_failures += 1
                 if self._health_failures >= self._max_health_failures:
-                    logger.warning(f"Health check failed {self._health_failures} times, restarting")
-                    if self.config.auto_restart and self.state.restart_count < self.config.max_restarts:
+                    can_restart = (
+                        self.config.auto_restart
+                        and self.state.restart_count < self.config.max_restarts
+                    )
+                    if can_restart:
+                        logger.warning(
+                            f"Health check failed {self._health_failures} times, restarting"
+                        )
                         self.state.restart_count += 1
                         self._do_restart()
                         break
+                    # P2-1：不能重启时不得继续假装 RUNNING
+                    self.state.health_ok = False
+                    self._set_status(
+                        AppStatus.ERROR,
+                        f"Health check failed {self._health_failures} times"
+                        + ("" if self.config.auto_restart else " (auto_restart disabled)")
+                        + ("" if self.state.restart_count < self.config.max_restarts
+                           else " (restart budget exhausted)"),
+                    )
+                    break
             else:
                 self._health_failures = 0
+                self.state.health_ok = True
                 self.state.uptime_seconds = time.time() - self.state.start_time
                 if (self.state.restart_count
                         and self.state.uptime_seconds >= self.config.restart_reset_after):
@@ -434,19 +486,24 @@ class ApplicationRuntimeManager:
     def wait_for_shutdown(self):
         """等待关闭信号"""
         try:
-            while self.state.status not in (AppStatus.STOPPED, AppStatus.ERROR):
+            while self.state.status not in (
+                AppStatus.STOPPED, AppStatus.ERROR, AppStatus.STOPPING,
+            ):
                 time.sleep(1)
         except KeyboardInterrupt:
             logger.info("Shutdown requested")
             self.stop()
 
 
-# 全局单例
+# 全局单例（double-checked locking）
 _runtime_manager: Optional[ApplicationRuntimeManager] = None
+_runtime_manager_lock = threading.Lock()
 
 
 def get_runtime_manager(config: AppConfig | None = None) -> ApplicationRuntimeManager:
     global _runtime_manager
     if _runtime_manager is None:
-        _runtime_manager = ApplicationRuntimeManager(config)
+        with _runtime_manager_lock:
+            if _runtime_manager is None:
+                _runtime_manager = ApplicationRuntimeManager(config)
     return _runtime_manager

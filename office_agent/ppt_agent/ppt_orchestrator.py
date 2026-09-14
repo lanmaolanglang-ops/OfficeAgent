@@ -75,6 +75,17 @@ class PPTOrchestrator:
         self.service = PPTService()
         self.quality_checker = PPTQualityChecker()
 
+    def _reset_request_state(self) -> None:
+        """每次生成入口重置请求级状态，避免复用实例时计数/临时图串任务（P2-51/P2-43）。"""
+        self.image_generation = {
+            "configured": bool(self.image_gateway),
+            "attempted": 0,
+            "generated": 0,
+            "errors": [],
+        }
+        # 上一轮遗留的 temp 路径只清引用，不在此删文件（_generate_file 负责）
+        self._generated_temp_images = []
+
     def generate_from_theme(self, theme: str,
                             slide_count: int = 10,
                             style: str = "professional",
@@ -95,6 +106,7 @@ class PPTOrchestrator:
             output_path: 输出路径
         """
         try:
+            self._reset_request_state()
             # 1. 内容规划
             outline = self.planner.plan_from_theme(
                 theme=theme,
@@ -156,6 +168,7 @@ class PPTOrchestrator:
         - 要点 → 列表
         """
         try:
+            self._reset_request_state()
             # 1. 内容规划
             outline = self.planner.plan_from_text(text, style=style, title=title)
 

@@ -4,14 +4,12 @@ File Security Manager - 文件安全管理
 """
 from __future__ import annotations
 
-import os
 import shutil
 import uuid
 from pathlib import Path
 from dataclasses import dataclass
-from typing import Optional
 
-from .file_scanner import FileScanner, ScanResult, ThreatLevel
+from .file_scanner import FileScanner, ScanResult
 
 try:
     from office_agent.logging_system import get_logger
@@ -47,26 +45,50 @@ class FileSecurityManager:
     4. 文件访问权限检查
     """
 
-    def __init__(self, storage_root: str | Path = "./storage/users",
+    def __init__(self, storage_root: str | Path | None = None,
                  scanner: FileScanner | None = None):
+        if storage_root is None:
+            # P3-54: 默认落到平台数据根，而不是随进程 CWD 漂移的相对路径
+            from ...runtime_config import get_data_root
+            storage_root = get_data_root() / "storage" / "users"
         self.storage_root = Path(storage_root)
         self.scanner = scanner or FileScanner()
         self._spaces: dict[str, UserFileSpace] = {}
 
+    @staticmethod
+    def _safe_user_id(user_id: str) -> str:
+        """user_id 直接拼进路径，必须拒绝路径分隔符与穿越段。"""
+        value = str(user_id or "").strip()
+        if not value or value in {".", ".."}:
+            raise ValueError("无效的用户标识")
+        if any(ch in value for ch in ("/", "\\", "\0")):
+            raise ValueError("用户标识包含非法路径字符")
+        if ":" in value:  # Windows drive / ADS
+            raise ValueError("用户标识包含非法路径字符")
+        if len(value) > 64 or not all(c.isalnum() or c in "._-@" for c in value):
+            raise ValueError("用户标识包含非法字符")
+        return value
+
     def get_user_space(self, user_id: str) -> UserFileSpace:
         """获取用户文件空间"""
-        if user_id not in self._spaces:
-            root = self.storage_root / user_id
+        safe_id = self._safe_user_id(user_id)
+        if safe_id not in self._spaces:
+            root = (self.storage_root / safe_id).resolve()
+            # 防御：即使 storage_root 本身被 symlink 改写，也必须落在 root 之下
+            try:
+                root.relative_to(self.storage_root.resolve())
+            except ValueError:
+                raise PermissionError("用户存储根越界")
             space = UserFileSpace(
-                user_id=user_id,
+                user_id=safe_id,
                 root=root,
                 uploads=root / "uploads",
                 outputs=root / "outputs",
                 temp=root / "temp",
             )
             space.ensure()
-            self._spaces[user_id] = space
-        return self._spaces[user_id]
+            self._spaces[safe_id] = space
+        return self._spaces[safe_id]
 
     def safe_path(self, user_id: str, category: str, filename: str) -> Path:
         """
@@ -141,9 +163,14 @@ class FileSecurityManager:
     def save_output(self, source_path: str | Path, user_id: str,
                     filename: str) -> Path:
         """保存输出文件到用户空间"""
-        if not self.scanner.is_filename_safe(filename):
-            # 生成安全文件名
-            ext = Path(filename).suffix
+        # P3-60: 危险可执行扩展名必须中和——即使文件名本身不含穿越字符
+        # （is_filename_safe 只查路径遍历，查不出 .exe），也不能原样落盘。
+        ext = Path(filename).suffix
+        blocked = {e.lower() for e in self.scanner.blocked_extensions}
+        dangerous_ext = ext.lower() in blocked
+        if dangerous_ext:
+            ext = ".bin"
+        if dangerous_ext or not self.scanner.is_filename_safe(filename):
             filename = f"output_{uuid.uuid4().hex[:8]}{ext}"
         dest = self.safe_path(user_id, "outputs", filename)
         shutil.copy2(source_path, dest)

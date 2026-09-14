@@ -58,13 +58,19 @@ def register_exception_handlers(app):
 
     @app.exception_handler(StarletteHTTPException)
     async def http_error_handler(request: Request, exc: StarletteHTTPException):
-        return JSONResponse(
-            status_code=exc.status_code,
-            content=build_error_envelope(
-                error_code_for_status(exc.status_code),
-                exc.detail if isinstance(exc.detail, str) else str(exc.detail),
-            ),
-        )
+        # dict detail 必须保留结构（code/message/fields），不得 str() 成
+        # "{'code': ...}" 字符串再塞进 message（P2-14）。
+        detail = exc.detail
+        default_code = error_code_for_status(exc.status_code)
+        if isinstance(detail, dict):
+            message = detail.get("message") or detail.get("detail") or default_code
+            code = detail.get("code") or default_code
+            content = build_error_envelope(code, str(message), detail)
+        elif isinstance(detail, str):
+            content = build_error_envelope(default_code, detail)
+        else:
+            content = build_error_envelope(default_code, str(detail))
+        return JSONResponse(status_code=exc.status_code, content=content)
 
     def _make_domain_handler(error_code: str, status_code: int, message: str):
         async def domain_error_handler(request: Request, exc: Exception):

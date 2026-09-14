@@ -11,17 +11,23 @@ from ..models.execution import ExecutionLog, ModelCallLog, ErrorLog
 # 失败口径的单一权威集合：ExecutionLog 的失败终态除 "error" 外还有
 # "failed"/"cancelled"（worker/任务层写入），查询统计必须按集合匹配，
 # 不能只认字面 "error"（与 ModelCallLog 的 != success 口径对齐）。
-FAILED_EXECUTION_STATUSES = ("error", "failed", "cancelled")
+FAILED_EXECUTION_STATUSES = ("error", "failed")
+# "cancelled" is a user/scheduler-initiated terminal state: neither success
+# nor failure (P3-11). It must not inflate errors nor depress success_rate, so
+# it is tracked separately.
+CANCELLED_EXECUTION_STATUSES = ("cancelled",)
 
 
 class ExecutionLogRepository(BaseRepository[ExecutionLog]):
     def __init__(self, session: Session):
         super().__init__(session, ExecutionLog)
 
-    def get_by_task(self, task_id: str) -> List[ExecutionLog]:
+    def get_by_task(self, task_id: str, limit: int | None = None) -> List[ExecutionLog]:
         stmt = select(ExecutionLog).where(
             ExecutionLog.task_id == task_id
         ).order_by(ExecutionLog.start_time.asc())
+        if limit is not None and limit > 0:
+            stmt = stmt.limit(limit)
         return list(self.session.execute(stmt).scalars().all())
 
     def get_by_request(self, request_id: str) -> List[ExecutionLog]:
@@ -94,6 +100,12 @@ class ExecutionLogRepository(BaseRepository[ExecutionLog]):
                 ExecutionLog.status.in_(FAILED_EXECUTION_STATUSES),
             ))
         ).scalar() or 0
+        cancelled = self.session.execute(
+            select(func.count(ExecutionLog.id)).where(and_(
+                ExecutionLog.created_at >= since,
+                ExecutionLog.status.in_(CANCELLED_EXECUTION_STATUSES),
+            ))
+        ).scalar() or 0
         avg_duration = self.session.execute(
             select(func.avg(ExecutionLog.duration_ms)).where(
                 ExecutionLog.created_at >= since
@@ -123,7 +135,12 @@ class ExecutionLogRepository(BaseRepository[ExecutionLog]):
         return {
             "total_executions": total,
             "errors": errors,
-            "success_rate": round((total - errors) / total * 100, 2) if total else None,
+            "cancelled": cancelled,
+            # success_rate is measured over executions that actually ran to a
+            # success/failure outcome; user-cancelled runs are excluded from
+            # both numerator and denominator (P3-11).
+            "success_rate": round((total - errors - cancelled) / (total - cancelled) * 100, 2)
+            if (total - cancelled) else None,
             "avg_duration_ms": round(float(avg_duration), 2),
             "total_tokens": total_tokens,
             "total_cost": round(float(total_cost), 4),
@@ -135,10 +152,12 @@ class ModelCallLogRepository(BaseRepository[ModelCallLog]):
     def __init__(self, session: Session):
         super().__init__(session, ModelCallLog)
 
-    def get_by_task(self, task_id: str) -> List[ModelCallLog]:
+    def get_by_task(self, task_id: str, limit: int | None = None) -> List[ModelCallLog]:
         stmt = select(ModelCallLog).where(
             ModelCallLog.task_id == task_id
         ).order_by(ModelCallLog.created_at.asc())
+        if limit is not None and limit > 0:
+            stmt = stmt.limit(limit)
         return list(self.session.execute(stmt).scalars().all())
 
     def get_by_model(self, model_name: str, limit: int = 100) -> List[ModelCallLog]:

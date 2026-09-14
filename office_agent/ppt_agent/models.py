@@ -147,3 +147,31 @@ class PPTGenerationResult:
     changes: list = field(default_factory=list)
     quality_score: float = 100.0
     quality_issues: list = field(default_factory=list)
+    # LLM 失败/未配置回退主题模板时为 True：调用方/任务结果必须能看到，
+    # 避免把模板骨架当成 AI 生成的真实内容。
+    used_template: bool = False
+
+
+# 单页条目容量（由布局决定）。渲染器与 outline 自动修正共用这一份，
+# 避免一边按 8 切、一边按 6/5 切导致容量口径不一致（P3-47）。
+LAYOUT_ITEMS_PER_PAGE = {
+    "toc": 6,
+    "content": 8,
+    "content_list": 8,
+    "two_column": 6,
+    "timeline": 5,
+    "data_cards": 4,
+}
+DEFAULT_ITEMS_PER_PAGE = 8
+
+
+def items_per_page(layout: str) -> int:
+    """返回某版式单页可容纳的条目数；未知版式取默认值。"""
+    return LAYOUT_ITEMS_PER_PAGE.get(layout, DEFAULT_ITEMS_PER_PAGE)
+
+
+def continuation_title(base: str, page_idx: int) -> str:
+    """续页标题：首页沿用原标题，其后带序号（续 2、续 3 …）。"""
+    if page_idx <= 0:
+        return base
+    return f"{base}（续 {page_idx + 1}）"

@@ -155,7 +155,11 @@ def _csv_to_xlsx(csv_path: str) -> str:
     df = df.where(pd.notnull(df), None)
     df = df.map(_sanitize_csv_cell) if hasattr(df, "map") else df.applymap(_sanitize_csv_cell)
     output_dir = str(get_output_dir())
-    tmp = os.path.join(output_dir, f"csv_{int(time.time() * 1000)}_{os.getpid()}.xlsx")
+    # P3-117: 同毫秒同进程可能并发转换两次，毫秒时间戳+pid 仍会撞名，补 uuid 后缀
+    tmp = os.path.join(
+        output_dir,
+        f"csv_{int(time.time() * 1000)}_{os.getpid()}_{uuid.uuid4().hex[:8]}.xlsx",
+    )
     os.makedirs(output_dir, exist_ok=True)
     try:
         df.to_excel(tmp, index=False, sheet_name="Sheet1", engine="openpyxl")

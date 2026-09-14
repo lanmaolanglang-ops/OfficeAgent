@@ -91,6 +91,28 @@ class EmbeddingConfigManager:
             json.dump(data, f, indent=2, ensure_ascii=False)
         return self.get_config()
 
+    def clear_api_key(self) -> dict:
+        """显式清空已保存的 API Key（P3-81）。
+
+        ``save_config(api_key="")`` 的既有契约是“留空保留旧值”，因此需要
+        一条独立、确定的清空路径，避免旧密钥永远无法被用户移除。
+        """
+        self._config = normalize_embedding_config({
+            "provider": self._config["provider"],
+            "api_key": "",
+            "base_url": self._config["base_url"],
+            "model": self._config["model"],
+        })
+        data = {
+            "provider": self._config["provider"],
+            "api_key_enc": self._encryption.encrypt(""),
+            "base_url": self._config["base_url"],
+            "model": self._config["model"],
+        }
+        with open(self.config_file, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        return self.get_config()
+
 
 def get_embedding_config() -> dict:
     """Return the current embedding provider config for internal callers."""

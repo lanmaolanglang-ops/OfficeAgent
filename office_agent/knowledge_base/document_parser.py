@@ -44,7 +44,8 @@ class DocumentParser:
         ".docx": "word",
         ".pptx": "ppt",
         ".xlsx": "excel",
-        ".csv": "excel",
+        ".xls": "excel",
+        ".csv": "csv",
         ".txt": "text",
         ".md": "markdown",
         ".pdf": "pdf",
@@ -64,6 +65,8 @@ class DocumentParser:
             return self._parse_pptx(file_path, doc_type)
         elif file_type == "excel":
             return self._parse_excel(file_path, doc_type)
+        elif file_type == "csv":
+            return self._parse_csv(file_path, doc_type)
         elif file_type == "pdf":
             return self._parse_pdf(file_path, doc_type)
         else:
@@ -83,7 +86,31 @@ class DocumentParser:
         sections = [current_section]
         all_text_parts = []
 
-        for para in doc.paragraphs:
+        # P3-79: 按 body 真实顺序交错处理段落与表格。原先先遍历全部段落、
+        # 再遍历 doc.tables，会把所有表格都塞进最后一个 section，丢失归属。
+        from docx.oxml.ns import qn
+        from docx.text.paragraph import Paragraph
+        from docx.table import Table
+
+        def _iter_body_blocks(document):
+            for child in document.element.body.iterchildren():
+                if child.tag == qn("w:p"):
+                    yield "p", Paragraph(child, document)
+                elif child.tag == qn("w:tbl"):
+                    yield "t", Table(child, document)
+
+        for kind, block in _iter_body_blocks(doc):
+            if kind == "t":
+                table_text_parts = []
+                for row in block.rows:
+                    cells = [cell.text.strip() for cell in row.cells]
+                    table_text_parts.append(" | ".join(cells))
+                table_text = "\n".join(table_text_parts)
+                current_section.content += "\n[表格]\n" + table_text + "\n"
+                all_text_parts.append(table_text)
+                continue
+
+            para = block
             text = para.text.strip()
             if not text:
                 continue
@@ -121,16 +148,6 @@ class DocumentParser:
                 sections.append(current_section)
             else:
                 current_section.content += text + "\n"
-
-        # 处理表格
-        for table in doc.tables:
-            table_text_parts = []
-            for row in table.rows:
-                cells = [cell.text.strip() for cell in row.cells]
-                table_text_parts.append(" | ".join(cells))
-            table_text = "\n".join(table_text_parts)
-            current_section.content += "\n[表格]\n" + table_text + "\n"
-            all_text_parts.append(table_text)
 
         result.sections = sections
         result.full_text = "\n".join(all_text_parts)
@@ -187,6 +204,32 @@ class DocumentParser:
 
         return result
 
+    def _parse_csv(self, file_path: str, doc_type: str) -> ParsedDocument:
+        """CSV 不能走 openpyxl（那是 OOXML），用标准库解析。"""
+        import csv
+
+        result = ParsedDocument(
+            title=os.path.splitext(os.path.basename(file_path))[0],
+            doc_type=doc_type or "csv_data",
+        )
+        lines: list[str] = []
+        with open(file_path, "r", encoding="utf-8-sig", newline="", errors="replace") as f:
+            reader = csv.reader(f)
+            for row in reader:
+                cells = [c.strip() for c in row]
+                if any(cells):
+                    lines.append(" | ".join(cells))
+        result.sections = [
+            ParsedSection(
+                title=os.path.basename(file_path),
+                level=1,
+                content="\n".join(lines),
+            )
+        ] if lines else []
+        result.full_text = "\n".join(lines)
+        result.metadata["row_count"] = len(lines)
+        return result
+
     def _parse_excel(self, file_path: str, doc_type: str) -> ParsedDocument:
         """解析 Excel 文档"""
         from openpyxl import load_workbook
@@ -206,9 +249,12 @@ class DocumentParser:
 
             for row in ws.iter_rows(values_only=True):
                 cells = [str(c) if c is not None else "" for c in row]
-                # 跳过全空行
+                # P3-80: 保留中间空单元格以维持列对齐（与 CSV 路径一致），
+                # 只裁掉尾部连续空单元格；过滤非空会让后面的列错位左移。
+                while cells and not cells[-1].strip():
+                    cells.pop()
                 if any(c.strip() for c in cells):
-                    line = " | ".join(c for c in cells if c.strip())
+                    line = " | ".join(cells)
                     sheet_texts.append(line)
 
             if sheet_texts:

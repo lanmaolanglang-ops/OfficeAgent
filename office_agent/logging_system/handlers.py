@@ -9,6 +9,7 @@ import os
 import logging
 import logging.handlers
 import threading
+from types import MappingProxyType
 
 from .formatter import JsonFormatter, HumanReadableFormatter
 from .background import submit as submit_background
@@ -86,10 +87,11 @@ class DatabaseLogHandler(logging.Handler):
             if getattr(record, "skip_db_log", False):
                 return
             from .context import get_context_dict
-            record.office_agent_context = get_context_dict()
+            record.office_agent_context = MappingProxyType(dict(get_context_dict()))
             if self.async_write:
                 if not submit_background(self._write_to_db, record):
-                    self.handleError(record)
+                    # P3-143: 后台队列满时在当前线程同步落库，不丢日志、不走 handleError
+                    self._write_to_db(record)
             else:
                 self._write_to_db(record)
         except Exception:
@@ -156,8 +158,10 @@ class ModelCallLogHandler(logging.Handler):
             return
         try:
             from .context import get_context_dict
-            record.office_agent_context = get_context_dict()
-            submit_background(self._write_to_db, record)
+            record.office_agent_context = MappingProxyType(dict(get_context_dict()))
+            if not submit_background(self._write_to_db, record):
+                # P3-143: 队列满同步兜底
+                self._write_to_db(record)
         except Exception:
             pass
 

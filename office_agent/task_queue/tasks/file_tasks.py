@@ -278,7 +278,8 @@ def system_health_check(progress=None, _task_id: str | None = None, **kwargs) ->
                 result["checks"]["total_tasks"] = repo.count()
                 result["checks"]["pending_tasks"] = len(repo.get_pending_tasks(limit=100))
         except Exception as e:
-            result["checks"]["database"] = f"error: {e}"
+            # P3-74: 内层 DB 异常可能含连接串/文件路径，统一脱敏后再入结果
+            result["checks"]["database"] = f"error: {sanitize_error(e, '数据库检查失败')}"
 
         if progress:
             progress.update(80, "检查Worker")
@@ -290,7 +291,8 @@ def system_health_check(progress=None, _task_id: str | None = None, **kwargs) ->
 
     except Exception as e:
         result["status"] = "failed"
-        from ...security.error_sanitizer import sanitize_error
+        # sanitize_error 已在模块顶部导入；此处不得再局部 import，否则该名
+        # 会成为整个函数的局部变量，让内层 P3-74 脱敏点 UnboundLocalError。
         result["error"] = sanitize_error(e)
 
     return result

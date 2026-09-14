@@ -5,6 +5,8 @@ from datetime import datetime
 from sqlalchemy import DateTime, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, declared_attr
 
+from .time import utc_now
+
 
 class Base(DeclarativeBase):
     """所有ORM模型的基类"""
@@ -20,10 +22,16 @@ class Base(DeclarativeBase):
 
 
 class TimestampMixin:
-    """时间戳混入"""
+    """时间戳混入。
+
+    Python 路径 ``default=utc_now`` / ``onupdate=utc_now`` 统一 aware UTC；
+    ``server_default=func.now()`` 仅作 raw-SQL/legacy 插入的兼容兜底（P2-32）。
+    """
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
+        DateTime(timezone=True), default=utc_now,
+        server_default=func.now(), nullable=False,
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now,
+        server_default=func.now(), nullable=False,
     )

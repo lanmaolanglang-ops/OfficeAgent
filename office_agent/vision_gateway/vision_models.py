@@ -6,6 +6,7 @@ from typing import Optional, List, Dict, Any
 from enum import Enum
 from pathlib import Path
 import base64
+from urllib.parse import urlparse
 
 
 class VisionProvider(Enum):
@@ -85,6 +86,10 @@ class ImageInput:
 
     @classmethod
     def from_url(cls, url: str) -> "ImageInput":
+        # P3-88: 只接受 http(s) 图片 URL，拒绝 file://、无 scheme、相对路径等
+        parsed = urlparse(url or "")
+        if parsed.scheme.lower() not in ("http", "https") or not parsed.netloc:
+            raise ValueError(f"不支持的图片 URL scheme: {url!r}")
         return cls(source=ImageSource.URL, url=url)
 
     @classmethod

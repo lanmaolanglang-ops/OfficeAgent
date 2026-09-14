@@ -337,14 +337,20 @@ class ConfigManager:
         agent = self.get_agent(agent_name)
         if agent and agent.get("system_prompt"):
             return agent["system_prompt"]
-        # 尝试从 prompts 中查找
-        for name, versions in self._prompts.items():
-            if agent_name.lower() in name.lower():
-                default = next((v for v in versions if v.get("is_default")), None)
-                if default:
-                    return default["content"]
-                if versions:
-                    return versions[0]["content"]
+        # 尝试从 prompts 中查找（P3-110：精确名优先，子串仅兜底，
+        # 避免 "excel" 误命中 "report_excel"/"excel_v2"）
+        key = agent_name.lower()
+        names = [n for n in self._prompts if n.lower() == key] or \
+                [n for n in self._prompts if key in n.lower()]
+        for name in names:
+            versions = self._prompts[name]
+            # P3-111 同根：默认选择只看 active 版本
+            active = [v for v in versions if v.get("status", "active") == "active"]
+            default = next((v for v in active if v.get("is_default")), None)
+            if default:
+                return default["content"]
+            if active:
+                return active[0]["content"]
         return ""
 
     def get_prompt(self, name: str, version: str | None = None) -> Optional[Dict]:
@@ -354,9 +360,10 @@ class ConfigManager:
             return None
         if version:
             return next((v for v in versions if v.get("version") == version), None)
-        # 默认版本
-        default = next((v for v in versions if v.get("is_default")), None)
-        return default or versions[0]
+        # 默认版本（P3-111：停用版本不得作为默认/兜底被取出）
+        active = [v for v in versions if v.get("status", "active") == "active"]
+        default = next((v for v in active if v.get("is_default")), None)
+        return default or (active[0] if active else None)
 
     def get_prompt_content(self, name: str, version: str | None = None,
                            variables: Dict[str, str] | None = None) -> Optional[str]:

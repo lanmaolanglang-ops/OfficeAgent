@@ -83,7 +83,9 @@ def get_desktop_data_root() -> Path:
 
 def get_log_dir() -> Path:
     """Resolve the log directory with explicit log overrides taking precedence."""
-    configured = os.environ.get("LOG_DIR") or os.environ.get("OFFICE_AGENT_LOG_DIR")
+    # Namespaced override wins over the generic LOG_DIR, which is shared by
+    # many unrelated tools (P3-3).
+    configured = os.environ.get("OFFICE_AGENT_LOG_DIR") or os.environ.get("LOG_DIR")
     return Path(configured).expanduser() if configured else get_data_root() / "logs"
 
 

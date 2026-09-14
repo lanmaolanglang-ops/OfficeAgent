@@ -52,9 +52,13 @@ def test_log_dir_inherits_data_root_and_honors_explicit_override(tmp_path, monke
     monkeypatch.setenv("OFFICE_AGENT_LOG_DIR", str(tmp_path / "service-logs"))
     assert get_log_dir() == tmp_path / "service-logs"
     monkeypatch.setenv("LOG_DIR", str(tmp_path / "operator-logs"))
+    # P3-3: the namespaced override wins over the generic, shared LOG_DIR.
+    assert get_log_dir() == tmp_path / "service-logs"
+    assert APIConfig().log_dir == str(tmp_path / "service-logs")
+    assert LoggingConfig().dir == str(tmp_path / "service-logs")
+    # generic LOG_DIR still applies when the namespaced var is absent
+    monkeypatch.delenv("OFFICE_AGENT_LOG_DIR", raising=False)
     assert get_log_dir() == tmp_path / "operator-logs"
-    assert APIConfig().log_dir == str(tmp_path / "operator-logs")
-    assert LoggingConfig().dir == str(tmp_path / "operator-logs")
 
 
 def test_desktop_root_is_shared_by_launcher_runtime_and_explicit_override(tmp_path, monkeypatch):

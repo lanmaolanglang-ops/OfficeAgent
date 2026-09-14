@@ -566,12 +566,36 @@ class ExcelVisionAnalyzer:
         m = _re.search(r"-?\d+", str(raw))
         return int(m.group()) if m else default
 
+    @staticmethod
+    def _to_bool(data: dict, key: str, default: bool = False) -> bool:
+        """JSON/LLM 可能给出字符串 "false"/"0"；bool("false") is True 会误判。"""
+        value = data.get(key, default)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "y", "是"}
+        return default
+
     def _build_table(self, data: dict) -> RecognizedTable:
         """从解析的数据构建 RecognizedTable"""
         try:
             confidence = float(data.get("table_type_confidence", 0.5))
         except (TypeError, ValueError):
             confidence = 0.5
+        # P3-137: 仅校验外层 list 不够，内层行也必须是 list；标量包成单元素行、
+        # dict 取值，避免下游渲染按列取值时对非标量行崩溃。
+        raw_sample = data.get("sample_data", [])
+        sample_rows: list = []
+        if isinstance(raw_sample, list):
+            for _row in raw_sample:
+                if isinstance(_row, (list, tuple)):
+                    sample_rows.append(list(_row))
+                elif isinstance(_row, dict):
+                    sample_rows.append(list(_row.values()))
+                else:
+                    sample_rows.append([_row])
         table = RecognizedTable(
             title=data.get("title", "") or "",
             table_type=data.get("table_type", "unknown") or "unknown",
@@ -581,10 +605,10 @@ class ExcelVisionAnalyzer:
             header_row=self._to_int(data, "header_row", 1),
             data_start_row=self._to_int(data, "data_start_row", 2),
             data_end_row=self._to_int(data, "data_end_row", 0),
-            has_total_row=bool(data.get("has_total_row", False)),
-            has_merged_cells=bool(data.get("has_merged_cells", False)),
+            has_total_row=self._to_bool(data, "has_total_row"),
+            has_merged_cells=self._to_bool(data, "has_merged_cells"),
             notes=data.get("notes", "") or "",
-            sample_data=data.get("sample_data", []),
+            sample_data=sample_rows,
         )
 
         for i, col_data in enumerate(data.get("columns", [])):
@@ -595,8 +619,8 @@ class ExcelVisionAnalyzer:
                 semantic_type=col_data.get("semantic_type", "unknown"),
                 data_type=col_data.get("data_type", "text"),
                 unit=col_data.get("unit", ""),
-                is_dimension=col_data.get("is_dimension", False),
-                is_metric=col_data.get("is_metric", False),
+                is_dimension=self._to_bool(col_data, "is_dimension"),
+                is_metric=self._to_bool(col_data, "is_metric"),
                 description=col_data.get("description", ""),
                 sample_values=col_data.get("sample_values", []),
             )

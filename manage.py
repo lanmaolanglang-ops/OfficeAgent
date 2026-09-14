@@ -109,7 +109,7 @@ def migrate():
     db_dir = os.path.join(os.path.dirname(__file__), "office_agent", "database")
     ini_path = os.path.join(db_dir, "alembic.ini")
     result = subprocess.run(
-        ["alembic", "-c", ini_path, "upgrade", "head"],
+        [sys.executable, "-m", "alembic", "-c", ini_path, "upgrade", "head"],
         cwd=db_dir,
     )
     if result.returncode == 0:
@@ -124,7 +124,7 @@ def makemigrations(message: str = "auto migration"):
     db_dir = os.path.join(os.path.dirname(__file__), "office_agent", "database")
     ini_path = os.path.join(db_dir, "alembic.ini")
     result = subprocess.run(
-        ["alembic", "-c", ini_path, "revision", "--autogenerate", "-m", message],
+        [sys.executable, "-m", "alembic", "-c", ini_path, "revision", "--autogenerate", "-m", message],
         cwd=db_dir,
     )
     if result.returncode == 0:

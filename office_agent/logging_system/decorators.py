@@ -45,6 +45,13 @@ def _resolve_agent_name(func: Callable, args: tuple,
     return func.__qualname__.split(".")[0]
 
 
+# 输入摘要中不得原样落入日志/DB 的敏感键
+_SENSITIVE_INPUT_KEYS = frozenset({
+    "api_key", "apikey", "token", "password", "secret",
+    "authorization", "jwt", "access_token", "refresh_token",
+})
+
+
 def _summarize_input(func: Callable, args: tuple, kwargs: dict,
                      log_input: bool, input_max_len: int) -> str | None:
     if not log_input:
@@ -54,6 +61,9 @@ def _summarize_input(func: Callable, args: tuple, kwargs: dict,
     parts = [str(arg)[:100] for arg in args[start:]]
     for key, value in kwargs.items():
         if key in ("callback", "on_progress"):
+            continue
+        if key.lower() in _SENSITIVE_INPUT_KEYS:
+            parts.append(f"{key}=[已隐藏]")
             continue
         parts.append(f"{key}={str(value)[:100]}")
     return ", ".join(parts)[:input_max_len]
@@ -79,24 +89,13 @@ def _extract_token_usage(result) -> tuple[int, int]:
 
 
 def log_execution(agent_name: str | None = None, action: str | None = None,
-                  log_input: bool = True, log_output: bool = True,
+                  log_input: bool = False, log_output: bool = True,
                   input_max_len: int = 500, output_max_len: int = 500):
     """
     Agent 执行日志装饰器
 
-    自动记录：
-    - 开始/结束时间
-    - 耗时
-    - 输入/输出摘要
-    - 成功/失败状态
-    - 指标计数
-    - 追踪 span
-
-    Args:
-        agent_name: Agent 名称（绑定方法默认从 self.name 获取）
-        action: 动作名称（默认函数名）
-        log_input: 是否记录输入摘要
-        log_output: 是否记录输出摘要
+    ``log_input`` 默认 False（P2-64）：输入可能含用户数据/密钥/prompt，
+    需要完整摘要的调用方必须显式 opt-in，且仍经敏感键脱敏。
     """
     def decorator(func: Callable) -> Callable:
         is_coroutine = inspect.iscoroutinefunction(func)

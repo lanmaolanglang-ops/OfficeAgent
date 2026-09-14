@@ -91,11 +91,10 @@ def create_app() -> FastAPI:
 
     # Starlette 中间件语义：后添加的更靠外层、先执行。
     # 下方注册顺序（内 → 外）即实际执行顺序的倒序：
-    #   CORS(最内) ← RequestLogging ← Auth ← RateLimit ← LocalGuard
+    #   CORS(最内) ← RequestLogging ← RateLimit ← Auth ← LocalGuard
     #   ← ErrorHandling ← RequestSizeLimit(最外)
     # 意图：请求体大小守卫最先廉价拒绝；ErrorHandling 覆盖其内侧所有
-    # 中间件层（路由异常由更内层的 exception handlers 按契约处理，
-    # 二者职责互补）；限流在认证（JWT 校验等开销）之前挡量；
+    # 中间件层；Auth 先于 RateLimit，使限流可按 user_id 计数（P2-13）；
     # 日志包裹业务路由与 CORS。
     from office_agent.logging_system import (
         RequestLoggingMiddleware, ErrorHandlingMiddleware,
@@ -104,8 +103,9 @@ def create_app() -> FastAPI:
     from office_agent.api.middleware.local_guard import LocalGuardMiddleware
     from office_agent.api.middleware.request_size import RequestSizeLimitMiddleware
     app.add_middleware(RequestLoggingMiddleware)
-    app.add_middleware(AuthMiddleware)
+    # RateLimit 在 Auth 内侧：认证完成后 request.state.user_id 可用
     app.add_middleware(RateLimitMiddleware)
+    app.add_middleware(AuthMiddleware)
     app.add_middleware(LocalGuardMiddleware)
     app.add_middleware(ErrorHandlingMiddleware)
     # 最外层：上传超限请求在认证与 multipart 解析之前按 Content-Length 拒掉，
@@ -148,7 +148,7 @@ def create_app() -> FastAPI:
         from office_agent.database.repository import ExecutionLogRepository
         repo = ExecutionLogRepository(session)
         if task_id:
-            logs = repo.get_by_task(task_id)
+            logs = repo.get_by_task(task_id, limit=limit)
         elif request_id:
             logs = repo.get_by_request(request_id)
         elif agent:
@@ -167,7 +167,7 @@ def create_app() -> FastAPI:
         from office_agent.database.repository import ModelCallLogRepository
         repo = ModelCallLogRepository(session)
         if task_id:
-            logs = repo.get_by_task(task_id)
+            logs = repo.get_by_task(task_id, limit=limit)
         elif model:
             logs = repo.get_by_model(model, limit=limit)
         else:

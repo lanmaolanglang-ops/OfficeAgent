@@ -219,6 +219,38 @@ def _response_error_message(body: str) -> str:
     return text[:300]
 
 
+def _assert_public_api_url(url: str, *, label: str) -> None:
+    """Reject non-public HTTP(S) endpoints before attaching Bearer credentials.
+
+    Image download already validates result URLs; the request URL itself
+    (base_url / mcp_url) must also refuse loopback/private/link-local targets,
+    otherwise a malicious config exfiltrates the API key via SSRF.
+    """
+    if not url or not str(url).strip():
+        raise ImageGenerationError(f"{label} 未配置")
+    try:
+        parsed = urlsplit(str(url).strip())
+        if parsed.scheme not in {"http", "https"}:
+            raise ImageGenerationError(f"{label} 仅支持 HTTP(S)")
+        if not parsed.hostname or parsed.username or parsed.password:
+            raise ImageGenerationError(f"{label} 主机无效")
+        host = parsed.hostname.rstrip(".").lower()
+        if host == "localhost" or host.endswith(".localhost"):
+            raise ImageGenerationError(f"拒绝内网 {label}")
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        endpoints = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+        if not endpoints:
+            raise ImageGenerationError(f"{label} 主机无法解析")
+        for item in endpoints:
+            address = str(item[4][0]).split("%", 1)[0]
+            if not ipaddress.ip_address(address).is_global:
+                raise ImageGenerationError(f"拒绝内网或保留地址上的 {label}")
+    except ImageGenerationError:
+        raise
+    except (OSError, ValueError) as exc:
+        raise ImageGenerationError(f"{label} 无效: {exc}") from exc
+
+
 def _post_json(url: str, payload: dict, headers: dict, timeout: float = 120.0) -> dict:
     """POST JSON and parse the response (zero-dependency, urllib-based).
 
@@ -287,9 +319,11 @@ class ImageGenerationGateway:
         if not self.available():
             raise ImageGenerationError("未配置图像生成服务")
         if self.provider == "mcp":
+            _assert_public_api_url(self.mcp_url, label="图像 MCP 端点")
             return self._generate_mcp(prompt, size, output_dir)
+        _assert_public_api_url(self.base_url, label="图像服务 base_url")
         data = _post_json(
-            f"{self.base_url}/images/generations",
+            f"{self.base_url.rstrip('/')}/images/generations",
             {"model": self.model, "prompt": prompt, "size": size,
              "response_format": "url"},
             {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},

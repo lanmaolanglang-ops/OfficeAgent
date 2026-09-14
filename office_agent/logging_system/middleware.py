@@ -75,12 +75,20 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
 
         # 记录请求（client 统一走权威身份解析，反代后仍记录真实来源）
         from ..security.client_identity import resolve_request_client
+        # query string 可能含 token/api_key，只记长度与参数名，不记值
+        raw_query = request.url.query or ""
+        query_keys = []
+        if raw_query:
+            for pair in raw_query.split("&")[:20]:
+                key = pair.split("=", 1)[0]
+                if key:
+                    query_keys.append(key[:40])
         logger.info(
             f"→ {request.method} {path}",
             extra={
                 "method": request.method,
                 "path": path,
-                "query": str(request.url.query)[:200] if request.url.query else "",
+                "query_keys": ",".join(query_keys),
                 "client": resolve_request_client(request),
                 "user_agent": request.headers.get("user-agent", "")[:200],
             },

@@ -110,7 +110,8 @@ def test_log_dir_override_still_takes_precedence(tmp_path, monkeypatch):
     monkeypatch.setenv("OFFICE_AGENT_LOG_DIR", str(tmp_path / "service-logs"))
     assert runtime_config.get_log_dir() == tmp_path / "service-logs"
     monkeypatch.setenv("LOG_DIR", str(tmp_path / "operator-logs"))
-    assert runtime_config.get_log_dir() == tmp_path / "operator-logs"
+    # P3-3: namespaced override takes precedence over the generic shared LOG_DIR.
+    assert runtime_config.get_log_dir() == tmp_path / "service-logs"
 
 
 def test_all_derived_paths_share_the_one_resolved_root(tmp_path):

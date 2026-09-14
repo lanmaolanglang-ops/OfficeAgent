@@ -22,13 +22,15 @@ config = context.config
 # 从环境变量覆盖数据库 URL
 db_url = os.environ.get("DATABASE_URL")
 if db_url:
-    config.set_main_option("sqlalchemy.url", db_url)
+    # Escape % for ConfigParser interpolation (literal % in passwords).
+    config.set_main_option("sqlalchemy.url", db_url.replace("%", "%%"))
 elif not config.get_main_option("sqlalchemy.url"):
     # 默认 SQLite
     data_root = get_data_root()
     db_path = data_root / "db" / "office_agent.db"
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    config.set_main_option("sqlalchemy.url", f"sqlite:///{db_path}")
+    config.set_main_option("sqlalchemy.url",
+                             f"sqlite:///{db_path}".replace("%", "%%"))
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)

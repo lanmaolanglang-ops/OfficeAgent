@@ -3,6 +3,7 @@
 """
 import os
 import re
+import time
 import uuid
 import shutil
 import hashlib
@@ -47,8 +48,10 @@ class LocalStorage(StorageBackend):
         if windows_path.drive or windows_path.root:
             raise ValueError(f"非法路径: {storage_path}")
         portable_path = storage_path.replace("\\", os.sep).replace("/", os.sep)
-        full = os.path.normpath(os.path.join(self.root_path, portable_path))
-        root = os.path.normpath(self.root_path)
+        # P3-62: realpath 解析 root 内的符号链接，否则 root 下的 symlink
+        # 指向 root 外时 normpath+commonpath 仍会误判为“在 root 内”。
+        full = os.path.realpath(os.path.normpath(os.path.join(self.root_path, portable_path)))
+        root = os.path.realpath(os.path.normpath(self.root_path))
         # 安全检查：必须在 root_path 下（用 commonpath 防止前缀目录名伪造，
         # 例如 root=...\\storage 时 ...\\storage_evil\\x 不再被放行）
         try:
@@ -141,10 +144,24 @@ class LocalStorage(StorageBackend):
 
     def delete(self, storage_path: str) -> bool:
         full_path = self._full_path(storage_path)
-        if os.path.exists(full_path):
-            os.remove(full_path)
+        if not os.path.exists(full_path):
+            return False
+        # P3-65: iter_file/download 在 Windows 上会短暂持有文件句柄，
+        # 并发 delete 可能撞上共享冲突（PermissionError）。有界重试，
+        # 等待读取方释放，而不是第一次失败就把记录留在存储里。
+        last_err = None
+        for attempt in range(5):
+            try:
+                os.remove(full_path)
+                return True
+            except FileNotFoundError:
+                return False
+            except PermissionError as exc:
+                last_err = exc
+                time.sleep(0.05 * (attempt + 1))
+        if not os.path.exists(full_path):
             return True
-        return False
+        raise last_err  # type: ignore[misc]
 
     def exists(self, storage_path: str) -> bool:
         return os.path.exists(self._full_path(storage_path))
@@ -156,9 +173,14 @@ class LocalStorage(StorageBackend):
         return os.path.getsize(full_path)
 
     def get_url(self, storage_path: str, expires: int = 3600) -> str:
-        # 本地存储返回 API 下载链接
+        # 本地存储返回 API 下载链接；P3-64：expires 不再被忽略，写入绝对过期
+        # 时间戳，调用方/下载 API 据此强制时效（expires<=0 表示不设时效）。
         file_id = Path(storage_path).stem
-        return f"{self.base_url}/{file_id}"
+        url = f"{self.base_url}/{file_id}"
+        if expires and expires > 0:
+            expires_at = int(time.time()) + int(expires)
+            url = f"{url}?expires_at={expires_at}"
+        return url
 
     def copy(self, src_path: str, dst_path: str) -> dict:
         src_full = self._full_path(src_path)

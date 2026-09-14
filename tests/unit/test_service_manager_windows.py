@@ -285,7 +285,8 @@ class TestServiceLifecycle:
 class TestGeneratedScriptShape:
     def test_script_contains_service_metadata(self, tmp_path):
         script = build_service_wrapper_script(tmp_path, 9000, tmp_path)
-        assert '"OfficeAgent"' in script
+        # repr() 嵌入服务名：单引号或双引号均可
+        assert "OfficeAgent" in script
         assert "port=9000" in script
         assert "WaitForSingleObject" in script
 

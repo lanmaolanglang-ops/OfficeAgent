@@ -16,8 +16,9 @@ from .model_manager import ModelManager
 # 本层只追加"模型选型"特有的能力词；判定顺序保持历史行为：
 # 视觉 → 代码 → 公式 → 文档理解 → PPT 内容 → 写作。
 # "大纲"同时属于文档与 PPT 词表，按此顺序归文档理解（单一裁决点，不再各层分裂）。
+# P3-83: 移除过宽的“设计风格”——它不隐含附图，会把纯文本/PPT 文案误路由到视觉
 VISION_KEYWORDS = ("图片", "照片", "截图", "模板分析", "视觉", "看图",
-                   "image", "picture", "photo", "ppt模板", "设计风格")
+                   "image", "picture", "photo", "ppt模板")
 CODE_KEYWORDS = ("代码", "脚本", "python", "函数", "编程", "开发",
                  "code", "script", "programming", "写个工具")
 # 公式路由的词表：中文词保持子串匹配（公式/求和/增长率/占比歧义小），

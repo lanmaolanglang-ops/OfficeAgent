@@ -1,7 +1,9 @@
 """任务模型"""
 import uuid
 from datetime import datetime
-from sqlalchemy import String, Integer, Text, ForeignKey, DateTime, Float
+from sqlalchemy import (
+    String, Integer, Text, ForeignKey, DateTime, Float, UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from ..base import Base, TimestampMixin
@@ -13,6 +15,13 @@ def _uuid():
 
 class Task(Base, TimestampMixin):
     """任务表"""
+    # One parent may not carry two revisions with the same number (P3-10).
+    # Root tasks have parent_task_id NULL; SQL treats NULLs as distinct, so
+    # they never collide.
+    __table_args__ = (
+        UniqueConstraint("parent_task_id", "revision_number",
+                         name="uq_task_parent_revision"),
+    )
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
     task_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     # word_format/ppt_generate/excel_analysis/general
@@ -38,6 +47,10 @@ class Task(Base, TimestampMixin):
     # 用户
     user_id: Mapped[str] = mapped_column(
         String(32), ForeignKey("user.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    # 会话：结构化字段，供 follow-up 精确查询（P2-18）；旧数据可为 NULL
+    conversation_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, index=True
     )
 
     # 结果和错误

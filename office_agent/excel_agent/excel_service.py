@@ -69,6 +69,23 @@ def _derive_output_path(file_path: str, suffix: str) -> str:
         return str(p) + suffix + ".xlsx"
 
 
+_FORMULA_INJECTION_PREFIXES = ("=", "+", "-", "@")
+_LEADING_WS = " \t\r\n\x0b\x0c\u00a0\ufeff"
+
+
+def _escape_formula_injection(value):
+    """阻止 Excel/CSV 公式注入：非公式意图路径下，字符串若在剥离前导
+    空白后以 = + - @ 开头，追加单引号使其成为文本单元格。
+    数值/日期/布尔等非字符串原样返回；显式公式路径走 add_formula /
+    set_cell(..., allow_formula=True)，不受影响。"""
+    if not isinstance(value, str):
+        return value
+    stripped = value.lstrip(_LEADING_WS)
+    if stripped.startswith(_FORMULA_INJECTION_PREFIXES):
+        return "'" + value
+    return value
+
+
 def _sanitize_cell_value(value):
     """NaN/Infinity/NaT 会写出非法 OOXML（空 <v> 触发 Excel 修复提示），统一转 None"""
     if value is None:
@@ -114,6 +131,29 @@ class ExcelService:
         self._opened_from: Optional[str] = None
         self.changes: List[str] = []
 
+    def close(self) -> None:
+        """释放工作簿句柄；可重复调用。
+
+        Windows 上 openpyxl 持有文件时无法删除/覆盖源文件，
+        用完必须 close（或走 context manager）。
+        """
+        wb = self.wb
+        self.wb = None
+        if wb is not None:
+            try:
+                # openpyxl Workbook 无 close；read_only 模式才需要
+                closer = getattr(wb, "close", None)
+                if callable(closer):
+                    closer()
+            except Exception:
+                pass
+
+    def __enter__(self) -> "ExcelService":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.close()
+
     @property
     def workbook(self) -> Workbook:
         """返回已创建/打开的工作簿。
@@ -129,6 +169,7 @@ class ExcelService:
 
     def create(self, file_path: str, sheet_name: str = "Sheet1") -> 'ExcelService':
         """创建新工作簿"""
+        self.close()
         self.wb = Workbook()
         self.wb.active.title = sheet_name
         self.file_path = file_path
@@ -138,9 +179,10 @@ class ExcelService:
         return self
 
     def open(self, file_path: str) -> 'ExcelService':
-        """打开已有工作簿"""
+        """打开已有工作簿（先释放前一个，避免句柄泄漏，P2-33）"""
         if not Path(file_path).exists():
             raise FileNotFoundError(f"文件不存在: {file_path}")
+        self.close()
         # 宏工作簿必须 keep_vba，否则另存时 VBA/宏被静默剥离
         keep_vba = Path(file_path).suffix.lower() in (".xlsm", ".xltm")
         self.wb = load_workbook(file_path, data_only=False, keep_vba=keep_vba)
@@ -236,7 +278,7 @@ class ExcelService:
 
         for r_idx, row_data in enumerate(data):
             for c_idx, value in enumerate(row_data):
-                value = _sanitize_cell_value(value)
+                value = _escape_formula_injection(_sanitize_cell_value(value))
                 cell = ws.cell(row=start_row + r_idx, column=start_col + c_idx)
                 if isinstance(cell, MergedCell):
                     continue
@@ -307,13 +349,24 @@ class ExcelService:
         ws = self.get_sheet(sheet_name)
         return ws[cell_ref] if ws else None
 
-    def set_cell(self, sheet_name: str, cell_ref: str, value: Any):
-        """设置单元格值"""
+    def set_cell(self, sheet_name: str, cell_ref: str, value: Any,
+                 *, allow_formula: bool = False):
+        """设置单元格值。
+
+        默认按数据写入路径处理：NaN→None，并对 ``=``/``+``/``-``/``@``
+        前缀字符串做公式注入转义。显式公式写入必须传 ``allow_formula=True``
+        （或改用 ``add_formula``），否则真实公式也会被转义成文本。
+        """
         ws = self.get_sheet(sheet_name)
-        if ws:
-            cell = ws[cell_ref]
-            if not isinstance(cell, MergedCell):
-                cell.value = value
+        if not ws:
+            return
+        cell = ws[cell_ref]
+        if isinstance(cell, MergedCell):
+            return
+        value = _sanitize_cell_value(value)
+        if not allow_formula:
+            value = _escape_formula_injection(value)
+        cell.value = value
 
     # ==========================================
     # 公式
@@ -438,8 +491,15 @@ class ExcelService:
             return
 
         for col in ws.columns:
+            # P3-18: an empty / phantom column can yield no cells or a head
+            # cell without a usable column index; skip rather than IndexError.
+            if not col:
+                continue
             max_len = 0
-            col_letter = get_column_letter(col[0].column)
+            head = col[0]
+            if getattr(head, "column", None) is None:
+                continue
+            col_letter = get_column_letter(head.column)
             for cell in col:
                 try:
                     if cell.value:

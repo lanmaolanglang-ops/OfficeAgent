@@ -105,11 +105,45 @@ def _safe_json_object(raw: str | None, default):
     return value
 
 
-def _file_id_list_to_infos(file_id_list, file_repo) -> list:
-    """Convert file IDs to stable output/input file info objects (response layer only)."""
+def _files_by_id_for_tasks(db_tasks, file_repo) -> dict:
+    """Collect all file ids from a page of tasks and batch-load once (P2-28)."""
+    lists = []
+    for t in db_tasks:
+        lists.append(_safe_json_object(t.input_file_ids, []))
+        lists.append(_safe_json_object(t.output_file_ids, []))
+    return _file_ids_to_infos(lists, file_repo)
+
+
+def _file_ids_to_infos(file_id_lists: list, file_repo) -> dict:
+    """Batch-load files for many tasks in one query (P2-28)."""
+    all_ids: list[str] = []
+    for file_id_list in file_id_lists:
+        all_ids.extend(file_id_list or [])
+    unique_ids = list(dict.fromkeys(all_ids))
+    if not unique_ids:
+        return {}
+    rows = file_repo.find_by_ids(unique_ids) if hasattr(file_repo, "find_by_ids") else [
+        file_repo.get_by_id(fid) for fid in unique_ids
+    ]
+    by_id = {row.id: row for row in rows if row and row.status != "deleted"}
+    return by_id
+
+
+def _file_id_list_to_infos(file_id_list, by_id: dict | None = None, file_repo=None) -> list:
+    """Convert file IDs to stable output/input file info objects (response layer only).
+
+    ``by_id`` may also be a file repository (legacy positional call).
+    """
+    if by_id is not None and not isinstance(by_id, dict) and file_repo is None:
+        file_repo, by_id = by_id, None
     infos = []
     for file_id in file_id_list or []:
-        db_file = file_repo.get_by_id(file_id)
+        if by_id is not None:
+            db_file = by_id.get(file_id)
+        elif file_repo is not None:
+            db_file = file_repo.get_by_id(file_id)
+        else:
+            db_file = None
         if not db_file or db_file.status == "deleted":
             continue
         infos.append({
@@ -131,7 +165,7 @@ def _sanitize_result(result: dict) -> dict:
     return safe
 
 
-def _task_info_from_db(db_task, file_repo) -> TaskInfo:
+def _task_info_from_db(db_task, file_repo, by_id: dict | None = None) -> TaskInfo:
     """Build the persisted-task response shape from an ORM task."""
     return TaskInfo(
         task_id=db_task.id,
@@ -142,8 +176,12 @@ def _task_info_from_db(db_task, file_repo) -> TaskInfo:
         current_step=db_task.current_step,
         instruction=db_task.instruction,
         error=db_task.error_message,
-        input_files=_file_id_list_to_infos(_safe_json_object(db_task.input_file_ids, []), file_repo),
-        output_files=_file_id_list_to_infos(_safe_json_object(db_task.output_file_ids, []), file_repo),
+        input_files=_file_id_list_to_infos(
+            _safe_json_object(db_task.input_file_ids, []), by_id=by_id, file_repo=file_repo,
+        ),
+        output_files=_file_id_list_to_infos(
+            _safe_json_object(db_task.output_file_ids, []), by_id=by_id, file_repo=file_repo,
+        ),
         result=_sanitize_result(_safe_json_object(db_task.result_json, {})) if db_task.result_json else None,
         created_at=str(db_task.created_at) if db_task.created_at else "",
         started_at=str(db_task.started_at) if db_task.started_at else None,
@@ -468,8 +506,9 @@ async def _list_tasks_impl(status: str | None = None, agent: str | None = None,
                     **filters,
                 )
                 total = repo.count(**filters)
+                by_id = _files_by_id_for_tasks(db_tasks, file_repo)
                 return BaseResponse(data=TaskListResponse(
-                    tasks=[_task_info_from_db(t, file_repo) for t in db_tasks],
+                    tasks=[_task_info_from_db(t, file_repo, by_id) for t in db_tasks],
                     total=total,
                     page=page,
                     page_size=page_size,
@@ -506,9 +545,10 @@ async def _list_tasks_impl(status: str | None = None, agent: str | None = None,
             db_present = repo.filter_existing_ids([t.task_id for t in memory_tasks])
             memory_by_id = {t.task_id: t for t in memory_tasks}
             memory_only = [t for t in memory_tasks if t.task_id not in db_present]
+            by_id = _files_by_id_for_tasks(db_tasks, file_repo)
             merged = [
                 _task_info_from_memory(memory_by_id[t.id])
-                if t.id in memory_by_id else _task_info_from_db(t, file_repo)
+                if t.id in memory_by_id else _task_info_from_db(t, file_repo, by_id)
                 for t in db_tasks
             ]
             merged.extend(_task_info_from_memory(t) for t in memory_only)
@@ -531,12 +571,14 @@ async def _list_tasks_impl(status: str | None = None, agent: str | None = None,
             session.close()
 
     # 数据库不可用时只回退到已降级的内存快照；DB-backed 任务不可见。
+    # 必须沿用与 DB 路径相同的 owner 过滤，否则会跨用户泄漏内存任务。
     if memory_tasks:
-        tasks, total = task_manager.list_tasks(
-            status=normalized_status, agent=agent, page=page, page_size=page_size,
-        )
+        # memory_tasks 已按 user/status/agent 过滤；这里只做分页
+        total = len(memory_tasks)
+        start = (page - 1) * page_size
+        window = memory_tasks[start:start + page_size]
         return BaseResponse(data=TaskListResponse(
-            tasks=[_task_info_from_memory(t) for t in tasks],
+            tasks=[_task_info_from_memory(t) for t in window],
             total=total, page=page, page_size=page_size,
         ))
 
@@ -561,12 +603,13 @@ async def cancel_task(task_id: str, request: Request):
 
 async def _cancel_task_impl(task_id: str, request: Request | None = None):
     """``cancel_task`` 的内部实现，允许直接 Python 调用时省略 request。"""
-    # 尝试从队列取消
+    # 尝试从队列取消；队列不可用时记录告警，但不阻断 DB/内存取消路径
     try:
         from ...task_queue import cancel_task as queue_cancel
         queue_cancel(task_id)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("任务 %s 队列取消失败（继续走 DB/内存取消）: %s",
+                       task_id, sanitize_error(exc))
 
     memory_task = task_manager.get_task(task_id)
     session = _get_db_session()

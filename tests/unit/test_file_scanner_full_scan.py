@@ -136,6 +136,20 @@ def test_content_scan_budget_is_respected(tmp_path):
     assert any("命令执行" in t for t in result.detected_threats) is False
 
 
+def test_over_budget_is_scan_incomplete_and_blocked(tmp_path):
+    """P2-58：超过扫描预算即 fail-closed，且 overlap 重复计数不得掩盖未扫尾部。"""
+    mb = 1024 * 1024
+    # 文件 = 2MB 预算 + 4KB（小于一个 overlap 8192）。若用 len(window) 累加，
+    # overlap 会把 scanned 虚增到 >= 文件大小而误判“已扫完”；必须仍判未完整扫描。
+    path = tmp_path / "incomplete.txt"
+    path.write_bytes(b"benign\n" * ((2 * mb + 4096) // 7 + 1))
+    scanner = FileScanner(max_content_scan_bytes=2 * mb)
+    result = scanner.scan_file(path)
+    assert any("SCAN_INCOMPLETE" in t for t in result.detected_threats)
+    assert result.is_blocked is True
+    assert result.is_safe is False
+
+
 # -------------------------------------------------------- 流式窗口
 
 

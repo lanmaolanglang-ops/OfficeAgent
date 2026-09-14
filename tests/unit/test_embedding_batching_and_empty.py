@@ -91,6 +91,8 @@ def _make_embedder(provider, monkeypatch, batch_size=None):
         base_url="https://example.com/v1",
         model="text-embedding-3-small",
         batch_size=batch_size,
+        # 配置维度必须与 mock 响应一致：P2-67 禁止用响应长度静默覆写
+        dimension=getattr(provider, "dimension", 4) or 4,
     )
 
 

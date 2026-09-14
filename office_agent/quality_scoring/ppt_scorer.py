@@ -212,7 +212,8 @@ class PPTQualityScorer:
                     if not slide_info["has_title"] and (
                         (title_shape is not None and shape._element is title_shape._element)
                         or (
-                            shape.top and shape.top < Emu(2000000) and
+                            # shape.top == 0 是合法坐标，不能用 falsy 判断（P2-75）
+                            shape.top is not None and shape.top < Emu(2000000) and
                             any(run.font.size and run.font.size.pt >= 24
                                 for para in shape.text_frame.paragraphs
                                 for run in para.runs)
@@ -221,7 +222,7 @@ class PPTQualityScorer:
                         slide_info["has_title"] = True
                         slide_info["title_text"] = shape.text_frame.text[:50]
                         title_count += 1
-                        if shape.top:
+                        if shape.top is not None:
                             title_positions.append(shape.top)
 
             text_lengths.append(slide_info["text_length"])

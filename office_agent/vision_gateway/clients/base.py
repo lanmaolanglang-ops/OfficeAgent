@@ -146,24 +146,34 @@ class BaseVisionClient(ABC):
         # 表格
         if "tables" in data and isinstance(data["tables"], list):
             for t in data["tables"]:
-                table = TableData(
-                    rows=t.get("rows", 0),
-                    cols=t.get("cols", 0),
-                    headers=t.get("headers", []),
-                    data=t.get("data", []),
-                )
-                result.tables.append(table)
+                if not isinstance(t, dict):
+                    continue
+                try:
+                    table = TableData(
+                        rows=t.get("rows", 0),
+                        cols=t.get("cols", 0),
+                        headers=[str(h) for h in t["headers"]] if isinstance(t.get("headers"), list) else [],
+                        data=[[str(cell) for cell in row] for row in t["data"] if isinstance(row, list)] if isinstance(t.get("data"), list) else [],
+                    )
+                    result.tables.append(table)
+                except Exception:
+                    continue
 
         # 图表
         if "charts" in data and isinstance(data["charts"], list):
             for c in data["charts"]:
-                chart = ChartData(
-                    chart_type=c.get("type", ""),
-                    title=c.get("title", ""),
-                    categories=c.get("categories", []),
-                    series=c.get("series", []),
-                )
-                result.charts.append(chart)
+                if not isinstance(c, dict):
+                    continue
+                try:
+                    chart = ChartData(
+                        chart_type=c.get("type", ""),
+                        title=c.get("title", ""),
+                        categories=[str(x) for x in c["categories"]] if isinstance(c.get("categories"), list) else [],
+                        series=[item for item in c["series"] if isinstance(item, dict)] if isinstance(c.get("series"), list) else [],
+                    )
+                    result.charts.append(chart)
+                except Exception:
+                    continue
 
         # 键值对
         if "key_values" in data and isinstance(data["key_values"], dict):

@@ -19,7 +19,9 @@ from pathlib import Path
 from typing import Optional, List, Tuple
 from dataclasses import dataclass, field, asdict
 from collections import Counter
+import io
 import logging
+import re
 
 from pptx import Presentation
 from pptx.presentation import Presentation as PresentationType
@@ -143,6 +145,22 @@ class MasterInfo:
         }
 
 
+def _is_hex6(value) -> bool:
+    """是否为 6 位十六进制颜色（sysClr.val 是主题 token，不是 hex）。"""
+    return isinstance(value, str) and bool(re.fullmatch(r"[0-9A-Fa-f]{6}", value.strip()))
+
+
+def _readable_on_dark(bg_hex: str) -> str:
+    """给定背景色，返回在其上可读的前景（深底白字/浅底深字）。"""
+    try:
+        raw = (bg_hex or "").lstrip("#")
+        red, green, blue = (int(raw[i:i + 2], 16) for i in (0, 2, 4))
+    except (TypeError, ValueError):
+        return "#FFFFFF"
+    luminance = 0.2126 * red + 0.7152 * green + 0.0722 * blue
+    return "#FFFFFF" if luminance < 128 else "#000000"
+
+
 @dataclass
 class ThemeColorInfo:
     """主题颜色信息"""
@@ -164,6 +182,8 @@ class ThemeColorInfo:
 
     def to_color_scheme(self) -> ColorScheme:
         """转换为 ColorScheme"""
+        # text_light 用在 bg_dark 之上：按 bg_dark 亮度推导，深色底用白字、
+        # 偏浅的“深色”底改用深字，避免白字落在浅底上不可见（P3-45）。
         return ColorScheme(
             primary=self.dk2,
             secondary=self.accent1,
@@ -171,7 +191,7 @@ class ThemeColorInfo:
             bg=self.lt1,
             bg_dark=self.dk2,
             text=self.dk1,
-            text_light="#FFFFFF",
+            text_light=_readable_on_dark(self.dk2),
             text_muted="#666666",
             line="#D9D9D9",
         )
@@ -355,7 +375,8 @@ class TemplateAnalyzer:
         if not path.exists():
             raise FileNotFoundError(f"模板文件不存在: {template_path}")
 
-        prs = Presentation(str(path))
+        with open(str(path), "rb") as _fh:
+            prs = Presentation(io.BytesIO(_fh.read()))
 
         width_emu = prs.slide_width
         height_emu = prs.slide_height
@@ -399,23 +420,23 @@ class TemplateAnalyzer:
         return outline
 
     def create_from_template(self, template_path: str, slides_data: list,
-                             output_path: str) -> str:
+                             output_path: str, overwrite_template: bool = False) -> str:
         """
-        基于模板母版创建新 PPT（使用模板的版式和占位符位置）
+        基于模板母版创建新 PPT。
 
-        Args:
-            template_path: 模板路径
-            slides_data: 幻灯片数据列表，每项包含:
-                - layout_index: 使用的版式索引（默认1）
-                - title: 标题文本
-                - bullets/content: 正文要点列表
-                - 其他占位符索引映射
-            output_path: 输出路径
-
-        Returns:
-            输出文件路径
+        默认拒绝 output 与 template 同路径：不得静默覆盖用户模板（P2-52）。
         """
-        prs = Presentation(template_path)
+        tpl = Path(template_path).resolve()
+        out = Path(output_path)
+        if not overwrite_template:
+            try:
+                if out.resolve() == tpl:
+                    out = out.with_name(f"{out.stem}_from_template{out.suffix}")
+            except OSError:
+                if str(out) == str(template_path):
+                    out = out.with_name(f"{out.stem}_from_template{out.suffix}")
+        with open(template_path, "rb") as _fh:
+            prs = Presentation(io.BytesIO(_fh.read()))
 
         # 清空现有幻灯片（保留母版和版式）
         self._clear_slides(prs)
@@ -439,8 +460,8 @@ class TemplateAnalyzer:
             # 填充占位符
             self._fill_placeholders(slide, slide_data)
 
-        prs.save(output_path)
-        return output_path
+        prs.save(str(out))
+        return str(out)
 
     # ==========================================
     # 主题提取（颜色 + 字体）
@@ -494,14 +515,28 @@ class TemplateAnalyzer:
             srgb = child.find('a:srgbClr', nsmap)
             sysclr = child.find('a:sysClr', nsmap)
 
+            hex_raw = None
             if srgb is not None:
-                hex_color = '#' + srgb.get('val', '000000')
+                candidate = srgb.get('val')
+                if _is_hex6(candidate):
+                    hex_raw = candidate
             elif sysclr is not None:
-                hex_color = '#' + sysclr.get('lastClr', sysclr.get('val', '000000'))
-            else:
+                # lastClr 才是真实 hex；val 是 window/lt1 这类系统/主题 token。
+                candidate = sysclr.get('lastClr')
+                if _is_hex6(candidate):
+                    hex_raw = candidate
+                else:
+                    token = (sysclr.get('val') or '').lower()
+                    hex_raw = {
+                        'window': 'FFFFFF', 'windowtext': '000000',
+                        'lt1': 'FFFFFF', 'dk1': '000000',
+                        'lt2': 'E7E6E6', 'dk2': '1F4E79',
+                    }.get(token)
+            if not hex_raw:
+                # 既无合法 hex 也无法解析 token：跳过，避免写出 #lt1（P3-44）
                 continue
 
-            setattr(config.colors, color_map[tag], hex_color.upper())
+            setattr(config.colors, color_map[tag], ('#' + hex_raw).upper())
 
     def _parse_font_scheme(self, theme_xml, config: TemplateConfig):
         """解析 a:fontScheme"""

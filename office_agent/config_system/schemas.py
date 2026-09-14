@@ -315,6 +315,9 @@ class GlobalConfig(BaseModel):
     @field_validator("logging")
     @classmethod
     def validate_log_level(cls, v):
-        if v.level not in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):
+        # P3-112: 大小写不敏感（info/Info 合法），统一归一为大写
+        normalized = (v.level or "").strip().upper()
+        if normalized not in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):
             raise ValueError(f"Invalid log level: {v.level}")
+        v.level = normalized
         return v

@@ -74,11 +74,14 @@ class RateLimitMiddleware:
                 await response(scope, receive, send)
                 return
 
-        policy, result = checked[-1]
+        # 多策略：暴露最严格的 remaining 与最早的 reset（P2-20），
+        # 而不是只显示最后一个策略。
+        strictest = min(checked, key=lambda item: item[1].remaining)
+        earliest = min(checked, key=lambda item: item[1].reset_at)
         rate_headers = {
-            "X-RateLimit-Remaining": str(result.remaining),
-            "X-RateLimit-Reset": str(int(result.reset_at)),
-            "X-RateLimit-Policy": policy,
+            "X-RateLimit-Remaining": str(strictest[1].remaining),
+            "X-RateLimit-Reset": str(int(earliest[1].reset_at)),
+            "X-RateLimit-Policy": ",".join(p for p, _ in checked),
         }
 
         async def send_with_rate_headers(message):

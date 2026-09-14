@@ -209,21 +209,21 @@ class DataAnalyzer:
         )
 
         try:
-            xls = pd.ExcelFile(file_path)
-            schema.total_sheets = len(xls.sheet_names)
+            with pd.ExcelFile(file_path) as xls:
+                schema.total_sheets = len(xls.sheet_names)
 
-            # 先收集所有表的列信息，用于关系发现
-            all_sheets_data = {}
+                # 先收集所有表的列信息，用于关系发现
+                all_sheets_data = {}
 
-            for sheet_name in xls.sheet_names:
-                df = xls.parse(sheet_name)
-                sheet_schema = self._analyze_sheet_schema(df, sheet_name)
-                schema.sheets.append(sheet_schema)
-                schema.total_rows += sheet_schema.row_count
-                all_sheets_data[sheet_name] = df
+                for sheet_name in xls.sheet_names:
+                    df = xls.parse(sheet_name)
+                    sheet_schema = self._analyze_sheet_schema(df, sheet_name)
+                    schema.sheets.append(sheet_schema)
+                    schema.total_rows += sheet_schema.row_count
+                    all_sheets_data[sheet_name] = df
 
-            # 发现表间关系
-            schema.relations = self._discover_relations(all_sheets_data)
+                # 发现表间关系
+                schema.relations = self._discover_relations(all_sheets_data)
 
         except Exception:
             # pandas 失败时用 openpyxl 降级；记录原因，避免静默丢弃已分析结果
@@ -267,14 +267,14 @@ class DataAnalyzer:
         profile = DataProfile(file_path=file_path)
 
         try:
-            xls = pd.ExcelFile(file_path)
-            profile.total_sheets = len(xls.sheet_names)
+            with pd.ExcelFile(file_path) as xls:
+                profile.total_sheets = len(xls.sheet_names)
 
-            for sheet_name in xls.sheet_names:
-                df = xls.parse(sheet_name)
-                sheet_info = self._analyze_sheet_to_info(df, sheet_name)
-                profile.sheets.append(sheet_info)
-                profile.total_rows += sheet_info.row_count
+                for sheet_name in xls.sheet_names:
+                    df = xls.parse(sheet_name)
+                    sheet_info = self._analyze_sheet_to_info(df, sheet_name)
+                    profile.sheets.append(sheet_info)
+                    profile.total_rows += sheet_info.row_count
 
         except Exception:
             logger.warning(
@@ -379,12 +379,29 @@ class DataAnalyzer:
         sample = non_null.head(5).tolist()
         col.sample_values = [str(v) for v in sample]
         unique = non_null.drop_duplicates().head(UNIQUE_VALUES_PREVIEW_LIMIT).tolist()
-        col.unique_values = [v.item() if hasattr(v, "item") else v for v in unique]
+        col.unique_values = [self._to_json_scalar(v) for v in unique]
 
         # 生成描述（在统计之后）
         col.description = self._describe_column(col)
 
         return col
+
+    @staticmethod
+    def _to_json_scalar(v):
+        # numpy scalars -> python scalar (guard: pandas.Timestamp has no
+        # working .item in some versions).
+        if hasattr(v, "item"):
+            try:
+                v = v.item()
+            except (TypeError, ValueError, AttributeError):
+                pass
+        # datetime / pandas.Timestamp -> ISO string (JSON-safe)
+        if hasattr(v, "isoformat") and not isinstance(v, (str, int, float, bool)):
+            try:
+                return v.isoformat()
+            except Exception:
+                return str(v)
+        return v
 
     # ==========================================
     # 类型推断
@@ -451,19 +468,43 @@ class DataAnalyzer:
         # 也可能带前后空格或大小写差异，直接对原始值做 in 判断会漏判。
         name_lower = _match_key(col_name)
 
-        # 1. 日期类型
+        # 1. 日期类型（dtype/样本已确认）
         if data_type == "date":
             return "date"
 
-        # 2. 关键词匹配（优先级从高到低）
+        # 2. 关键词匹配：最长匹配优先，避免单字「年/月/日」抢先命中
+        #    「月度金额」「年收入」「日均销量」等数值字段（P2-38）。
+        #    同长度时：数值列优先 amount/quantity/metric 而非 date。
+        best: tuple[int, int, str] | None = None  # (kw_len, priority, sem_type)
+        _DATE_PRIORITY = 0
+        _NUMERIC_FRIENDLY = {"amount": 2, "quantity": 2, "metric": 2,
+                             "percentage": 2, "id": 1, "name": 1, "category": 1}
         for sem_type, keywords in SEMANTIC_KEYWORDS.items():
             for kw in keywords:
-                if kw in name_lower:
-                    # 百分比优先于 metric
-                    if sem_type == "metric" and data_type == "number":
-                        if any(p in name_lower for p in ["%", "percent", "占比", "率", "比"]):
-                            return "percentage"
-                    return sem_type
+                if kw and kw in name_lower:
+                    if data_type == "number" and sem_type == "date":
+                        priority = _DATE_PRIORITY
+                    else:
+                        priority = _NUMERIC_FRIENDLY.get(sem_type, 1)
+                    candidate = (len(kw), priority, sem_type)
+                    if best is None or candidate > best:
+                        best = candidate
+        if best is not None:
+            sem_type = best[2]
+            # 百分比优先于 metric
+            if sem_type == "metric" and data_type == "number":
+                if any(p in name_lower for p in ["%", "percent", "占比", "率", "比"]):
+                    return "percentage"
+            # 数值列 + 仅靠短 date 词命中：不把「月度金额」判成日期。
+            # 真正日期列由 data_type=="date" 或样本日期模式覆盖。
+            if (
+                sem_type == "date"
+                and data_type == "number"
+                and best[0] <= 1
+            ):
+                pass  # 落到下方数值特征推断
+            else:
+                return sem_type
 
         # 3. 基于数据特征推断
         if data_type == "number":
@@ -746,12 +787,15 @@ class DataAnalyzer:
             for col_idx, header in enumerate(headers):
                 col_info = ColumnInfo(name=header, index=col_idx)
                 values = []
-                for row in range(2, min(ws.max_row + 1, 200)):
+                sample_end = min(ws.max_row + 1, 200)
+                for row in range(2, sample_end):
                     v = ws.cell(row=row, column=col_idx + 1).value
                     if v is not None:
                         values.append(v)
 
-                col_info.null_count = ws.max_row - 1 - len(values)
+                # null_count 只反映采样窗口，不得伪装成全表统计（P2-39）
+                sampled_rows = max(0, sample_end - 2)
+                col_info.null_count = max(0, sampled_rows - len(values))
                 col_info.unique_count = len(set(str(v) for v in values))
                 col_info.sample_values = [str(v) for v in values[:5]]
                 col_info.unique_values = list(dict.fromkeys(values))[:UNIQUE_VALUES_PREVIEW_LIMIT]
@@ -804,13 +848,15 @@ class DataAnalyzer:
                 col_name = str(header_val) if header_val else f"列{col}"
 
                 values = []
-                for row in range(2, min(ws.max_row + 1, 200)):
+                sample_end = min(ws.max_row + 1, 200)
+                for row in range(2, sample_end):
                     v = ws.cell(row=row, column=col).value
                     if v is not None:
                         values.append(v)
 
                 col_info = ColumnInfo(name=col_name, index=col - 1)
-                col_info.null_count = ws.max_row - 1 - len(values)
+                sampled_rows = max(0, sample_end - 2)
+                col_info.null_count = max(0, sampled_rows - len(values))
                 col_info.unique_count = len(set(str(v) for v in values))
                 col_info.sample_values = [str(v) for v in values[:5]]
                 col_info.unique_values = list(dict.fromkeys(values))[:UNIQUE_VALUES_PREVIEW_LIMIT]

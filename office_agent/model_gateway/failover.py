@@ -192,10 +192,18 @@ class FailoverManager:
                         return self._cancelled_response(attempts, attempted_models)
                     if result.success:
                         raw = dict(result.raw_response) if isinstance(result.raw_response, dict) else {}
+                        # fallback_used 仅当真正尝试过 primary 且最终成功的是非 primary
+                        primary = candidates[0] if candidates else model_id
+                        used_fallback = (
+                            model_id != primary
+                            and any(m == primary for m in attempted_models)
+                        )
                         raw["_office_agent"] = {
                             "attempts": attempts,
                             "attempted_models": attempted_models,
-                            "fallback_used": model_id != candidates[0],
+                            "primary_model": primary,
+                            "selected_model": model_id,
+                            "fallback_used": used_fallback,
                         }
                         result.raw_response = raw
                         return result

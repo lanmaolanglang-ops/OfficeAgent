@@ -222,9 +222,14 @@ class VectorStore:
             return removed
 
     def update_chunks(self, chunks: List[KnowledgeChunk]) -> int:
-        """删除旧 chunk 并加入新 chunk，保持 identity 不变。"""
-        self.remove_chunks([chunk.id for chunk in chunks])
-        return self.add_chunks(chunks)
+        """删除旧 chunk 并加入新 chunk。
+
+        在同一把 RLock 内完成：调用方不会在 remove 与 add 之间
+        观察到「旧已消失、新未加入」的中间态（P2-69）。
+        """
+        with self._lock:
+            self.remove_chunks([chunk.id for chunk in chunks])
+            return self.add_chunks(chunks)
 
     # ------------------------------------------------------------------
     # 检索
@@ -233,21 +238,29 @@ class VectorStore:
                min_score: float = 0.05,
                doc_types: Optional[List[str]] = None,
                tags: Optional[List[str]] = None) -> List[SearchResult]:
+        query_keywords = set(self._extract_keywords(query))
+
+        # 远程 embed 不得持锁（P2-68）：先取是否需要重建/增量标志与空库短路。
         with self._lock:
             if not self._chunks:
                 return []
+            incremental = self._is_incremental()
+            if incremental and not self._fitted:
+                self.rebuild_index()
 
-            query_keywords = set(self._extract_keywords(query))
-            if self._is_incremental():
-                if not self._fitted:
-                    self.rebuild_index()
+        if incremental:
+            with self._lock:
                 return self._incremental_search(
                     query, top_k, min_score, doc_types, tags, query_keywords,
                 )
 
-            query_vec = self.embedder.embed_query(query)
+        # 锁外做可能走网络的 embedding
+        query_vec = self.embedder.embed_query(query)
+
+        with self._lock:
             if not query_vec:
                 return self._keyword_search(query, top_k)
+            # 在锁内基于当前 chunk 列表打分，保证与并发 add/remove 的一致性边界清晰
             results = []
             for stored in self._chunks:
                 if not self._matches_filters(stored.chunk, doc_types, tags):
@@ -325,7 +338,9 @@ class VectorStore:
     def _matches_filters(self, chunk: KnowledgeChunk, doc_types, tags) -> bool:
         if doc_types:
             chunk_type = chunk.metadata.get("doc_type", "")
-            if chunk_type and chunk_type not in doc_types:
+            # P3-76: 显式类型过滤必须 fail-closed——缺 doc_type 的 chunk
+            # 不得靠“空串为假”绕过任意类型过滤（P3-123 同根因）。
+            if chunk_type not in doc_types:
                 return False
         if tags:
             chunk_tags = chunk.metadata.get("tags", [])

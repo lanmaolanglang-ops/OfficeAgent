@@ -32,7 +32,8 @@ class TestColorsSingleSource:
 
     def test_font_schemes_preserved(self):
         """合一不得丢失各预设的字体差异。"""
-        assert StylePresets.minimal()[1].title_cn == "思源黑体"
+        # P3-50: minimal 改用 Windows 自带中文字体（思源黑体在 Windows 默认缺失）
+        assert StylePresets.minimal()[1].title_cn == "微软雅黑"
         assert StylePresets.academic()[1].title_cn == "黑体"
         assert StylePresets.academic()[1].body_cn == "宋体"
         assert StylePresets.creative()[1].title_size == 30

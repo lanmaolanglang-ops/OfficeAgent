@@ -19,6 +19,7 @@ import logging
 import os
 import tempfile
 import threading
+import weakref
 from pathlib import Path
 from typing import Any, Callable, IO, Union
 
@@ -28,7 +29,13 @@ PathLike = Union[str, "os.PathLike[str]"]
 
 # 每个目标路径一把可重入锁：同一进程内并发写同一文件必须串行，
 # 否则两个线程会各自写完再 replace，后替换者覆盖先替换者。
-_path_locks: dict[str, threading.RLock] = {}
+# WeakValueDictionary: a lock is kept alive only while a writer holds a
+# local reference to it; once every concurrent write to that path finishes
+# the entry is collected, so writing to arbitrarily many distinct paths can
+# no longer grow an unbounded dict (P3-1).
+_path_locks: "weakref.WeakValueDictionary[str, threading.RLock]" = (
+    weakref.WeakValueDictionary()
+)
 _path_locks_guard = threading.Lock()
 
 
@@ -124,8 +131,8 @@ def atomic_write_json(path: PathLike, data: Any, *, indent: int | None = None,
                       default: Callable[[Any], Any] | None = None) -> None:
     """原子写入 JSON。序列化在锁外完成，减少持锁时间。"""
 
-    def _writer(handle: IO[Any]) -> None:
-        json.dump(data, handle, ensure_ascii=ensure_ascii, indent=indent,
-                  default=default)
-
-    atomic_write(path, _writer, encoding="utf-8", mode=mode)
+    # Serialize *before* taking the per-path lock (P3-2): the critical
+    # section then only covers file I/O, and we render a consistent snapshot.
+    payload = json.dumps(data, ensure_ascii=ensure_ascii, indent=indent,
+                         default=default)
+    atomic_write_text(path, payload, mode=mode)

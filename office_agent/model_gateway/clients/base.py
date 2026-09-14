@@ -56,6 +56,29 @@ class BaseModelClient(ABC):
         messages = [{"role": "user", "content": user_message}]
         return self.chat(messages, system_prompt=system_prompt, **kwargs)
     
+    @staticmethod
+    def _truncate_to_token_budget(content: str, max_tokens: int) -> str:
+        """按 CJK 密度估算 token 并截断（P3-84）。
+
+        CJK/全角约 1 字符/token，其余约 4 字符/token；旧实现统一 ``*3``
+        的英文口径会让中文文档超预算。预留 15% 给系统提示与数据包装。
+        """
+        if not max_tokens or max_tokens <= 0:
+            return content
+        budget = max(1, int(max_tokens * 0.85))
+        used = 0.0
+        for i, ch in enumerate(content):
+            o = ord(ch)
+            is_cjk = (
+                0x4E00 <= o <= 0x9FFF or 0x3400 <= o <= 0x4DBF
+                or 0x3000 <= o <= 0x30FF or 0xFF00 <= o <= 0xFFEF
+            )
+            cost = 1.0 if is_cjk else 0.25
+            if used + cost > budget:
+                return content[:i] + "\n...(内容已截断)"
+            used += cost
+        return content
+
     def analyze_document(self, file_path: str, prompt: str,
                         system_prompt: Optional[str] = None) -> ModelResponse:
         """
@@ -80,10 +103,10 @@ class BaseModelClient(ABC):
                     model_used=self.config.id,
                 )
             
-            # 截断过长内容
-            max_chars = self.config.max_tokens * 3  # 粗略估算
-            if len(content) > max_chars:
-                content = content[:max_chars] + "\n...(内容已截断)"
+            # 截断过长内容：按 CJK 密度估算，避免中文按 *3 英文口径超预算（P3-84）
+            content = self._truncate_to_token_budget(
+                content, self.config.max_tokens
+            )
             
             from ...security.prompt import (
                 UNTRUSTED_DATA_SYSTEM_RULE,

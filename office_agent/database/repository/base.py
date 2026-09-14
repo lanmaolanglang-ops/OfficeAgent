@@ -97,6 +97,13 @@ class BaseRepository(Generic[ModelType]):
             stmt = stmt.where(self._column(key) == value)
         return self.session.scalar(stmt)
 
+    def find_by_ids(self, ids: List[str]) -> List[ModelType]:
+        """Batch load by primary keys (avoids N+1, P2-28)."""
+        if not ids:
+            return []
+        stmt = select(self.model).where(self._column("id").in_(list(ids)))
+        return list(self.session.scalars(stmt))
+
     def find(self, offset: int = 0, limit: int = 100, order_by=None,
              descending: bool = False, **filters) -> List[ModelType]:
         offset, limit = self._page(offset, limit)

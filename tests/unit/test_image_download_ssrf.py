@@ -143,3 +143,62 @@ def test_dns_answer_is_rejected_if_any_endpoint_is_non_public(monkeypatch):
 
     with pytest.raises(gateway.ImageGenerationError, match="内网或保留地址"):
         gateway._validate_remote_url("http://images.example/picture.png")
+
+
+# ------------------------------------------------------------
+# P2-72: the request base_url itself must be public BEFORE a Bearer key is sent
+# ------------------------------------------------------------
+
+
+@pytest.mark.parametrize("ip", [
+    "127.0.0.1", "10.2.3.4", "192.168.1.1", "172.16.9.9",
+    "169.254.1.1", "169.254.169.254", "::1",
+])
+def test_base_url_resolving_to_reserved_address_is_rejected(monkeypatch, ip):
+    from office_agent.image_generation import gateway
+
+    def fake_dns(host, port, *a, **k):
+        family = socket.AF_INET6 if ":" in ip else socket.AF_INET
+        return [(family, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", (ip, port))]
+
+    monkeypatch.setattr(gateway.socket, "getaddrinfo", fake_dns)
+    with pytest.raises(gateway.ImageGenerationError):
+        gateway._assert_public_api_url("http://internal.example/v1", label="base_url")
+
+
+@pytest.mark.parametrize("url", [
+    "file:///etc/passwd",
+    "gopher://evil/x",
+    "https://user:pass@api.example/v1",
+    "http://localhost:8080/v1",
+    "http://api.localhost/v1",
+    "   ",
+])
+def test_base_url_scheme_credential_localhost_rejected(url):
+    from office_agent.image_generation.gateway import _assert_public_api_url, ImageGenerationError
+
+    with pytest.raises(ImageGenerationError):
+        _assert_public_api_url(url, label="base_url")
+
+
+def test_base_url_mixed_public_private_dns_rejected(monkeypatch):
+    from office_agent.image_generation import gateway
+
+    def fake_dns(*_a, **_k):
+        return [PUBLIC_ENDPOINT, (
+            socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("127.0.0.1", 443)
+        )]
+
+    monkeypatch.setattr(gateway.socket, "getaddrinfo", fake_dns)
+    with pytest.raises(gateway.ImageGenerationError, match="内网或保留地址"):
+        gateway._assert_public_api_url("https://api.example/v1", label="base_url")
+
+
+def test_base_url_public_endpoint_accepted(monkeypatch):
+    from office_agent.image_generation import gateway
+
+    monkeypatch.setattr(
+        gateway.socket, "getaddrinfo", lambda *_a, **_k: [PUBLIC_ENDPOINT]
+    )
+    # must not raise
+    gateway._assert_public_api_url("https://api.example/v1/", label="base_url")

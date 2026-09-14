@@ -576,27 +576,26 @@ class ExcelTemplateAnalyzer:
     @staticmethod
     def _formula_to_template(formula: str, row_num: int) -> str:
         """
-        将具体公式转为模板，行号替换为 {row}
-        例：=SUM(B2:C2) → =SUM(B{row}:C{row})
-            =B2*1.1 → =B{row}*1.1
-            =SUM(B$2:B2) → =SUM(B$2:B{row})  (绝对引用保留)
+        将具体公式转为模板，行号替换为 {row}。
+
+        仅替换当前工作表内的相对行号；跨表引用
+        ``Sheet1!A1`` / ``'Sales 2026'!A1`` / ``'O''Brien'!B2`` 的
+        sheet token 与绝对行号原样保留（P2-42）。
         """
-        # 替换非绝对引用的行号（前面没有$）
-        # 匹配：字母+数字（数字前不是$）
-        def replace_row(match):
-            col = match.group(1)
-            dollar = match.group(2) or ""
-            row = match.group(3)
+        # 切出跨表前缀（含 !），只在 ! 之后的本表引用上替换
+        bang = formula.rfind("!")
+        prefix = formula[: bang + 1] if bang >= 0 else ""
+        body = formula[bang + 1 :] if bang >= 0 else formula
+
+        pattern = r'(\$?[A-Z]+)(\$?)(' + str(row_num) + r')(?![0-9])'
+
+        def _sub(m):
+            col, dollar, row = m.group(1), m.group(2) or "", m.group(3)
             if dollar == "$":
                 return f"{col}${row}"
-            return f"{col}{{{row_num}}}" if False else f"{col}{{row}}"
+            return f"{col}{{row}}"
 
-        # 简单替换：把所有 row_num 替换为 {row}（非绝对引用）
-        result = formula
-        # 替换 A1 形式中的行号（但保留 $A$1 的绝对行号）
-        pattern = r'(\$?[A-Z]+)(\$?)(' + str(row_num) + r')(?![0-9])'
-        result = re.sub(pattern, lambda m: m.group(1) + (m.group(2) if m.group(2) else '') + ('{row}' if not m.group(2) else m.group(3)), result)
-        return result
+        return prefix + re.sub(pattern, _sub, body)
 
     @staticmethod
     def _template_to_formula(template: str, row_num: int) -> str:
@@ -670,6 +669,13 @@ class ExcelTemplateAnalyzer:
         # 清除模板数据行（保留表头）
         if not keep_template_data:
             self._clear_data_rows(ws, sheet_tpl)
+
+        # 自定义表头覆盖模板表头（P3-35：headers 参数此前声明却被忽略）
+        if headers:
+            for j, header in enumerate(headers):
+                header_cell = ws.cell(row=sheet_tpl.header_row, column=j + 1)
+                if not isinstance(header_cell, MergedCell):
+                    header_cell.value = header
 
         # 写入新数据
         start_row = sheet_tpl.data_start_row

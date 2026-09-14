@@ -352,6 +352,9 @@ class FormatRuleParser:
             # 片段级加粗/斜体检测
             seg_bold = bool(re.search(r"加粗|粗体", segment))
             seg_italic = bool(re.search(r"斜体", segment))
+            seg_no_number = bool(
+                re.search(r"不编号|取消编号|无编号|去掉编号|不要编号", segment)
+            )
 
             if heading_level == 0:
                 # 通用"标题"，应用到所有级别
@@ -366,6 +369,8 @@ class FormatRuleParser:
                         rule.headings[level]["bold"] = True
                     if seg_italic:
                         rule.headings[level]["italic"] = True
+                    if seg_no_number:
+                        rule.headings[level]["numbering"] = False
                     if "alignment" in global_cfg:
                         rule.headings[level]["alignment"] = global_cfg["alignment"]
                     if "color" in global_cfg:
@@ -390,6 +395,8 @@ class FormatRuleParser:
                     rule.headings[heading_level]["bold"] = True
                 if seg_italic:
                     rule.headings[heading_level]["italic"] = True
+                if seg_no_number:
+                    rule.headings[heading_level]["numbering"] = False
                 if "alignment" in global_cfg:
                     rule.headings[heading_level]["alignment"] = global_cfg["alignment"]
                 if "color" in global_cfg:
@@ -569,6 +576,22 @@ class FormatRuleParser:
 
         return None
 
+    DEFAULT_LINE_HEIGHT_PT = 12.0
+
+    def _line_height_pt(self, text: str) -> float:
+        """“行”换算为磅（P3-98）：单倍行距约为字号的 1.3 倍。
+
+        规则文本声明了字号时按字号推算；没有字号信息时回退 12pt，
+        不再无视字号恒定乘 12。
+        """
+        size = self._extract_size(text)
+        pt: Optional[float] = None
+        if isinstance(size, (int, float)):
+            pt = float(size)
+        elif isinstance(size, str) and size in CHINESE_SIZE_MAP:
+            pt = float(CHINESE_SIZE_MAP[size])
+        return pt * 1.3 if pt else self.DEFAULT_LINE_HEIGHT_PT
+
     def _extract_space_before(self, text: str) -> Optional[float]:
         """提取段前距（返回磅值）"""
         m = SPACE_BEFORE_PATTERN.search(text)
@@ -576,7 +599,7 @@ class FormatRuleParser:
             val = float(m.group(1))
             unit = m.group(2)
             if unit == "行":
-                return val * 12  # 粗略
+                return val * self._line_height_pt(text)
             return val
         return None
 
@@ -587,7 +610,7 @@ class FormatRuleParser:
             val = float(m.group(1))
             unit = m.group(2)
             if unit == "行":
-                return val * 12
+                return val * self._line_height_pt(text)
             return val
         return None
 

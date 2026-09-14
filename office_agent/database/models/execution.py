@@ -1,7 +1,7 @@
 """执行日志模型"""
 import uuid
 from datetime import datetime
-from sqlalchemy import String, Text, Integer, ForeignKey, DateTime, Float
+from sqlalchemy import String, Text, Integer, ForeignKey, DateTime, Float, Index
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from ..base import Base, TimestampMixin
@@ -26,6 +26,9 @@ class ExecutionLog(Base, TimestampMixin):
 
     记录 Agent/Service 每一步执行。
     """
+    __table_args__ = (
+        Index("ix_execution_log_created_at", "created_at"),
+    )
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_log_uuid)
 
     # 关联
@@ -80,6 +83,9 @@ class ModelCallLog(Base, TimestampMixin):
 
     记录每次 LLM 调用的详细信息。
     """
+    __table_args__ = (
+        Index("ix_model_call_log_created_at", "created_at"),
+    )
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_model_log_uuid)
 
     # 关联
@@ -125,6 +131,9 @@ class ErrorLog(Base, TimestampMixin):
 
     记录系统中所有 ERROR 及以上级别的错误。
     """
+    __table_args__ = (
+        Index("ix_error_log_created_at", "created_at"),
+    )
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_error_uuid)
 
     # 关联

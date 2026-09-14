@@ -88,5 +88,14 @@ def ensure_docx_input(path: str) -> str:
         suffix=".docx", prefix=OWNED_TEMP_PREFIX
     )
     os.close(fd)
-    document.save(out_path)
+    # P3-99: mkstemp 已创建空文件；若 document.save 失败必须清掉这个空壳，
+    # 不能让异常路径在系统临时目录里遗留零字节临时文件。
+    try:
+        document.save(out_path)
+    except BaseException:
+        try:
+            os.remove(out_path)
+        except OSError:
+            pass
+        raise
     return out_path

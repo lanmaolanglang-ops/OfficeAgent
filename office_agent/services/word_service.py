@@ -523,10 +523,8 @@ class WordService:
         for run in para.runs:
             self._apply_run_font(run, font_cfg)
 
-        # 如果段落有文字但没有 run（特殊情况）
-        if para.text and not para.runs:
-            run = para.add_run(para.text)
-            self._apply_run_font(run, font_cfg)
+        # 段落有文字但没有 run：add_run(para.text) 会把原文再追加一份，
+        # 导致正文重复。这里不重建文本，只跳过无法应用的 run 级字体。
 
     def _apply_run_font(self, run, font_cfg: FontConfig):
         """应用 run 级别的字体格式"""
@@ -579,10 +577,17 @@ class WordService:
                 if not self._has_existing_caption(table):
                     self._add_table_caption(table, self._table_counter)
 
+        # P3-129: 描述必须反映真实启用的处理项，不能无论开关都写“三线表，自动编号”
         if self._table_counter > 0:
-            self.changes.append(
-                f"表格处理: {self._table_counter}个三线表，自动编号"
-            )
+            applied = []
+            if table_config.three_line:
+                applied.append("三线表")
+            if table_config.auto_number:
+                applied.append("自动编号")
+            if applied:
+                self.changes.append(
+                    f"表格处理: {self._table_counter}个{'，'.join(applied)}"
+                )
 
     def _has_existing_caption(self, table) -> bool:
         """检查表格上方是否已有'表N'题注"""

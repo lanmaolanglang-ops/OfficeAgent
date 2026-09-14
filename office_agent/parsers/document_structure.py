@@ -493,10 +493,14 @@ class DocumentStructureAnalyzer:
             if re.match(pattern, text):
                 return True
 
-        # 左缩进较大且短 → 可能是引用
+        # 左缩进较大且短，仅在同时带引用标点时才算引用（P3-97）：
+        # 旧逻辑单凭“缩进>48 且较短”会把缩进的列表项/正文误判成引用。
         indent = self._get_indent(para)
         if indent > 48 and len(text) < 200:  # 缩进超过约2字符
-            return True
+            stripped = text.strip()
+            quote_marks = ("“", "”", "「", "」", "『", "』", '"', "'", ">")
+            if stripped.startswith(quote_marks) or stripped.endswith(quote_marks):
+                return True
 
         return False
 

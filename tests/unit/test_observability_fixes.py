@@ -68,7 +68,7 @@ class TestLogExecution:
         assert "WordAgent.format_document" in names
 
     def test_plain_function_input_summary_includes_first_arg(self):
-        @log_execution(action="demo")
+        @log_execution(action="demo", log_input=True)
         def process(first, second="s"):
             return "done"
 

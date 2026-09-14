@@ -150,19 +150,23 @@ class ExcelQualityChecker:
     """
     Excel 质量检查器与自动修复
 
-    用法:
-        checker = ExcelQualityChecker()
-
-        # 检查
-        report = checker.check("output.xlsx")
-        print(report.summary())
-
-        # 检查并修复
-        report = checker.check_and_fix("output.xlsx", "fixed.xlsx")
+    chart inventory 等状态在每次 check 时重建；并发复用同一实例时
+    由内部锁串行化，避免 A 的 chart 计数泄漏到 B（P2-40）。
     """
+
+    def __init__(self):
+        import threading
+        self._check_lock = threading.RLock()
+        self._chart_count = 0
+        self._chart_message_emitted = False
+        self._chart_source_path = ""
 
     def check(self, file_path: str) -> QualityReport:
         """检查 Excel 文件质量"""
+        with self._check_lock:
+            return self._check_unlocked(file_path)
+
+    def _check_unlocked(self, file_path: str) -> QualityReport:
         report = QualityReport(file_path=file_path)
 
         if not Path(file_path).exists():
@@ -201,6 +205,10 @@ class ExcelQualityChecker:
 
     def check_and_fix(self, file_path: str, output_path: str | None = None) -> QualityReport:
         """检查并自动修复"""
+        with self._check_lock:
+            return self._check_and_fix_unlocked(file_path, output_path)
+
+    def _check_and_fix_unlocked(self, file_path: str, output_path: str | None = None) -> QualityReport:
         report = QualityReport(file_path=file_path)
 
         if not Path(file_path).exists():
@@ -373,7 +381,14 @@ class ExcelQualityChecker:
         issues = []
         reference_pattern = re.compile(
             r"(?:(?:'((?:[^']|'')+)'|([A-Za-z_][\w .]*))!)?"
-            r"\$?([A-Z]{1,3})\$?(\d+)(?::\$?([A-Z]{1,3})\$?(\d+))?",
+            # P3-32/33: leading word boundary — without it the "G10" inside the
+            # function name LOG10() (or any identifier ending in a column-like
+            # token) is mistaken for a cell reference.
+            r"(?<![A-Za-z0-9_$])\$?([A-Z]{1,3})\$?(\d+)(?!\d)"
+            r"(?::\$?([A-Z]{1,3})\$?(\d+)(?!\d))?"
+            # A real reference is never a function call, i.e. not followed by
+            # "(" (rules out LOG10(...)/POWER10(...) style false positives).
+            r"(?!\s*\()",
             re.IGNORECASE,
         )
         for match in reference_pattern.finditer(formula):
@@ -413,8 +428,8 @@ class ExcelQualityChecker:
         """静态检查公式除零风险"""
         issues = []
 
-        # 匹配除法：/B3, /B3:C3 等
-        div_matches = re.finditer(r'/([A-Z]+)(\d+)', formula)
+        # 匹配除法：/B3, /B3:C3, 以及绝对引用 /$B$3（P3-34）
+        div_matches = re.finditer(r'/\$?([A-Z]+)\$?(\d+)', formula)
         for m in div_matches:
             col_str, row_str = m.group(1), m.group(2)
             try:
@@ -693,8 +708,12 @@ class ExcelQualityChecker:
         """图表检查：openpyxl 重新加载的文件解析不出已写入的图表对象，
         改为检查包内图表部件（新写入的图表必落在 xl/charts/ 下）。"""
         issues = []
-        if not hasattr(self, "_chart_count"):
-            self._prepare_chart_inventory(getattr(self, "_chart_source_path", ""))
+        source = getattr(self, "_chart_source_path", "")
+        # 有源路径但尚未按该路径准备 inventory 时重建（避免 __init__ 默认 0 跳过）
+        if source and getattr(self, "_chart_source_path_prepared_for", None) != source:
+            self._prepare_chart_inventory(source)
+        elif not hasattr(self, "_chart_count"):
+            self._prepare_chart_inventory(source)
         if getattr(self, "_chart_message_emitted", False):
             return []
         self._chart_message_emitted = True
@@ -720,6 +739,7 @@ class ExcelQualityChecker:
         """每个工作簿只解压扫描一次图表部件，并只生成一条工作簿级提示。"""
         self._chart_count = 0
         self._chart_message_emitted = False
+        self._chart_source_path_prepared_for = file_path
         if not file_path:
             return
         try:

@@ -162,7 +162,10 @@ def main():
             sys.exit(0)
 
         signal.signal(signal.SIGINT, signal_handler)
-        if sys.platform != "win32":
+        if sys.platform == "win32":
+            # P3-120: Windows 控制台关闭/Ctrl+Break 发的是 SIGBREAK，必须一并接管
+            signal.signal(signal.SIGBREAK, signal_handler)
+        else:
             signal.signal(signal.SIGTERM, signal_handler)
 
         if not mgr.start():

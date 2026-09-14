@@ -69,14 +69,22 @@ def build_service_wrapper_script(app_dir: Path, port: int,
       busy spin。
     """
     desktop_dir = Path(__file__).resolve().parent
+    # 用 repr 嵌入路径/服务名：路径中的引号、反斜杠、换行不得被解释为 Python 语法（P2-54）
+    app_dir_lit = repr(str(app_dir))
+    desktop_dir_lit = repr(str(desktop_dir))
+    service_data_lit = repr(str(service_data_dir))
+    service_name_lit = repr(SERVICE_NAME)
+    service_display_lit = repr(SERVICE_DISPLAY_NAME)
+    service_desc_lit = repr(SERVICE_DESCRIPTION)
+    port_lit = repr(int(port))
     return f'''
 import sys
 import os
-sys.path.insert(0, r"{app_dir}")
-sys.path.insert(0, r"{desktop_dir}")
-os.chdir(r"{app_dir}")
+sys.path.insert(0, {app_dir_lit})
+sys.path.insert(0, {desktop_dir_lit})
+os.chdir({app_dir_lit})
 from office_agent.runtime_config import apply_desktop_runtime_env
-apply_desktop_runtime_env(r"{service_data_dir}")
+apply_desktop_runtime_env({service_data_lit})
 import servicemanager
 import win32event
 import win32service
@@ -85,9 +93,9 @@ import threading
 import time
 
 class OfficeAgentService(win32serviceutil.ServiceFramework):
-    _svc_name_ = "{SERVICE_NAME}"
-    _svc_display_name_ = "{SERVICE_DISPLAY_NAME}"
-    _svc_description_ = "{SERVICE_DESCRIPTION}"
+    _svc_name_ = {service_name_lit}
+    _svc_display_name_ = {service_display_lit}
+    _svc_description_ = {service_desc_lit}
 
     def __init__(self, args):
         win32serviceutil.ServiceFramework.__init__(self, args)
@@ -117,7 +125,7 @@ class OfficeAgentService(win32serviceutil.ServiceFramework):
                               (self._svc_name_, ""))
         try:
             from office_agent.runtime_manager import AppConfig, ApplicationRuntimeManager
-            config = AppConfig(port={port}, backend_dir=r"{app_dir}")
+            config = AppConfig(port={port_lit}, backend_dir={app_dir_lit})
             self._mgr = ApplicationRuntimeManager(config)
             self._mgr.start()
         except Exception as exc:
@@ -235,9 +243,19 @@ def start_service():
 def stop_service():
     """停止服务"""
     try:
-        subprocess.run(["sc", "stop", SERVICE_NAME], capture_output=True, text=True, timeout=30)
-        print(f"✅ 服务 {SERVICE_NAME} 已停止")
-        return True
+        result = subprocess.run(
+            ["sc", "stop", SERVICE_NAME], capture_output=True, text=True, timeout=30
+        )
+        # P3-121: 不能无视 sc 的返回码假装停止成功
+        if result.returncode == 0:
+            print(f"✅ 服务 {SERVICE_NAME} 已停止")
+            return True
+        # 1062 = 服务本就未启动，幂等视为已停止
+        if result.returncode == 1062 or "has not been started" in (result.stdout or ""):
+            print(f"ℹ️ 服务 {SERVICE_NAME} 本就未运行")
+            return True
+        print(f"停止结果: {result.stdout} {result.stderr}".strip())
+        return False
     except Exception as e:
         print(f"❌ 停止失败: {e}")
         return False

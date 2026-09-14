@@ -92,12 +92,13 @@ def process_general(instruction: str = "", input_path: str | None = None,
             logger.warning("通用任务 %s 无法路由: %s", _task_id, instruction[:100])
 
     except Exception as e:
-        logger.error(f"通用任务 {_task_id} 失败: {e}")
-        result["status"] = "failed"
         from ...security.error_sanitizer import sanitize_error
-        result["error"] = sanitize_error(e)
+        safe = sanitize_error(e)
+        logger.error(f"通用任务 {_task_id} 失败: {safe}")
+        result["status"] = "failed"
+        result["error"] = safe
         if progress:
-            progress.update(100, f"处理失败: {e}")
+            progress.update(100, f"处理失败: {safe}")
 
     return result
 

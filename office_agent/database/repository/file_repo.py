@@ -2,7 +2,7 @@
 import json
 from typing import Optional, List
 from datetime import datetime, timedelta
-from sqlalchemy import select, and_, or_
+from sqlalchemy import select, and_, or_, update
 from sqlalchemy.orm import Session
 from ..time import utc_now
 
@@ -16,6 +16,24 @@ class FileRepository(BaseRepository[File]):
 
     def get_by_hash(self, file_hash: str) -> Optional[File]:
         return self.find_one(file_hash=file_hash, status="ready")
+
+    def list_ownerless(self, limit: int = 500) -> List[File]:
+        """鉴权开启前上传、owner 为空的 legacy 文件（P2-21）。"""
+        stmt = select(File).where(
+            File.owner_id.is_(None),
+            File.status.notin_(("deleted", "deleting")),
+        ).limit(limit)
+        return list(self.session.execute(stmt).scalars().all())
+
+    def assign_owner(self, file_id: str, owner_id: str) -> bool:
+        """把 legacy 文件归属到明确用户；owner=None 不得对任意认证用户开放。"""
+        rowcount = self._execute_rowcount(
+            update(File)
+            .where(File.id == file_id, File.owner_id.is_(None))
+            .values(owner_id=owner_id)
+            .execution_options(synchronize_session="fetch")
+        )
+        return bool(rowcount)
 
     def get_by_owner(self, owner_id: str, offset: int = 0, limit: int = 100) -> List[File]:
         offset, limit = self._page(offset, limit)
@@ -69,6 +87,23 @@ class FileRepository(BaseRepository[File]):
     def update_status(self, file_id: str, status: str):
         self.update(file_id, {"status": status})
 
+    def transition_status(self, file_id: str, expected_status: str,
+                          new_status: str, **extra) -> bool:
+        """条件状态迁移：仅当当前状态 == expected_status 时才更新。
+
+        返回是否有行被更新。用于消除 complete_multipart 一类
+        “先读状态门、最后无条件写 ready”的 TOCTOU 竞态（P3-66）：
+        两个并发完成请求只有一个能把 uploading -> ready。
+        """
+        values = {"status": new_status, **extra}
+        rowcount = self._execute_rowcount(
+            update(File)
+            .where(File.id == file_id, File.status == expected_status)
+            .values(**values)
+            .execution_options(synchronize_session="fetch")
+        )
+        return bool(rowcount)
+
     def mark_deleted(self, file_id: str):
         self.update(file_id, {"status": "deleted", "deleted_at": utc_now()})
 
@@ -79,11 +114,22 @@ class FileRepository(BaseRepository[File]):
         self.update(file_id, {"status": "archived"})
 
     def record_access(self, file_id: str):
-        """记录访问"""
-        self.update(file_id, {
-            "access_count": File.access_count + 1,
-            "last_accessed_at": utc_now(),
-        })
+        """记录访问。
+
+        使用 SQL UPDATE 而非 setattr(BinaryExpression)：后者会把
+        SQL 表达式写进 ORM 实例内存属性，污染后续读取（P2-29）。
+        """
+        from sqlalchemy import update
+        self.session.execute(
+            update(File)
+            .where(File.id == file_id)
+            .values(
+                access_count=File.access_count + 1,
+                last_accessed_at=utc_now(),
+            )
+            .execution_options(synchronize_session="fetch")
+        )
+        self.session.flush()
 
     def get_deleting(self, older_than: Optional[datetime] = None,
                      limit: int = 500) -> List[File]:

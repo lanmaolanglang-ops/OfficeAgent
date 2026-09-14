@@ -554,7 +554,7 @@ category 取值：heading, paragraph, page_break, table, whitespace, alignment, 
         # 解析结果
         parsed = self._parse_page_response(resp.content, page.page_number)
         result.summary = parsed.get("page_summary", "")
-        result.score = float(parsed.get("page_score", 70))
+        result.score = self._safe_float(parsed.get("page_score", 70), 70.0)
         result.score_details = parsed.get("category_scores", {})
 
         for iss_data in parsed.get("issues", []):
@@ -565,7 +565,7 @@ category 取值：heading, paragraph, page_break, table, whitespace, alignment, 
                 description=iss_data.get("description", ""),
                 suggestion=iss_data.get("suggestion", ""),
                 location=iss_data.get("location", ""),
-                confidence=float(iss_data.get("confidence", 0.5)),
+                confidence=self._safe_float(iss_data.get("confidence", 0.5), 0.5),
             )
             # 只添加非 good 的问题
             if issue.severity != "good" and issue.description:
@@ -580,6 +580,14 @@ category 取值：heading, paragraph, page_break, table, whitespace, alignment, 
             prompt += f"\n\n页面文字内容（供参考）：\n{page.text_hint[:300]}"
         prompt += "\n\n请从视觉排版角度全面检查这一页，返回JSON格式的检查结果。"
         return prompt
+
+    @staticmethod
+    def _safe_float(value, default: float) -> float:
+        """单页模型返回的非法数值不得拖垮整份报告（P3-91）。"""
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
 
     def _parse_page_response(self, text: str, page_num: int) -> dict:
         """解析模型返回的 JSON"""
@@ -609,10 +617,26 @@ category 取值：heading, paragraph, page_break, table, whitespace, alignment, 
             return ""
 
         depth = 0
+        in_string = False
+        quote = ""
+        escaped = False
         for i in range(start, len(text)):
-            if text[i] == '{':
+            ch = text[i]
+            if in_string:
+                # 字符串内部的 { } 不参与括号配平；同时处理转义与闭合引号
+                if escaped:
+                    escaped = False
+                elif ch == "\\":
+                    escaped = True
+                elif ch == quote:
+                    in_string = False
+                continue
+            if ch in ('"', "'"):
+                in_string = True
+                quote = ch
+            elif ch == '{':
                 depth += 1
-            elif text[i] == '}':
+            elif ch == '}':
                 depth -= 1
                 if depth == 0:
                     return text[start:i+1]

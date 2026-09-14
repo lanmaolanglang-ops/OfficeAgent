@@ -75,14 +75,14 @@ class TestMiddlewareOrder:
         assert response.status_code == 401
 
     def test_main_py_registers_rate_limit_outside_auth(self):
-        """源码级守卫：main.py 中 AuthMiddleware 必须先于 RateLimit 注册
-        （先注册 = 更内层），即限流在认证之外执行。"""
+        """源码级守卫：Auth 必须在 RateLimit 外层（后注册），
+        使限流可读取 request.state.user_id（P2-13）。"""
         import inspect
         from office_agent.api import main as main_module
         src = inspect.getsource(main_module)
         auth_pos = src.index("app.add_middleware(AuthMiddleware)")
         rate_pos = src.index("app.add_middleware(RateLimitMiddleware)")
-        assert auth_pos < rate_pos
+        assert auth_pos > rate_pos, "Auth 应在 RateLimit 外层（后注册先执行）"
 
 
 class TestPureAsgiParity:

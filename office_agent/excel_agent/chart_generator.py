@@ -372,15 +372,20 @@ class ChartGenerator:
                 show_data_labels=True,
             ))
 
-        # 4. 多数值列 → 堆积柱状图（如果有2个以上可加性指标）
+        # 4. 多数值列 → 堆积柱状图（显式 numeric 列，不假设列连续，P2-36）
         if len(num_cols) >= 2 and not is_time_series and n_categories <= 10:
-            first_letter = self._col_letter(num_cols[0].index)
-            last_letter = self._col_letter(num_cols[-1].index)
+            # 使用 series_ranges 而非 first:last 连续 range，避免夹入文本列
             charts.append(ChartSpec(
                 chart_type="column",
                 title="各指标构成",
-                data_range=f"{first_letter}1:{last_letter}{end_row}",
+                data_range=f"{self._col_letter(num_cols[0].index)}1:"
+                           f"{self._col_letter(num_cols[0].index)}{end_row}",
                 categories_range=f"{cat_letter}2:{cat_letter}{end_row}",
+                series_names=[c.name for c in num_cols],
+                series_ranges=[
+                    f"{self._col_letter(c.index)}2:{self._col_letter(c.index)}{end_row}"
+                    for c in num_cols
+                ],
                 position=self._next_chart_position(len(charts)),
                 stacked=True,
             ))

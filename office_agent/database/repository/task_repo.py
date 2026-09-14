@@ -12,6 +12,15 @@ class TaskRepository(BaseRepository[Task]):
     def __init__(self, session: Session):
         super().__init__(session, Task)
 
+    def get_by_conversation(self, conversation_id: str, user_id: str | None = None,
+                            limit: int = 50) -> List[Task]:
+        """按 conversation_id 精确查询（P2-18），可选 owner 过滤。"""
+        stmt = select(Task).where(Task.conversation_id == conversation_id)
+        if user_id:
+            stmt = stmt.where(Task.user_id == user_id)
+        stmt = stmt.order_by(Task.created_at.desc()).limit(limit)
+        return list(self.session.scalars(stmt))
+
     def get_by_user(self, user_id: str, offset: int = 0, limit: int = 100) -> List[Task]:
         return self.find(offset=offset, limit=limit, user_id=user_id)
 
@@ -31,7 +40,11 @@ class TaskRepository(BaseRepository[Task]):
         return self.get_by_status("pending", limit=limit)
 
     def get_active_tasks(self) -> List[Task]:
-        stmt = select(Task).where(Task.status.in_(["pending", "running"]))
+        # queued 是活跃态（见 Task 模型注释与迁移 009）；漏掉会导致
+        # 启动恢复/取消等路径把排队中的任务当成已结束。
+        stmt = select(Task).where(
+            Task.status.in_(["pending", "queued", "running"])
+        )
         return list(self.session.scalars(stmt))
 
     def filter_existing_ids(self, task_ids: List[str]) -> set:
@@ -50,7 +63,8 @@ class TaskRepository(BaseRepository[Task]):
                     user_id: str | None = None, input_file_ids: str | None = None,
                     options_json: str | None = None, priority: int = 0,
                     callback_url: str | None = None, parent_task_id: str | None = None,
-                    revision_number: int = 1) -> Task:
+                    revision_number: int = 1,
+                    conversation_id: str | None = None) -> Task:
         task = Task(
             task_type=task_type,
             instruction=instruction,
@@ -62,6 +76,7 @@ class TaskRepository(BaseRepository[Task]):
             callback_url=callback_url,
             parent_task_id=parent_task_id,
             revision_number=revision_number,
+            conversation_id=conversation_id,
             status="pending",
         )
         return self.create(task)

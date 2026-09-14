@@ -6,11 +6,27 @@ from fastapi import HTTPException, Request
 from ...security.prompt import PromptAction, PromptSecurityScanner
 
 
-_prompt_scanner = PromptSecurityScanner()
+def _build_scanner() -> PromptSecurityScanner:
+    """Scanner policy follows SecurityConfig (prompt_strict_mode / enable_prompt_scan)."""
+    try:
+        from ...security.config import get_security_config
+        cfg = get_security_config()
+        return PromptSecurityScanner(strict_mode=bool(cfg.prompt_strict_mode))
+    except Exception:
+        return PromptSecurityScanner()
+
+
+_prompt_scanner = _build_scanner()
 
 
 def enforce_user_prompt(message: str, request: Request | None = None):
     """Apply the shared user-input policy before task state or queue writes."""
+    try:
+        from ...security.config import get_security_config
+        if not get_security_config().enable_prompt_scan:
+            return None
+    except Exception:
+        pass
     result = _prompt_scanner.scan(message, source="user")
     if result.action != PromptAction.REJECT:
         return result

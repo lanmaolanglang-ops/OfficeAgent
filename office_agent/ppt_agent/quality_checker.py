@@ -14,6 +14,7 @@ PPT Quality Checker - PPT 质量检查与自动修正
 - 调用 fix() 方法自动修正并重新生成
 """
 import copy
+import io
 import logging
 import math
 from pathlib import Path
@@ -22,7 +23,9 @@ from dataclasses import dataclass, field
 
 from pptx import Presentation
 
-from .models import PPTOutline, SlideContent
+from .models import (
+    PPTOutline, SlideContent, items_per_page, continuation_title,
+)
 from ..quality.checker import IssueSeverity
 
 logger = logging.getLogger(__name__)
@@ -168,7 +171,7 @@ class PPTQualityChecker:
     MAX_CHARS_PER_SQ_INCH = 90
 
     # 每页最多要点数
-    MAX_BULLETS = 8
+    MAX_BULLETS = items_per_page("content")  # 与渲染器同一口径（P3-47）
     MIN_BULLETS = 2
 
     # 每页最多字符数
@@ -189,7 +192,8 @@ class PPTQualityChecker:
             file_path: .pptx 文件路径
             expected_slides: 期望页数（可选）
         """
-        prs = Presentation(file_path)
+        with open(file_path, "rb") as _fh:
+            prs = Presentation(io.BytesIO(_fh.read()))
         report = PPTQualityReport(
             file_path=file_path,
             slide_count=len(prs.slides),
@@ -443,15 +447,26 @@ class PPTQualityChecker:
                 max_bullets = action.get("max", self.MAX_BULLETS)
                 if slide_idx is not None and slide_idx < len(fixed.slides):
                     slide = fixed.slides[slide_idx]
-                    if len(slide.bullets) > max_bullets:
-                        overflow = slide.bullets[max_bullets:]
-                        slide.bullets = slide.bullets[:max_bullets]
-                        continuation = copy.deepcopy(slide)
-                        continuation.title = f"{slide.title}（续）"
-                        continuation.bullets = overflow
-                        fixed.slides.insert(slide_idx + 1, continuation)
+                    # 首页按 action 阈值保留（生产中等于该版式单页容量）；
+                    # 续页按版式容量继续切，直到装下全部溢出，不再只续一页（P3-47）。
+                    keep = max_bullets
+                    page_cap = items_per_page(slide.layout) or keep
+                    if len(slide.bullets) > keep:
+                        all_items = list(slide.bullets)
+                        base_title = slide.title
+                        slide.bullets = all_items[:keep]
+                        remainder = all_items[keep:]
+                        chunks = [remainder[i:i + page_cap]
+                                  for i in range(0, len(remainder), page_cap)]
+                        insert_at = slide_idx + 1
+                        for page_idx, chunk in enumerate(chunks, start=1):
+                            continuation = copy.deepcopy(slide)
+                            continuation.title = continuation_title(base_title, page_idx)
+                            continuation.bullets = chunk
+                            fixed.slides.insert(insert_at, continuation)
+                            insert_at += 1
                         self._renumber(fixed)
-                        _shift(slide_idx, 1)
+                        _shift(slide_idx, len(chunks))
 
             elif atype == "reduce_text":
                 slide_idx = _current(action["slide"])

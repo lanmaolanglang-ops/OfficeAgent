@@ -19,6 +19,24 @@ from .template_analyzer import ExcelTemplateAnalyzer
 
 logger = logging.getLogger("office_agent.excel_agent.excel_orchestrator")
 
+# Single authoritative intent vocabulary shared by process_file and
+# create_from_data (P3-21): the two entry paths used to drift apart, so the same
+# user wording (e.g. "平均"/"sum"/"占比"/"chart") was honoured on one path and
+# silently ignored on the other. Matching is always case-insensitive.
+FORMULA_INTENT_KEYWORDS = (
+    "计算", "求和", "合计", "平均", "公式", "calculate", "sum", "formula",
+)
+SUMMARY_INTENT_KEYWORDS = ("汇总", "summary", "总计行")
+CHART_INTENT_KEYWORDS = ("图", "chart", "趋势", "对比", "占比", "可视化")
+
+
+def _task_has_any(task: str, keywords) -> bool:
+    """Case-insensitive substring intent match (empty task never matches)."""
+    if not task:
+        return False
+    text = task.lower()
+    return any(kw in text for kw in keywords)
+
 
 class ExcelOrchestrator:
     """
@@ -67,31 +85,25 @@ class ExcelOrchestrator:
         """
         处理已有 Excel 文件
 
-        Args:
-            file_path: 输入文件
-            task: 用户自然语言任务描述
-            output_path: 输出路径
-            add_summary: 是否添加汇总行
-            add_charts: 是否添加图表
-            add_format: 是否格式化
+        request-scoped：service/generators 在方法内新建，使同一
+        Orchestrator 实例可被并发复用而不串状态（P2-34）。
         """
+        service = ExcelService()
+        formula_gen = FormulaGenerator()
+        chart_gen = ChartGenerator()
         try:
             if not Path(file_path).exists():
                 return ExcelResult(success=False, message=f"文件不存在: {file_path}")
 
             # 1. 数据理解
             profile = self.analyzer.analyze(file_path)
-            self.formula_gen.set_profile(profile)
-            self.chart_gen.set_profile(profile)
+            formula_gen.set_profile(profile)
+            chart_gen.set_profile(profile)
 
             # 2. 打开文件
-            self.service.open(file_path)
+            service.open(file_path)
 
-            # 2.1 往返保留警示：openpyxl 对部分对象（透视图表、迷你图、
-            # Power Query 连接等）不能完整读写。检测到时明确告知用户，
-            # 避免输出"看似正常但少了东西"。检测复用 service 已加载的工作簿，
-            # 不再为检测单独整本解析一次文件。
-            fragile = self._detect_fragile_elements(file_path, wb=self.service.wb)
+            fragile = self._detect_fragile_elements(file_path, wb=service.wb)
 
             # 3. 根据任务执行操作
             changes = []
@@ -99,69 +111,57 @@ class ExcelOrchestrator:
                 changes.append(f"注意：源文件包含{fragile}，已尽量保留，建议打开输出确认")
 
             # 解析任务意图
-            task_lower = task.lower() if task else ""
-
-            wants_formulas = bool(task and any(
-                kw in task_lower for kw in
-                ["计算", "求和", "合计", "平均", "公式", "calculate", "sum", "formula"]
-            ))
-            wants_explicit_summary = bool(task and any(
-                kw in task_lower for kw in ["汇总", "summary", "总计行"]
-            ))
-            wants_chart = bool(task and any(
-                kw in task_lower for kw in ["图", "chart", "趋势", "对比", "占比", "可视化"]
-            ))
+            wants_formulas = _task_has_any(task, FORMULA_INTENT_KEYWORDS)
+            wants_explicit_summary = _task_has_any(task, SUMMARY_INTENT_KEYWORDS)
+            wants_chart = _task_has_any(task, CHART_INTENT_KEYWORDS)
 
             # 每个工作表独立执行，避免多 Sheet 文件只有第一页被处理。
             for sheet in profile.sheets:
                 sheet_name = sheet.name
                 if wants_formulas:
-                    formulas = self.formula_gen.generate_from_text(task, sheet_name)
-                    self.service.add_formulas(formulas, sheet_name)
+                    formulas = formula_gen.generate_from_text(task, sheet_name)
+                    service.add_formulas(formulas, sheet_name)
                     if formulas:
                         changes.append(f"{sheet_name}: 添加 {len(formulas)} 个公式")
 
-                # 公式与汇总不是互斥能力。“求和并汇总”等复合指令应同时执行；
-                # 未给任务时仍保留原来的默认汇总行为。
                 if add_summary and (not wants_formulas or wants_explicit_summary):
                     num_cols = [c.index for c in sheet.columns if c.data_type == "number"]
                     if num_cols:
-                        self.service.add_summary_row(sheet_name, "合计", num_cols)
+                        service.add_summary_row(sheet_name, "合计", num_cols)
                         changes.append(f"{sheet_name}: 添加汇总行")
 
                 if add_charts:
                     charts = (
-                        self.chart_gen.generate_from_text(
+                        chart_gen.generate_from_text(
                             task, sheet_name, chart_type=chart_type
-                        ) if wants_chart else self.chart_gen.auto_charts(sheet_name)
+                        ) if wants_chart else chart_gen.auto_charts(sheet_name)
                     )
                     if charts:
-                        self.service.add_charts(charts, sheet_name)
+                        service.add_charts(charts, sheet_name)
                         changes.append(f"{sheet_name}: 添加 {len(charts)} 个图表")
 
                 if add_format:
-                    self.service.apply_header_style(sheet_name)
-                    self.service.auto_width(sheet_name)
-                    self.service.freeze_header(sheet_name)
+                    service.apply_header_style(sheet_name)
+                    service.auto_width(sheet_name)
+                    service.freeze_header(sheet_name)
                     if sheet.row_count > 5:
-                        self.service.add_filter(sheet_name)
+                        service.add_filter(sheet_name)
                     changes.append(f"{sheet_name}: 应用格式化")
 
-                # 对所有数值列应用条件格式，不以“前 3 列”静默截断。
                 num_cols = [c for c in sheet.columns if c.data_type == "number"]
                 if num_cols and sheet.row_count > 0:
                     from openpyxl.utils import get_column_letter
                     for col in num_cols:
                         col_letter = get_column_letter(col.index + 1)
                         range_str = f"{col_letter}2:{col_letter}{sheet.row_count + 1}"
-                        self.service.add_conditional_format(sheet_name, range_str, "data_bar")
+                        service.add_conditional_format(sheet_name, range_str, "data_bar")
 
             # 4. 保存
             if not output_path:
                 stem = Path(file_path).stem
                 output_path = f"{stem}_processed.xlsx"
 
-            result = self.service.save(output_path)
+            result = service.save(output_path)
             result.changes.extend(changes)
 
             # 5. 质量检查
@@ -176,7 +176,7 @@ class ExcelOrchestrator:
 
             # 数据预览
             preview_sheet = profile.sheets[0].name if profile.sheets else None
-            result.data_preview = self.service.get_preview(preview_sheet, rows=5)
+            result.data_preview = service.get_preview(preview_sheet, rows=5)
 
             return result
 
@@ -185,6 +185,8 @@ class ExcelOrchestrator:
                 success=False,
                 message=f"处理失败: {str(e)}",
             )
+        finally:
+            service.close()
 
     @staticmethod
     def _detect_fragile_elements(file_path: str, wb=None) -> str:
@@ -245,8 +247,11 @@ class ExcelOrchestrator:
             headers: 表头列表；提供时 data 始终按纯数据行解释
             has_header: 未提供 headers 时，data 首行是否为表头（兼容旧调用）
         """
+        service = ExcelService()
+        formula_gen = FormulaGenerator()
+        chart_gen = ChartGenerator()
         try:
-            self.service.create(output_path, sheet_name)
+            service.create(output_path, sheet_name)
 
             rows = list(data or [])
             if headers is not None:
@@ -265,48 +270,48 @@ class ExcelOrchestrator:
 
             full_data = ([normalized_headers] if normalized_headers else []) + body_rows
 
-            self.service.write_data(sheet_name, full_data, has_header=True)
+            service.write_data(sheet_name, full_data, has_header=True)
 
             # 分析数据
             import pandas as pd
             df = pd.DataFrame(body_rows, columns=normalized_headers or None)
             profile = self.analyzer.analyze_dataframe(df, sheet_name)
-            self.formula_gen.set_profile(profile)
-            self.chart_gen.set_profile(profile)
+            formula_gen.set_profile(profile)
+            chart_gen.set_profile(profile)
 
             changes = ["创建新文件"]
 
             # 公式
-            if normalized_headers and task and any(kw in task for kw in ["计算", "求和", "合计", "公式"]):
-                formulas = self.formula_gen.generate_from_text(task, sheet_name)
-                self.service.add_formulas(formulas, sheet_name)
+            if normalized_headers and _task_has_any(task, FORMULA_INTENT_KEYWORDS):
+                formulas = formula_gen.generate_from_text(task, sheet_name)
+                service.add_formulas(formulas, sheet_name)
                 changes.append(f"添加 {len(formulas)} 个公式")
             elif normalized_headers:
                 # 默认汇总
                 num_cols = [c.index for c in profile.sheets[0].columns if c.data_type == "number"]
                 if num_cols:
-                    self.service.add_summary_row(sheet_name, "合计", num_cols)
+                    service.add_summary_row(sheet_name, "合计", num_cols)
                     changes.append("添加汇总行")
 
             # 图表
-            if normalized_headers and task and any(kw in task for kw in ["图", "趋势", "对比", "可视化"]):
-                charts = self.chart_gen.generate_from_text(task, sheet_name)
+            if normalized_headers and _task_has_any(task, CHART_INTENT_KEYWORDS):
+                charts = chart_gen.generate_from_text(task, sheet_name)
             elif normalized_headers:
-                charts = self.chart_gen.auto_charts(sheet_name)
+                charts = chart_gen.auto_charts(sheet_name)
             else:
                 charts = []
             if charts:
-                self.service.add_charts(charts, sheet_name)
+                service.add_charts(charts, sheet_name)
                 changes.append(f"添加 {len(charts)} 个图表")
 
             # 格式化
-            self.service.auto_width(sheet_name)
-            self.service.freeze_header(sheet_name)
-            self.service.add_filter(sheet_name)
+            service.auto_width(sheet_name)
+            service.freeze_header(sheet_name)
+            service.add_filter(sheet_name)
             changes.append("应用格式化")
 
             # 保存
-            result = self.service.save(output_path)
+            result = service.save(output_path)
             result.changes.extend(changes)
 
             # 质量检查
@@ -314,7 +319,7 @@ class ExcelOrchestrator:
             result.quality_score = quality["score"]
             result.quality_issues = quality["issues"]
             result.message = f"创建完成: {Path(output_path).name}, 质量分{quality['score']:.0f}"
-            result.data_preview = self.service.get_preview(sheet_name, rows=5)
+            result.data_preview = service.get_preview(sheet_name, rows=5)
 
             return result
 
@@ -323,6 +328,8 @@ class ExcelOrchestrator:
                 success=False,
                 message=f"创建失败: {str(e)}",
             )
+        finally:
+            service.close()
 
     def create_from_dataframe(self, df, task: str = "",
                               sheet_name: str = "Sheet1",
@@ -339,30 +346,49 @@ class ExcelOrchestrator:
 
     def apply_template(self, data_path: str, template_path: str,
                        output_path: str = "") -> ExcelResult:
-        """应用模板格式到数据文件"""
+        """应用模板格式到数据文件（request-scoped service，P2-34）"""
+        service = ExcelService()
         try:
-            # 分析模板
             tpl_config = self.template_analyzer.analyze(template_path)
-
-            # 打开数据文件
-            self.service.open(data_path)
-
-            # 应用模板格式
+            service.open(data_path)
+            # P3-22: apply a template only to data sheets that actually exist.
+            # Previously a template sheet whose name matched nothing was
+            # silently skipped (apply_format no-ops on a missing sheet) while the
+            # result still claimed "模板应用完成". Track matched/unmatched and
+            # report truthfully; fail loudly if no template sheet matched at all.
+            data_sheet_names = set(service.workbook.sheetnames)
+            unmatched = []
+            matched = 0
             for sheet_tpl in tpl_config.sheets:
+                if sheet_tpl.name not in data_sheet_names:
+                    unmatched.append(sheet_tpl.name)
+                    continue
+                matched += 1
                 self.template_analyzer.apply_to_service(
-                    self.service, tpl_config, sheet_tpl.name
+                    service, tpl_config, sheet_tpl.name
                 )
-
+            if tpl_config.sheets and matched == 0:
+                return ExcelResult(
+                    success=False,
+                    message=(
+                        "模板应用失败：模板工作表名与数据文件均不匹配 "
+                        f"(模板: {[s.name for s in tpl_config.sheets]}, "
+                        f"数据: {sorted(data_sheet_names)})"
+                    ),
+                )
             if not output_path:
                 stem = Path(data_path).stem
                 output_path = f"{stem}_templated.xlsx"
-
-            result = self.service.save(output_path)
-            result.message = f"模板应用完成: {Path(output_path).name}"
+            result = service.save(output_path)
+            note = f"模板应用完成: {Path(output_path).name}"
+            if unmatched:
+                note += f"；{len(unmatched)} 个模板表无对应数据表已跳过: {unmatched}"
+            result.message = note
             return result
-
         except Exception as e:
             return ExcelResult(
                 success=False,
                 message=f"模板应用失败: {str(e)}",
             )
+        finally:
+            service.close()

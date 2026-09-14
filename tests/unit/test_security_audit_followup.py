@@ -118,12 +118,21 @@ def test_high_risk_tool_requires_approval_and_audits_both_decisions():
     )
 
     denied = manager.can_use_tool("excel", "dangerous", user_id="user-1")
-    allowed = manager.can_use_tool(
+    # 调用方布尔不再放行；需 server-side approval_id
+    bool_only = manager.can_use_tool(
         "excel", "dangerous", user_id="user-1", approval_granted=True
+    )
+    from office_agent.security.permission.approval_store import get_approval_store
+    aid = get_approval_store().grant(
+        user_id="user-1", agent="excel", tool_name="dangerous",
+    )
+    allowed = manager.can_use_tool(
+        "excel", "dangerous", user_id="user-1", approval_id=aid,
     )
 
     assert not denied[0]
-    assert "需要人工审批" in denied[1]
+    assert "审批" in denied[1]
+    assert bool_only[0] is False
     assert allowed == (True, "允许")
     assert audit.blocked_tools[0][:3] == ("user-1", "excel", "dangerous")
     assert audit.tool_calls == [
