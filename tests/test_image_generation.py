@@ -53,6 +53,10 @@ def test_image_download_blocks_private_and_non_http_urls():
 
 
 def test_mcp_gateway_saves_base64(monkeypatch, tmp_path):
+    # This test covers MCP base64 persistence only; the SSRF guard does a live
+    # getaddrinfo and is covered separately, so stub it to stay offline/deterministic
+    # (a bogus single-label host like "mcp" must not depend on DNS search suffixes).
+    monkeypatch.setattr(gw, "_assert_public_api_url", lambda *_a, **_k: None)
     monkeypatch.setattr(
         gw, "_post_json",
         lambda url, payload, headers, timeout=120.0: {"result": {"content": [{"b64_json": base64.b64encode(b"mcp").decode()}]}},
