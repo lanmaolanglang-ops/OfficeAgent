@@ -178,7 +178,7 @@ def _is_explicit_cross_agent(agent_hint: str | None, selected_agent: str,
 
 
 def _prepare_chat_task(*, req, user_id, user_role, agent_hint, agent,
-                       task_type, intent, file_ids):
+                       task_type, intent, file_ids, had_conversation=False):
     """同步准备阶段：会话恢复 → 文件解析 → 创建任务记录。
 
     会话恢复会分页扫描任务表并对候选产物做文件系统 stat，长会话历史下
@@ -197,7 +197,9 @@ def _prepare_chat_task(*, req, user_id, user_role, agent_hint, agent,
 
         recovered = None
         cross_agent_new_task = False
-        if not file_ids and req.conversation_id:
+        # 仅当 conversation_id 由客户端回传（可能存在历史）时才做恢复；
+        # 本轮新铸 cid 的首轮对话必然无历史，跳过无界 legacy 扫描。
+        if not file_ids and req.conversation_id and had_conversation:
             from ...storage.storage_service import get_storage_service
             recovered = _recover_conversation_context(
                 req.conversation_id,
@@ -339,6 +341,13 @@ async def chat(req: ChatRequest, request: Request):
     else:
         agent, task_type, intent = route_intent(req.message)
 
+    # 首轮客户端未带 conversation_id 时，必须在创建任务**之前**生成并回写到
+    # req：否则只在响应里返回的 cid 不会落到任务行，第二轮按该 cid 查不到首任务，
+    # follow-up 修订链随之断裂（RC：前端正是从首轮响应取 cid 再回传）。
+    had_conversation = bool(req.conversation_id)
+    if not req.conversation_id:
+        req.conversation_id = str(uuid.uuid4())
+
     # 1. 创建数据库记录并获取文件路径。准备阶段的会话恢复会分页扫描任务表
     # 并对候选产物做文件系统 stat，属于无界磁盘 + DB 工作，卸载到工作线程，
     # 不阻塞事件循环；Session 在工作线程内创建并关闭，不跨线程复用。
@@ -347,6 +356,7 @@ async def chat(req: ChatRequest, request: Request):
         req=req, user_id=user_id, user_role=user_role,
         agent_hint=agent_hint, agent=agent, task_type=task_type,
         intent=intent, file_ids=file_ids,
+        had_conversation=had_conversation,
     )
     task_id = prepared["task_id"]
     file_ids = prepared["file_ids"]

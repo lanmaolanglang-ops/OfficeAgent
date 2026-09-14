@@ -13,6 +13,7 @@
 import base64
 import json
 import os
+import socket
 
 import pytest
 
@@ -22,6 +23,21 @@ from office_agent.image_generation.gateway import (
     ImageGenerationError,
     ImageGenerationGateway,
 )
+
+
+@pytest.fixture(autouse=True)
+def _stub_public_dns(monkeypatch):
+    """本模块聚焦异常分类/原子落盘，不依赖在线 DNS。
+
+    把主机解析固定为一个公网全局 IP：SSRF 的 is_global 校验仍然真实执行，
+    但不再需要实时 getaddrinfo（离线/抖动网络不得让单测 flaky）。"""
+    monkeypatch.setattr(
+        gateway_module.socket, "getaddrinfo",
+        lambda host, port, *a, **k: [
+            (socket.AF_INET, socket.SOCK_STREAM, 0, "",
+             ("1.1.1.1", int(port or 443)))
+        ],
+    )
 
 
 class _FakeResponse:

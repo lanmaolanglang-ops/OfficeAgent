@@ -340,6 +340,10 @@ class DocumentParser:
         sections = []
         current = ParsedSection(title="正文", level=0)
         sections.append(current)
+        # 首个一级标题（#）提升为文档标题：result.title 默认取文件名 stem，
+        # 存储落盘时是内部 file_/out_ ID，直接当标题会把内部标识泄漏进成品，
+        # 还会让真实标题整体下移一级。首个 # 不再作为独立 section。
+        first_h1_consumed = False
 
         for line in content.split("\n"):
             line_stripped = line.strip()
@@ -348,9 +352,16 @@ class DocumentParser:
             md_match = re.match(r'^(#{1,6})\s+(.+)$', line_stripped)
             if md_match:
                 level = len(md_match.group(1))
-                title = md_match.group(2).strip()
-                current = ParsedSection(title=title, level=level, content="")
-                sections.append(current)
+                heading_text = md_match.group(2).strip()
+                if level == 1 and not first_h1_consumed:
+                    first_h1_consumed = True
+                    result.title = heading_text
+                    # 其后正文归入无标题（level 0）容器，不产生额外标题
+                    current = ParsedSection(title="", level=0, content="")
+                    sections.append(current)
+                else:
+                    current = ParsedSection(title=heading_text, level=level, content="")
+                    sections.append(current)
             else:
                 current.content += line + "\n"
 

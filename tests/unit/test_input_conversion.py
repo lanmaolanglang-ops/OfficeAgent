@@ -61,6 +61,58 @@ class TestEnsureDocxInput:
             ensure_docx_input(str(src))
 
 
+class TestMarkdownTitleAndLevels:
+    """RC：存储落盘文件名是内部 ID，绝不能泄漏为成品标题；标题层级不得错位。"""
+
+    @staticmethod
+    def _heading_levels(path):
+        doc = Document(ensure_docx_input(str(path)))
+        return [(p.style.name, p.text) for p in doc.paragraphs
+                if p.style.name.startswith("Heading")]
+
+    def test_internal_storage_id_never_becomes_heading(self, tmp_path):
+        # 存储层用 file_<hex> 落盘，模拟这一真实文件名
+        src = tmp_path / "file_0c9309764523.md"
+        src.write_text("# 真实标题\n正文\n## 次级\n内容", encoding="utf-8")
+        headings = self._heading_levels(src)
+        texts = [t for _, t in headings]
+        assert "file_0c9309764523" not in texts
+        assert headings[0] == ("Heading 1", "真实标题")
+
+    def test_markdown_heading_levels_align_with_word(self, tmp_path):
+        src = tmp_path / "file_aaaaaaaa1234.md"
+        src.write_text("# H1\n\n## H2\n\n### H3\n", encoding="utf-8")
+        headings = self._heading_levels(src)
+        assert headings == [("Heading 1", "H1"), ("Heading 2", "H2"), ("Heading 3", "H3")]
+
+    def test_txt_without_h1_has_no_internal_id_title(self, tmp_path):
+        src = tmp_path / "out_deadbeef9999.txt"
+        src.write_text("第一行\n第二行\n", encoding="utf-8")
+        headings = self._heading_levels(src)
+        assert headings == []
+        assert "out_deadbeef9999" not in _docx_text(ensure_docx_input(str(src)))
+
+    def test_markdown_pipe_table_becomes_real_table(self, tmp_path):
+        src = tmp_path / "t.md"
+        src.write_text(
+            "# 标题\n\n| 季度 | 收入 |\n| --- | --- |\n| Q1 | 100 |\n| Q2 | 130 |\n\n表后正文\n",
+            encoding="utf-8")
+        doc = Document(ensure_docx_input(str(src)))
+        assert len(doc.tables) == 1
+        rows = [[c.text for c in r.cells] for r in doc.tables[0].rows]
+        assert rows == [["季度", "收入"], ["Q1", "100"], ["Q2", "130"]]
+        text = _docx_text(ensure_docx_input(str(src)))
+        assert "---" not in text  # 分隔行不得作为垃圾段落残留
+        assert "表后正文" in text
+
+    def test_lone_pipe_line_without_delimiter_is_paragraph(self, tmp_path):
+        src = tmp_path / "t.md"
+        src.write_text("# T\n\n备注 | 说明\n普通行\n", encoding="utf-8")
+        doc = Document(ensure_docx_input(str(src)))
+        assert len(doc.tables) == 0
+        assert "备注 | 说明" in _docx_text(ensure_docx_input(str(src)))
+
+
 class TestWordTaskWiring:
     def test_process_word_converts_before_engine(self):
         """转换必须发生在 WordService 调用之前（源码接线守卫）。"""

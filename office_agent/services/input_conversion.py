@@ -8,6 +8,7 @@ WordService 基于 python-docx，只能消费 .docx。本模块在 Word 任务�
 from __future__ import annotations
 
 import os
+import re
 import tempfile
 
 TEXT_LIKE_EXTENSIONS = (".txt", ".md", ".pdf")
@@ -15,6 +16,91 @@ TEXT_LIKE_EXTENSIONS = (".txt", ".md", ".pdf")
 # 本模块生成的临时转换副本统一前缀。
 # 调用方据此区分"借用的用户原文件"与"本模块创建、需由调用方清理的临时副本"。
 OWNED_TEMP_PREFIX = "office_agent_input_"
+
+# 存储层落盘文件名是内部 ID（file_/out_/tmp_ + 十六进制）。文本类输入的
+# ParsedDocument.title 会回退为文件名 stem，若不拦截，这个内部 ID 会被当成
+# 文档一级标题写进用户拿到的 Word（RC：内部标识泄漏 + 标题层级错位）。
+_INTERNAL_STORAGE_ID_RE = re.compile(r"^(?:file|out|tmp)_[0-9a-f]{6,}$", re.IGNORECASE)
+
+
+def _safe_document_title(parsed) -> str:
+    """返回可安全写入正文的文档标题；内部存储 ID 一律不渲染为标题。"""
+    title = (getattr(parsed, "title", "") or "").strip()
+    if title and not _INTERNAL_STORAGE_ID_RE.match(title):
+        return title
+    return ""
+
+
+def _split_pipe_cells(line: str):
+    """拆分一行 GitHub 风格管道表；不像表格（无竖线）返回 None。"""
+    s = (line or "").strip()
+    if "|" not in s:
+        return None
+    if s.startswith("|"):
+        s = s[1:]
+    if s.endswith("|"):
+        s = s[:-1]
+    return [cell.strip() for cell in s.split("|")]
+
+
+def _is_table_delimiter(cells) -> bool:
+    """判断是否为 | --- | :--: | 形式的分隔行。"""
+    if not cells:
+        return False
+    seen = False
+    for cell in cells:
+        token = cell.replace(" ", "")
+        if token == "":
+            continue
+        if not re.fullmatch(r":?-{1,}:?", token):
+            return False
+        seen = True
+    return seen
+
+
+def _emit_content_lines(document, lines) -> bool:
+    """把一段正文行写入 docx；连续的 Markdown 管道表渲染为真实表格。
+
+    缺了它，``| --- |`` 分隔行会作为可见垃圾段落残留，且表格数据不会成为
+    可被 Word/WPS 识别的表格（RC W1：markdown 输入必须真实落表）。
+    """
+    wrote = False
+    i, n = 0, len(lines)
+    while i < n:
+        line = lines[i].strip()
+        if not line:
+            i += 1
+            continue
+        header = _split_pipe_cells(line)
+        if header and i + 1 < n:
+            delim = _split_pipe_cells(lines[i + 1].strip())
+            if delim and len(delim) == len(header) and _is_table_delimiter(delim):
+                data_rows = []
+                j = i + 2
+                while j < n:
+                    row = _split_pipe_cells(lines[j].strip())
+                    if not row:
+                        break
+                    data_rows.append(row)
+                    j += 1
+                table = document.add_table(rows=1 + len(data_rows), cols=len(header))
+                try:
+                    table.style = "Table Grid"
+                except KeyError:
+                    pass
+                for col, text in enumerate(header):
+                    table.rows[0].cells[col].text = text
+                for ri, row in enumerate(data_rows, start=1):
+                    for col in range(len(header)):
+                        table.rows[ri].cells[col].text = (
+                            row[col] if col < len(row) else "")
+                wrote = True
+                i = j
+                continue
+        document.add_paragraph(line)
+        wrote = True
+        i += 1
+    return wrote
 
 
 def is_text_like(path: str) -> bool:
@@ -67,22 +153,21 @@ def ensure_docx_input(path: str) -> str:
 
     from docx import Document
     document = Document()
-    if parsed.title:
-        document.add_heading(parsed.title, level=1)
+    # Markdown 的首个一级标题（#）已在解析期提升为文档标题；其余 ##/### 直接
+    # 对应 Word Heading 2/3。其它来源（docx/pdf…）维持历史的 level+1 映射。
+    is_markdown = ext == ".md"
+    title = _safe_document_title(parsed)
+    if title:
+        document.add_heading(title, level=1)
     wrote_content = False
     for section in parsed.sections:
-        if section.title and section.level >= 1 and section.title != parsed.title:
-            document.add_heading(section.title, level=min(section.level + 1, 9))
-        for line in (section.content or "").split("\n"):
-            line = line.strip()
-            if line:
-                document.add_paragraph(line)
-                wrote_content = True
+        if section.title and section.level >= 1 and section.title != title:
+            heading_level = section.level if is_markdown else min(section.level + 1, 9)
+            document.add_heading(section.title, level=heading_level)
+        section_lines = (section.content or "").split("\n")
+        wrote_content = _emit_content_lines(document, section_lines) or wrote_content
     if not wrote_content and parsed.full_text.strip():
-        for line in parsed.full_text.split("\n"):
-            line = line.strip()
-            if line:
-                document.add_paragraph(line)
+        wrote_content = _emit_content_lines(document, parsed.full_text.split("\n"))
 
     fd, out_path = tempfile.mkstemp(
         suffix=".docx", prefix=OWNED_TEMP_PREFIX

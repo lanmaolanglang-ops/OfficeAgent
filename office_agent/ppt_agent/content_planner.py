@@ -539,6 +539,21 @@ class ContentPlanner:
         # 去掉"关于"前缀
         if title.startswith("关于"):
             title = title[2:].strip()
+        # 长指令在首个冒号/破折号之后是分页与内容说明，标题只取其前的短主题
+        for sep in ("：", ":", "——"):
+            if sep in title:
+                head = title.split(sep, 1)[0].strip()
+                if 2 <= len(head) <= 40:
+                    title = head
+                    break
+        # 去掉开头页数限定，如 "8 页的 AI 行业介绍" -> "AI 行业介绍"
+        page_match = re.match(r"^\d+\s*页(?:的)?\s*(.+)$", title)
+        if page_match and page_match.group(1).strip():
+            title = page_match.group(1).strip()
+        # 截断后可能仍残留尾部 PPT/演示文稿等词，再剥离一次
+        for tail in ("的PPT", "的ppt", "PPT", "ppt", "演示文稿", "幻灯片"):
+            if title.endswith(tail) and len(title) > len(tail):
+                title = title[: -len(tail)].strip()
         return title if title else raw.strip()
 
     def _generate_with_ai(self, title: str, slide_count: int, style: str) -> Optional[PPTOutline]:
@@ -786,7 +801,12 @@ class ContentPlanner:
         )
 
         for layout, title, bullets in template:
-            actual_title = title.replace("{title}", theme).replace("{subtitle}", subtitle or theme)
+            if layout == "cover" and theme:
+                # 封面永远展示用户主题：命名模板的封面标题是硬编码的"项目汇报"等，
+                # 只替换 {title} 占位会让用户的真实题目在成品封面丢失（RC）。
+                actual_title = theme
+            else:
+                actual_title = title.replace("{title}", theme).replace("{subtitle}", subtitle or theme)
             actual_bullets = []
 
             if isinstance(bullets, list):
