@@ -216,6 +216,8 @@ class QualityChecker:
         (re.compile(r"[\u200b\u200c\u200d\u2060]"), IssueSeverity.WARNING.value),
         (re.compile(r"[\ue000-\uf8ff]"), IssueSeverity.WARNING.value),
     ]
+    # 这些字符连续出现通常是手工分隔线/装饰线，属正常排版而非乱码（P4-51）
+    _SEPARATOR_REPEAT_CHARS = frozenset("-_=*~—–·.．。 ")
 
     def __init__(self):
         self.structure_analyzer = DocumentStructureAnalyzer()
@@ -564,7 +566,10 @@ class QualityChecker:
                     ))
                     break
 
-            if re.search(r"(.)\1{6,}", text):
+            repeat_match = re.search(r"(.)\1{6,}", text)
+            # 连字符/下划线等视觉分隔线（如 "-------"）是有意排版元素，
+            # 不是乱码重复，不应误报（P4-51/P5-41）
+            if repeat_match and repeat_match.group(1) not in self._SEPARATOR_REPEAT_CHARS:
                 report.add_issue(QualityIssue(
                     type=IssueType.GARBLED.value,
                     severity=IssueSeverity.WARNING.value,

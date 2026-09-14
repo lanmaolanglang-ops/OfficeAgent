@@ -111,7 +111,8 @@ class ScoreResult:
 
     @staticmethod
     def _score_bar(score: float, width: int = 20) -> str:
-        filled = int(score / 100 * width)
+        # score 可能 >100 或 <0，钳制到 [0,width]，避免进度条长度越界（P4-52/P5-42）
+        filled = max(0, min(width, int(score / 100 * width)))
         return "[" + "█" * filled + "░" * (width - filled) + "]"
 
 

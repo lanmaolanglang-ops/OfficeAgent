@@ -311,7 +311,8 @@ class ApplicationRuntimeManager:
         先置 STOPPING，真正 terminate/exit 后才置 STOPPED；
         terminate 超时强制 kill 仍算停止成功（进程已亡），但记 warning（P2-5）。
         """
-        timeout = timeout or self.config.shutdown_timeout
+        # timeout=0 表示非阻塞停止，不能用 `or` 把 0 当成未传入（P4-5）
+        timeout = self.config.shutdown_timeout if timeout is None else timeout
         with self._state_lock:
             self._stop_event.set()
             if self.state.status not in (AppStatus.STOPPED, AppStatus.ERROR):
@@ -480,7 +481,9 @@ class ApplicationRuntimeManager:
                     "utf-8", errors="ignore"
                 )
                 return text + ("\n" if text else "")
-        except Exception:
+        except Exception as e:
+            # 不再静默吞成空串：记录后再返回，便于区分"无日志"与"读取失败"（P4-6）
+            logger.warning("读取 backend 日志失败: %s", e)
             return ""
 
     def wait_for_shutdown(self):

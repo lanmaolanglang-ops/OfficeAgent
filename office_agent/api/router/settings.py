@@ -61,9 +61,10 @@ def _mask_key(api_key: str) -> str:
     """生成 Key 掩码，不回传明文"""
     if not api_key:
         return ""
-    if len(api_key) <= 8:
-        return api_key[:2] + "****"
-    return api_key[:6] + "****" + api_key[-4:]
+    # 只暴露后 4 位，前缀同样可用于撞库/枚举，不再回传（P4-10）
+    if len(api_key) <= 4:
+        return "****"
+    return "****" + api_key[-4:]
 
 
 def _get_gateway():

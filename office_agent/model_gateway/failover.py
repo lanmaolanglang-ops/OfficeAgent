@@ -336,9 +336,13 @@ class FailoverManager:
     def get_model_status(self) -> dict[str, dict]:
         """获取所有模型状态"""
         status = {}
+        now = time.time()
         for model in self.model_manager.list_models():
             mid = model.id
-            failures = self._failure_history.get(mid, [])
+            # 只计最近 1 小时；其它模型若一直不再失败，其旧时间戳不会被
+            # _record_failure 清理，读取侧统一按窗口过滤，避免计数虚高（P4-50/P5-48）
+            failures = [t for t in self._failure_history.get(mid, [])
+                         if now - t < 3600]
             status[mid] = {
                 "name": model.display_name,
                 "enabled": model.enabled,

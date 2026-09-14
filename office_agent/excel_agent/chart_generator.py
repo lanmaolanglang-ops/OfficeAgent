@@ -472,10 +472,6 @@ class ChartGenerator:
             chart.grouping = "stacked"
             chart.overlap = 100
 
-        # 折线图带标记
-        if spec.chart_type == "line":
-            chart.marker = True
-
         # 基本属性
         chart.title = spec.title or ""
         chart.style = spec.style or 10
@@ -497,6 +493,14 @@ class ChartGenerator:
         if spec.categories_range:
             cats = Reference(ws, range_string=f"{sheet_ref}!{spec.categories_range}")
             chart.set_categories(cats)
+
+        # 折线图数据点标记：openpyxl 没有 chart.marker 属性，必须逐系列设置
+        # Marker，旧写法 chart.marker=True 不会被序列化、标记实际不渲染（P4-31）
+        if spec.chart_type == "line" and chart.series:
+            from openpyxl.chart.marker import Marker
+            for series in chart.series:
+                series.marker = Marker(symbol="circle", size=5)
+                series.smooth = False
 
         # 轴标题
         if spec.y_title and spec.chart_type not in ("pie", "doughnut", "radar"):

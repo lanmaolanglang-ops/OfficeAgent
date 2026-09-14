@@ -157,8 +157,9 @@ class FileManager:
         with self._lock:
             files = list(self.files.values())
         return {
-            "upload_count": len([f for f in files if "file_" in f.file_id]),
-            "output_count": len([f for f in files if "out_" in f.file_id]),
+            # 必须按前缀分类：子串匹配会把恰好含 "file_"/"out_" 的其它 ID 误计（P4-11/P5-36）
+            "upload_count": len([f for f in files if f.file_id.startswith("file_")]),
+            "output_count": len([f for f in files if f.file_id.startswith("out_")]),
             "upload_size_bytes": upload_size,
             "output_size_bytes": output_size,
             "total_files": len(files),

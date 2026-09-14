@@ -109,6 +109,16 @@ SCAN_CHUNK_SIZE = 1024 * 1024
 PDF_SCAN_OVERLAP = 64
 CONTENT_SCAN_OVERLAP = 8192
 
+# 文件名中禁止出现的不可见 Unicode 格式符：零宽空格/连接符、双向控制、BOM。
+# 只列真正不可见的码位，保留 en-dash/全角等可见字符以免误伤正常文件名（P5-13）。
+_INVISIBLE_FORMAT_CODEPOINTS = frozenset(
+    [0x200B, 0x200C, 0x200D, 0x2060,  # 零宽空格/连字/词连接
+     0x200E, 0x200F,                  # 左/右方向标记
+     0x202A, 0x202B, 0x202C, 0x202D, 0x202E,  # 双向嵌入/覆盖（202E 可伪装扩展名）
+     0x2066, 0x2067, 0x2068, 0x2069,  # 双向隔离控制
+     0xFEFF]                         # BOM / 零宽不换行空格
+)
+
 # 预编译：内容扫描会对整份文件逐片跑这些模式，避免每片重复编译。
 _COMPILED_SUSPICIOUS_PATTERNS = [
     (re.compile(pattern), desc) for pattern, desc in SUSPICIOUS_PATTERNS
@@ -543,5 +553,14 @@ class FileScanner:
         reserved.update({f"COM{i}" for i in range(1, 10)})
         reserved.update({f"LPT{i}" for i in range(1, 10)})
         if stem in reserved:
+            return False
+        # NTFS 备用数据流（ADS）/ Windows 非法字符：冒号会创建命名流（P5-13）
+        if ":" in filename:
+            return False
+        # Unicode 零宽/双向控制格式符：U+202E 可把 .exe 伪装成 .docx
+        if any(ord(c) in _INVISIBLE_FORMAT_CODEPOINTS for c in filename):
+            return False
+        # 单段文件名长度上限（兼容 Windows MAX_PATH 约束）
+        if len(filename) > 255:
             return False
         return True

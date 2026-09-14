@@ -440,8 +440,12 @@ class AnalysisEngine:
         for row in rows:
             if value_col < len(row) and label_col < len(row):
                 v = self._to_float(row[value_col])
-                if v is not None and abs(v - target_value) < 0.001:
-                    return str(row[label_col]) if row[label_col] else ""
+                if v is not None:
+                    # 固定 0.001 绝对容差在百万级数值上会被浮点噪声击穿；按量级
+                    # 叠加相对容差，同时保留 0.001 下限，避免收紧小数值匹配（P4-35）
+                    tol = max(0.001, 1e-9 * max(abs(v), abs(target_value)))
+                    if abs(v - target_value) <= tol:
+                        return str(row[label_col]) if row[label_col] else ""
         return ""
 
     def _detect_outliers_iqr(self, values: List[float], rows: List[List],

@@ -217,8 +217,15 @@ def uninstall_service(app_dir: Path):
             print(f"卸载错误: {e}")
     # 尝试sc命令
     try:
+        # stop 在服务未运行时可能非 0，属正常；delete 的返回码才代表卸载结果
         subprocess.run(["sc", "stop", SERVICE_NAME], capture_output=True, timeout=10)
-        subprocess.run(["sc", "delete", SERVICE_NAME], capture_output=True, timeout=10)
+        delete_result = subprocess.run(
+            ["sc", "delete", SERVICE_NAME], capture_output=True, timeout=10
+        )
+        if delete_result.returncode != 0:
+            stderr = (delete_result.stderr or b"").decode(errors="replace").strip()
+            print(f"❌ 服务 {SERVICE_NAME} 删除失败: {stderr or delete_result.returncode}")
+            return False
         print(f"✅ 服务 {SERVICE_NAME} 已删除")
         return True
     except Exception as e:

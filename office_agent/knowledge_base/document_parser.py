@@ -134,7 +134,10 @@ class DocumentParser:
             elif re.match(r'^[一二三四五六七八九十]+[、.．]', text):
                 is_heading = True
                 heading_level = 1
-            elif re.match(r'^\d+[、.．]\s*\S', text) and len(text) < 50:
+            elif (re.match(r'^\d+[、.．]\s*\S', text) and len(text) < 50
+                  and not text.rstrip().endswith(
+                      ('。', '！', '？', '；', '，', '.', '!', '?', ';', ','))):
+                # 以句读结尾的短编号文本是完整句子而非标题，避免误判（P5-4）
                 is_heading = True
                 heading_level = 2
             elif re.match(r'^\d+\.\d+[、.．\s]', text) and len(text) < 60:
@@ -242,8 +245,9 @@ class DocumentParser:
 
         sections = []
         all_text_parts = []
+        sheet_names = list(wb.sheetnames)  # close 前固化，避免关闭后再读（P5-37）
 
-        for sheet_name in wb.sheetnames:
+        for sheet_name in sheet_names:
             ws = wb[sheet_name]
             sheet_texts = []
 
@@ -271,7 +275,7 @@ class DocumentParser:
 
         result.sections = sections
         result.full_text = "\n".join(all_text_parts)
-        result.metadata["sheet_count"] = len(wb.sheetnames)
+        result.metadata["sheet_count"] = len(sheet_names)
 
         return result
 

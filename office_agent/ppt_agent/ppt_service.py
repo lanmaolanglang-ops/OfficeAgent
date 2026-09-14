@@ -390,7 +390,6 @@ class PPTService:
         tf = box.text_frame
         tf.word_wrap = True
         tf.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
-        tf.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
 
         # 垂直对齐
         anchor_map = {"top": MSO_ANCHOR.TOP, "middle": MSO_ANCHOR.MIDDLE, "bottom": MSO_ANCHOR.BOTTOM}

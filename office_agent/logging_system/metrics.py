@@ -47,7 +47,8 @@ class Counter(Metric):
 
     def get(self, **labels) -> float:
         key = tuple(sorted(labels.items())) if labels else ()
-        return self._values.get(key, 0)
+        with self._lock:
+            return self._values.get(key, 0)
 
     def collect(self) -> List[Tuple[dict, float]]:
         with self._lock:
@@ -77,7 +78,8 @@ class Gauge(Metric):
 
     def get(self, **labels) -> float:
         key = tuple(sorted(labels.items())) if labels else ()
-        return self._values.get(key, 0)
+        with self._lock:
+            return self._values.get(key, 0)
 
     def collect(self) -> List[Tuple[dict, float]]:
         with self._lock:

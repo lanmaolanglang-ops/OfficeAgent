@@ -114,7 +114,10 @@ class SlidingWindowLimiter:
                     if len(self._requests) >= self.MAX_IDENTITIES:
                         oldest = sorted(self._requests.items(),
                                         key=lambda kv: kv[1][0] if kv[1] else 0)
-                        for k, _ in oldest[: len(self._requests) // 10]:
+                        # 上限低于 10 时 len//10 会退化成 0（一个都不淘汰，
+                        # 身份表仍会越界增长）；至少淘汰最旧的 1 个身份。
+                        evict_count = max(1, len(self._requests) // 10)
+                        for k, _ in oldest[:evict_count]:
                             del self._requests[k]
                 self._requests[identifier] = deque()
             window = self._requests[identifier]
