@@ -1,11 +1,11 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowRight, Bot, Download, FileText, Presentation, Sheet, User } from 'lucide-react';
+import { ArrowRight, Bot, FileText, Presentation, Sheet, User } from 'lucide-react';
 import FileUploader from './FileUploader';
 import TaskTimeline, { type TimelineStep } from './TaskTimeline';
 import ChatInput from './ChatInput';
 import { useChatStore, useTaskStore, useSettingsStore } from '../../stores';
-import { getFileUrl } from '../../services/api';
+import DownloadButton from '../Common/DownloadButton';
 import type { Task, AgentType } from '../../types';
 
 interface WorkspaceProps { title?: string; subtitle?: string; agent?: AgentType; }
@@ -120,9 +120,7 @@ export default function Workspace({ title = '工作台', subtitle = '智能办�
                       {msg.role === 'assistant' && msg.output_files && msg.output_files.length > 0 && (
                         <div className="mt-3 flex flex-wrap gap-2">
                           {msg.output_files.map((file) => (
-                            <a key={file.file_id} href={getFileUrl(file.file_id)} target="_blank" rel="noopener" download={file.filename} className="inline-flex min-h-9 items-center gap-2 rounded-lg bg-brand px-3 py-2 text-xs font-medium text-white hover:bg-brand-hover">
-                              <Download className="h-3.5 w-3.5" />下载 {file.filename}
-                            </a>
+                            <DownloadButton key={file.file_id} fileId={file.file_id} filename={file.filename} />
                           ))}
                         </div>
                       )}

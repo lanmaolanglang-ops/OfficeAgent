@@ -11,6 +11,7 @@ from urllib.request import Request, urlopen
 from .base import BaseModelClient
 from ...models.model_schemas import ModelConfig, ModelResponse
 from ...vision_gateway.clients.openai_client import OpenAIVisionClient
+from ...security.endpoint_policy import join_api_endpoint, request_json
 
 
 class OpenAIClient(BaseModelClient):
@@ -21,10 +22,7 @@ class OpenAIClient(BaseModelClient):
     def __init__(self, config: ModelConfig):
         super().__init__(config)
         # 确保 base_url 正确
-        if not self.base_url.endswith("/chat/completions"):
-            self.chat_url = f"{self.base_url}/chat/completions"
-        else:
-            self.chat_url = self.base_url
+        self.chat_url = join_api_endpoint(self.base_url, "chat/completions")
 
     def _is_reasoning_model(self) -> bool:
         name = (self.model or "").lower()
@@ -76,11 +74,21 @@ class OpenAIClient(BaseModelClient):
         }
         
         try:
-            data = json.dumps(payload).encode("utf-8")
-            req = Request(self.chat_url, data=data, headers=headers, method="POST")
-            
-            with urlopen(req, timeout=self.config.timeout) as resp:
-                result = json.loads(resp.read().decode("utf-8"))
+            custom_meta = self.config.extra_params or {}
+            if getattr(self.config, "provider", None) and self.config.provider.value == "custom":
+                result = request_json(
+                    self.chat_url,
+                    method="POST",
+                    headers=headers,
+                    payload=payload,
+                    timeout=self.config.timeout,
+                    allow_local=bool(custom_meta.get("allow_local_endpoint", False)),
+                )
+            else:
+                data = json.dumps(payload).encode("utf-8")
+                req = Request(self.chat_url, data=data, headers=headers, method="POST")
+                with urlopen(req, timeout=self.config.timeout) as resp:
+                    result = json.loads(resp.read().decode("utf-8"))
             
             # P3-85: provider 可能返回缺失/空 choices，不能用 [0] 触发
             # IndexError 再被笼统映射成“传输错误”，应给出明确的空响应错误。

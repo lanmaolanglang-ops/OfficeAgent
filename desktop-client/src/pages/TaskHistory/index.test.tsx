@@ -8,6 +8,11 @@ vi.mock('../../services/api', () => ({
   listTasksPage: vi.fn(async () => ({ tasks: [], total: 0, page: 1, page_size: 20 })),
   getFileUrl: (id: string) => `http://127.0.0.1:8765/api/file/download/${id}`,
 }));
+vi.mock('../../components/Common/DownloadButton', () => ({
+  default: ({ fileId, filename }: { fileId: string; filename: string }) => (
+    <button type="button" data-file-id={fileId}>{filename}</button>
+  ),
+}));
 
 import { listTasksPage } from '../../services/api';
 import TaskHistory from './index';
@@ -104,9 +109,9 @@ describe('TaskHistory', () => {
       } as Partial<Task> & { id: string }),
     ], 1, 1));
     render(<TaskHistory />);
-    const links = await screen.findAllByText('同名.docx');
-    expect(links).toHaveLength(2);
-    expect((links[0] as HTMLAnchorElement).getAttribute('href')).toContain('f1');
-    expect((links[1] as HTMLAnchorElement).getAttribute('href')).toContain('f2');
+    const buttons = await screen.findAllByText('同名.docx');
+    expect(buttons).toHaveLength(2);
+    expect(buttons[0].getAttribute('data-file-id')).toBe('f1');
+    expect(buttons[1].getAttribute('data-file-id')).toBe('f2');
   });
 });

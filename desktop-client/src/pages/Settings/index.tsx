@@ -6,9 +6,9 @@ import {
 } from 'lucide-react';
 import { useSettingsStore, useBackendStore } from '../../stores';
 import type { AgentType } from '../../types';
-import { getModelSettings, saveModelSettings, setDefaultModel, testModelConnection, getImageModelSettings, saveImageModelSettings, testImageModelConnection, getEmbeddingModelSettings, saveEmbeddingModelSettings, testEmbeddingModelConnection, type ModelSettingsStatus, type ModelConnectionTest, type ImageModelSettings, type ImageModelConnectionTest, type EmbeddingModelSettings, type EmbeddingModelConnectionTest } from '../../services/api';
+import { getModelSettings, saveModelSettings, setDefaultModel, testModelConnection, getImageModelSettings, saveImageModelSettings, testImageModelConnection, getEmbeddingModelSettings, saveEmbeddingModelSettings, testEmbeddingModelConnection, getProviderSettings, type ModelSettingsStatus, type ModelConnectionTest, type ImageModelSettings, type ImageModelConnectionTest, type EmbeddingModelSettings, type EmbeddingModelConnectionTest } from '../../services/api';
 import { isTauri, setAutoStart, getAutoStart } from '../../services/tauri';
-import { MODEL_OPTIONS, PROVIDER_LABELS } from './modelOptions';
+import { PROVIDER_LABELS } from './modelOptions';
 
 const agentOptions: { value: AgentType; label: string }[] = [
   { value: 'auto', label: '自动选择' },
@@ -56,8 +56,9 @@ export default function SettingsPage() {
   };
 
   const [modelForm, setModelForm] = useState({
-    provider: 'deepseek', model: MODEL_OPTIONS.deepseek[0], apiKey: '',
+    provider: 'deepseek', model: '', apiKey: '',
   });
+  const [nativeModelOptions, setNativeModelOptions] = useState<Record<string, string[]>>({});
   const [modelStatus, setModelStatus] = useState<ModelSettingsStatus>({ configured: false, models: [] });
   const [savingModel, setSavingModel] = useState(false);
   const [modelSaved, setModelSaved] = useState(false);
@@ -67,8 +68,11 @@ export default function SettingsPage() {
 
   const loadModelStatus = useCallback(async () => {
     try {
-      const status = await getModelSettings();
+      const [status, providers] = await Promise.all([getModelSettings(), getProviderSettings()]);
       setModelStatus(status);
+      const options = Object.fromEntries(providers.native_presets.map((item) => [item.provider || item.id, item.models]));
+      setNativeModelOptions(options);
+      setModelForm((form) => ({ ...form, model: form.model || options[form.provider]?.[0] || '' }));
     } catch {
       // Backend 未连接时保持默认状态
     }
@@ -363,24 +367,20 @@ export default function SettingsPage() {
                 <label htmlFor="model-provider" className="block text-xs text-fg-muted mb-1.5">供应商</label>
                 <select id="model-provider" value={modelForm.provider} onChange={(e) => {
                   const nextProvider = e.target.value;
-                  const nextModels = MODEL_OPTIONS[nextProvider] || [];
+                  const nextModels = nativeModelOptions[nextProvider] || [];
                   // 供应商与模型必须联动：切换供应商后重置为该供应商的模型，
                   // 不能把上一个供应商的 model 一起提交（M36③）。
                   setModelForm((f) => ({ ...f, provider: nextProvider, model: nextModels[0] ?? '' }));
                 }} className={inputCls}>
-                  {Object.keys(MODEL_OPTIONS).map((provider) => (
+                  {Object.keys(nativeModelOptions).map((provider) => (
                     <option key={provider} value={provider}>{PROVIDER_LABELS[provider] || provider}</option>
                   ))}
                 </select>
               </div>
               <div>
                 <label htmlFor="model-name" className="block text-xs text-fg-muted mb-1.5">模型</label>
-                <select id="model-name" value={modelForm.model} onChange={(e) => setModelForm((f) => ({ ...f, model: e.target.value }))} className={inputCls}>
-                  {(MODEL_OPTIONS[modelForm.provider] || []).map((m) => <option key={m} value={m}>{m}</option>)}
-                  {modelForm.model && !(MODEL_OPTIONS[modelForm.provider] || []).includes(modelForm.model) && (
-                    <option value={modelForm.model}>{modelForm.model}（自定义）</option>
-                  )}
-                </select>
+                <input id="model-name" list="native-model-options" value={modelForm.model} onChange={(e) => setModelForm((f) => ({ ...f, model: e.target.value }))} className={inputCls} placeholder="从后端预设选择或手工输入模型 ID" />
+                <datalist id="native-model-options">{(nativeModelOptions[modelForm.provider] || []).map((m) => <option key={m} value={m} />)}</datalist>
               </div>
               <div>
                 <label htmlFor="model-api-key" className="block text-xs text-fg-muted mb-1.5">API Key</label>

@@ -35,6 +35,7 @@ from office_agent.api.router import (
     config_router,
     settings_router,
     security_router,
+    skills_router,
 )
 from office_agent.database import upgrade_database, DATABASE_URL
 from office_agent.runtime_config import get_data_root, get_log_dir
@@ -124,6 +125,7 @@ def create_app() -> FastAPI:
     app.include_router(config_router)
     app.include_router(settings_router)
     app.include_router(security_router)
+    app.include_router(skills_router)
 
     # Metrics 端点
     @app.get("/metrics", summary="Prometheus 指标", tags=["监控"])

@@ -109,6 +109,9 @@ def _understand_ppt_request(instruction: str, options: dict,
     try:
         from ...model_gateway import ModelGateway
         history = options.get("history", [])[-8:] if isinstance(options, dict) else []
+        from ...skills import append_skill_context
+        core_system = ("你是PPT任务解析器。把用户当前要求和历史反馈合并成明确的演示文稿制作简报。"
+                       "保留主题、受众、页数、风格、内容、模板和修改要求。只输出简报正文，不要解释。")
         response = ModelGateway(
             cancel_event=getattr(progress, "cancel_event", None)
         ).chat(
@@ -118,8 +121,7 @@ def _understand_ppt_request(instruction: str, options: dict,
                 "is_follow_up": bool(options.get("is_follow_up")),
                 "history": history,
             }, ensure_ascii=False),
-            system_prompt=("你是PPT任务解析器。把用户当前要求和历史反馈合并成明确的演示文稿制作简报。"
-                           "保留主题、受众、页数、风格、内容、模板和修改要求。只输出简报正文，不要解释。"),
+            system_prompt=append_skill_context(core_system, str(options.get("_skill_context") or "")),
             task_type_str="ppt_content", temperature=0.2, max_tokens=1000,
         )
         if isinstance(options, dict):
@@ -189,6 +191,7 @@ def generate_ppt(outline: str | None = None, input_path: str | None = None,
                 model=icfg.get("model", ""),
                 provider=icfg.get("provider", ""),
                 mcp_url=icfg.get("mcp_url", ""),
+                allow_local_endpoint=bool(icfg.get("allow_local_endpoint", False)),
             )
         except Exception as e:
             logger.warning(f"生图网关初始化失败: {e}")
@@ -202,6 +205,7 @@ def generate_ppt(outline: str | None = None, input_path: str | None = None,
             model_gateway=model_gateway,
             image_gateway=image_gateway,
             max_generated_images=max_generated_images,
+            skill_context=str(options.get("_skill_context") or ""),
         )
 
         # 确定主题和输出路径

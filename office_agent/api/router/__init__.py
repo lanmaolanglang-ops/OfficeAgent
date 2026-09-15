@@ -6,6 +6,7 @@ from .agent import router as agent_router
 from .config import router as config_router
 from .settings import router as settings_router
 from .security import router as security_router
+from .skills import router as skills_router
 
 __all__ = [
     "health_router",
@@ -16,4 +17,5 @@ __all__ = [
     "config_router",
     "settings_router",
     "security_router",
+    "skills_router",
 ]

@@ -9,16 +9,6 @@
  * 页面文件只导出组件。
  */
 
-export const MODEL_OPTIONS: Record<string, string[]> = {
-  openai: ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'],
-  deepseek: ['deepseek-chat', 'deepseek-reasoner'],
-  claude: ['claude-3-5-sonnet-20241022'],
-  doubao: ['doubao-seed-2-1-pro', 'doubao-seed-2-1-turbo',
-    'doubao-seed-2-0-pro', 'doubao-seed-2-0-lite', 'doubao-seed-2-0-mini', 'doubao-seed-2-0-code'],
-  qwen: ['qwen3.8-max-preview', 'qwen3.7-max', 'qwen3.7-plus', 'qwen3.7-flash'],
-  agnes: ['agnes-2.0-flash', 'agnes-2.5-flash', 'agnes-1.5-flash'],
-};
-
 export const PROVIDER_LABELS: Record<string, string> = {
   openai: 'OpenAI',
   deepseek: 'DeepSeek',

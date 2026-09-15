@@ -1,14 +1,15 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   FolderOpen, FileText, Presentation, Sheet, File,
-  Download, Trash2, Search, History, RotateCcw, X, ArchiveRestore,
+  Trash2, Search, History, RotateCcw, X, ArchiveRestore,
 } from 'lucide-react';
 import { useFileStore } from '../../stores';
 import {
-  deleteFile, getFileUrl, listDeletedFilesPage, listFileVersions,
+  deleteFile, listDeletedFilesPage, listFileVersions,
   restoreDeletedFile, restoreFileVersion,
 } from '../../services/api';
 import type { FileVersionInfo, UploadedFile } from '../../types';
+import DownloadButton from '../../components/Common/DownloadButton';
 
 type FileView = 'active' | 'trash';
 
@@ -131,8 +132,6 @@ export default function FileManager() {
     } finally { setPendingFileId(null); }
   };
 
-  const handleDownload = (id: string) => window.open(getFileUrl(id), '_blank', 'noopener,noreferrer');
-
   const closeVersions = useCallback(() => {
     setVersionFile(null);
     window.setTimeout(() => restoreFocusRef.current?.focus(), 0);
@@ -237,7 +236,7 @@ export default function FileManager() {
                       <div className="flex flex-none items-center gap-1">
                         {view === 'active' ? (
                           <>
-                            <button type="button" onClick={() => handleDownload(file.id)} className="p-2 text-fg-soft transition-colors hover:bg-muted hover:text-brand" title="下载" aria-label={`下载 ${file.name}`}><Download className="h-4 w-4" /></button>
+                            <DownloadButton fileId={file.id} filename={file.name} compact />
                             <button type="button" onClick={() => void openVersions(file.id, file.name)} className="p-2 text-fg-soft transition-colors hover:bg-muted hover:text-brand" title="历史版本" aria-label={`查看 ${file.name} 的历史版本`}><History className="h-4 w-4" /></button>
                             <button type="button" onClick={() => void handleSoftDelete(file.id, file.name)} disabled={busy} className="p-2 text-fg-soft transition-colors hover:bg-danger-soft hover:text-danger disabled:cursor-wait disabled:opacity-40" title={busy ? '正在移至回收站' : '移至回收站'} aria-label={`将 ${file.name} 移至回收站`}><Trash2 className="h-4 w-4" /></button>
                           </>

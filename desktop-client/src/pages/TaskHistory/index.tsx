@@ -1,8 +1,8 @@
 import { useEffect } from 'react';
-import { Clock, RefreshCw, FileOutput, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Clock, RefreshCw, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useTaskStore } from '../../stores';
 import TaskStatusBadge from '../../components/Tasks/TaskStatusBadge';
-import { getFileUrl } from '../../services/api';
+import DownloadButton from '../../components/Common/DownloadButton';
 import type { Task } from '../../types';
 
 /** 列表行的稳定 key：优先实体 id，缺失时用"类型+创建时间"而不是数组下标。 */
@@ -81,10 +81,7 @@ export default function TaskHistory() {
                     {task.output_files && task.output_files.length > 0 && (
                       <div className="mt-3 flex flex-wrap gap-2">
                         {task.output_files.map((file, i) => (
-                          <a key={outputFileKey(file, i)} href={getFileUrl(file.file_id)} target="_blank" rel="noopener" download={file.filename} className="flex items-center gap-1 text-xs bg-brand-soft text-brand px-2 py-1 rounded-lg hover:bg-brand hover:text-white">
-                            <FileOutput className="w-3 h-3" />
-                            {file.filename}
-                          </a>
+                          <DownloadButton key={outputFileKey(file, i)} fileId={file.file_id} filename={file.filename || 'download'} />
                         ))}
                       </div>
                     )}

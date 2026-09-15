@@ -523,7 +523,10 @@ class ModelManager:
             ModelProvider.CLAUDE: ClaudeClient,
             ModelProvider.GEMINI: GeminiClient,
         }
-        
+        if config.provider is ModelProvider.CUSTOM:
+            protocol = str((config.extra_params or {}).get("protocol", "openai_compatible"))
+            if protocol == "anthropic_compatible":
+                return ClaudeClient(config)
         client_class = client_map.get(config.provider)
         if client_class:
             return client_class(config)  # type: ignore[abstract]

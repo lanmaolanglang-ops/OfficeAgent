@@ -285,7 +285,7 @@ def get_file_info(file_id: str):
 
 
 @router.get("/download/{file_id}", summary="下载文件")
-def download_file(file_id: str):
+def download_file(file_id: str, request: Request):
     """
     下载文件
 
@@ -293,6 +293,12 @@ def download_file(file_id: str):
     """
     try:
         storage = _get_storage()
+        if settings.auth_enabled and getattr(request.state, "user_role", "") != "admin":
+            owner_id = _effective_owner(request)
+            candidate = storage.get_info(file_id)
+            if candidate.owner_id != owner_id:
+                # Do not disclose another user's file identity.
+                raise FileNotFoundError(file_id)
         chunks, info = storage.stream_download(file_id)
         return StreamingResponse(
             chunks,
@@ -304,6 +310,8 @@ def download_file(file_id: str):
         )
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail=f"文件不存在: {file_id}")
+    except HTTPException:
+        raise
     except Exception:
         raise HTTPException(status_code=500, detail="下载失败，请稍后重试")
 

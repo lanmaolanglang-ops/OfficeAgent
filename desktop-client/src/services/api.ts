@@ -283,6 +283,125 @@ export async function testEmbeddingModelConnection(): Promise<EmbeddingModelConn
   );
 }
 
+export interface ProviderConfigItem {
+  id: string;
+  name: string;
+  provider?: string;
+  protocol: string;
+  base_url: string;
+  enabled: boolean;
+  models: string[];
+  default_model: string;
+  allow_local_endpoint?: boolean;
+  api_key_mask: string;
+  is_default?: boolean;
+  mcp_url?: string;
+}
+
+export interface ProviderProbeResult {
+  success: boolean;
+  code?: string;
+  message: string;
+  models?: string[];
+  latency_ms?: number;
+  bytes?: number;
+}
+
+export async function getProviderSettings(): Promise<{ native_presets: ProviderConfigItem[]; custom_providers: ProviderConfigItem[] }> {
+  return await request('/api/settings/providers');
+}
+
+export async function saveCustomProvider(payload: Record<string, unknown>): Promise<ProviderConfigItem> {
+  return await request('/api/settings/providers', { method: 'POST', body: JSON.stringify(payload) });
+}
+
+export async function deleteCustomProvider(providerId: string): Promise<void> {
+  await request(`/api/settings/providers/${encodeURIComponent(providerId)}`, { method: 'DELETE' });
+}
+
+export async function discoverProviderModels(payload: Record<string, unknown>): Promise<ProviderProbeResult> {
+  return await request('/api/settings/providers/discover', { method: 'POST', body: JSON.stringify(payload) }, 45_000);
+}
+
+export async function testCustomProvider(payload: Record<string, unknown>): Promise<ProviderProbeResult> {
+  return await request('/api/settings/providers/test', { method: 'POST', body: JSON.stringify(payload) }, 60_000);
+}
+
+export async function getImageProviders(): Promise<{ default_provider_id: string | null; providers: ProviderConfigItem[] }> {
+  return await request('/api/settings/image-providers');
+}
+
+export async function saveImageProvider(payload: Record<string, unknown>): Promise<ProviderConfigItem> {
+  return await request('/api/settings/image-providers', { method: 'POST', body: JSON.stringify(payload) });
+}
+
+export async function setDefaultImageProvider(providerId: string): Promise<void> {
+  await request(`/api/settings/image-providers/${encodeURIComponent(providerId)}/default`, { method: 'POST' });
+}
+
+export async function deleteImageProvider(providerId: string): Promise<void> {
+  await request(`/api/settings/image-providers/${encodeURIComponent(providerId)}`, { method: 'DELETE' });
+}
+
+export async function discoverImageModels(payload: Record<string, unknown>): Promise<ProviderProbeResult> {
+  return await request('/api/settings/image-providers/discover', { method: 'POST', body: JSON.stringify(payload) }, 45_000);
+}
+
+export async function testImageProvider(payload: Record<string, unknown>): Promise<ProviderProbeResult> {
+  return await request('/api/settings/image-providers/test', { method: 'POST', body: JSON.stringify(payload) }, 180_000);
+}
+
+export interface SkillItem {
+  id: string;
+  name: string;
+  description: string;
+  instructions: string;
+  target_agents: string[];
+  enabled: boolean;
+  priority: number;
+  source: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export type SkillPayload = Omit<SkillItem, 'id' | 'source' | 'created_at' | 'updated_at'>;
+
+export async function listSkills(): Promise<SkillItem[]> {
+  const result = await request<{ skills: SkillItem[] }>('/api/skills');
+  return result.skills;
+}
+
+export async function createSkill(payload: SkillPayload): Promise<SkillItem> {
+  return await request('/api/skills', { method: 'POST', body: JSON.stringify(payload) });
+}
+
+export async function updateSkill(skillId: string, payload: SkillPayload): Promise<SkillItem> {
+  return await request(`/api/skills/${encodeURIComponent(skillId)}`, { method: 'PUT', body: JSON.stringify(payload) });
+}
+
+export async function deleteSkill(skillId: string): Promise<void> {
+  await request(`/api/skills/${encodeURIComponent(skillId)}`, { method: 'DELETE' });
+}
+
+export async function importSkill(file: File): Promise<SkillItem> {
+  const form = new FormData();
+  form.append('file', file);
+  const response = await fetch(`${getBaseUrl()}/api/skills/import`, {
+    method: 'POST', body: form, headers: getAuthHeaders(),
+  });
+  if (response.status === 401) {
+    handleUnauthorized();
+    throw new Error('认证已失效，请重新提供凭据');
+  }
+  if (!response.ok) {
+    const body = await response.text().catch(() => '');
+    let message = body;
+    try { message = getBackendError(JSON.parse(body), body); } catch { /* plain text */ }
+    throw new Error(message || 'Skill 导入失败');
+  }
+  return await response.json();
+}
+
 // 上传文件（支持进度回调与中止信号）
 export async function uploadFile(
   file: File,
@@ -471,6 +590,36 @@ export async function sendChatMessage(req: ChatRequest): Promise<ChatResponse> {
 // 获取文件下载URL
 export function getFileUrl(fileId: string): string {
   return `${getBaseUrl()}/api/file/download/${fileId}`;
+}
+
+export async function getFileBytes(fileId: string, timeoutMs = 120_000): Promise<Uint8Array> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  let response: Response;
+  try {
+    response = await fetch(getFileUrl(fileId), {
+      headers: getAuthHeaders(),
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new Error('下载超时，Backend 未在规定时间内响应');
+    }
+    throw new Error('无法连接 Backend，请确认本地服务正在运行');
+  } finally {
+    window.clearTimeout(timer);
+  }
+  if (response.status === 401) {
+    handleUnauthorized();
+    throw new Error('认证已失效，请重新提供凭据');
+  }
+  if (!response.ok) {
+    const detail = await response.text().catch(() => '');
+    let message = detail;
+    try { message = getBackendError(JSON.parse(detail), detail); } catch { /* plain text */ }
+    throw new Error(response.status === 404 ? '文件不存在或已被删除' : `下载失败（HTTP ${response.status}）：${message}`);
+  }
+  return new Uint8Array(await response.arrayBuffer());
 }
 
 export async function listFileVersions(fileId: string): Promise<FileVersionInfo[]> {

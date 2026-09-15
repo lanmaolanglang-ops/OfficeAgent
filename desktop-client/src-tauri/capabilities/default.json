@@ -9,7 +9,9 @@
     "core:window:allow-start-dragging",
     "core:webview:default",
     "core:event:default",
+    "dialog:allow-save",
     "fs:allow-read-file",
+    "fs:allow-write-file",
     "notification:default",
     "notification:allow-is-permission-granted",
     "notification:allow-request-permission",
@@ -22,6 +24,14 @@
     "window-state:allow-save-window-state",
     {
       "identifier": "fs:allow-read-file",
+      "allow": [
+        { "path": "$DOWNLOAD/**" },
+        { "path": "$DESKTOP/**" },
+        { "path": "$DOCUMENT/**" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-write-file",
       "allow": [
         { "path": "$DOWNLOAD/**" },
         { "path": "$DESKTOP/**" },

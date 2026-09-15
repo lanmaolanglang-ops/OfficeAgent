@@ -33,13 +33,15 @@ def _understand_excel_request(instruction: str, options: dict,
             "is_follow_up": bool(options.get("is_follow_up")),
             "history": history,
         }, ensure_ascii=False)
+        from ...skills import append_skill_context
+        core_system = ("你是Excel任务解析器。将用户要求改写成一条明确、可执行的Excel操作指令。"
+                       "保留原始字段、工作表、范围、公式、排序、筛选、图表和格式要求。"
+                       "只输出改写后的中文指令，不要解释。")
         response = ModelGateway(
             cancel_event=getattr(progress, "cancel_event", None)
         ).chat(
             user_message=prompt,
-            system_prompt=("你是Excel任务解析器。将用户要求改写成一条明确、可执行的Excel操作指令。"
-                           "保留原始字段、工作表、范围、公式、排序、筛选、图表和格式要求。"
-                           "只输出改写后的中文指令，不要解释。"),
+            system_prompt=append_skill_context(core_system, str(options.get("_skill_context") or "")),
             task_type_str="simple_text", temperature=0.1, max_tokens=800,
         )
         if isinstance(options, dict):

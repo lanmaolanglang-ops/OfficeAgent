@@ -12,6 +12,8 @@ const ExcelAgentPage = lazy(() => import('./pages/ExcelAgent'));
 const TaskHistory = lazy(() => import('./pages/TaskHistory'));
 const FileManagerPage = lazy(() => import('./pages/FileManager'));
 const SettingsPage = lazy(() => import('./pages/Settings'));
+const ProvidersPage = lazy(() => import('./pages/Providers'));
+const SkillsPage = lazy(() => import('./pages/Skills'));
 
 // 加载占位组件
 function PageLoader() {
@@ -44,6 +46,8 @@ function App() {
             <Route path="/history" element={<TaskHistory />} />
             <Route path="/files" element={<FileManagerPage />} />
             <Route path="/settings" element={<SettingsPage />} />
+            <Route path="/providers" element={<ProvidersPage />} />
+            <Route path="/skills" element={<SkillsPage />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Route>
         </Routes>

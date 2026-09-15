@@ -264,6 +264,18 @@ def _prepare_chat_task(*, req, user_id, user_role, agent_hint, agent,
             }
             history = (previous_history + [prior_turn] + history)[-10:]
 
+        skill_context = ""
+        skill_ids: list[str] = []
+        truncated_skill_ids: list[str] = []
+        try:
+            from ...skills import resolve_skills
+            resolution = resolve_skills(session, agent, owner_id=user_id)
+            skill_context = resolution.context
+            skill_ids = list(resolution.applied_ids)
+            truncated_skill_ids = list(resolution.truncated_ids)
+        except Exception:
+            logger.exception("Skill 解析失败，本任务不注入 Skill")
+
         from ...task_queue import DEFAULT_PRIORITY, PRIORITY_TO_INT
         db_task = task_repo.create_task(
             task_type=task_type,
@@ -284,6 +296,9 @@ def _prepare_chat_task(*, req, user_id, user_role, agent_hint, agent,
                 "revision_mode": revision_mode,
                 "revision_number": revision_number,
                 "_owner_id": user_id,
+                "_skill_context": skill_context,
+                "_skill_ids": skill_ids,
+                "_truncated_skill_ids": truncated_skill_ids,
             }, ensure_ascii=False),
             priority=PRIORITY_TO_INT[DEFAULT_PRIORITY],
             parent_task_id=parent_task_id,
@@ -307,6 +322,9 @@ def _prepare_chat_task(*, req, user_id, user_role, agent_hint, agent,
         "history": history,
         "model_config": model_config,
         "template_path": template_path,
+        "skill_context": skill_context,
+        "skill_ids": skill_ids,
+        "truncated_skill_ids": truncated_skill_ids,
     }
 
 
@@ -372,6 +390,9 @@ async def chat(req: ChatRequest, request: Request):
     history = prepared["history"]
     model_config = prepared["model_config"]
     template_path = prepared["template_path"]
+    skill_context = prepared["skill_context"]
+    skill_ids = prepared["skill_ids"]
+    truncated_skill_ids = prepared["truncated_skill_ids"]
 
     # 2. 提交到真正的任务队列
     status = "queued"
@@ -401,6 +422,9 @@ async def chat(req: ChatRequest, request: Request):
                     "previous_instruction": previous_instruction,
                     "revision_mode": revision_mode,
                     "_owner_id": user_id,
+                    "_skill_context": skill_context,
+                    "_skill_ids": skill_ids,
+                    "_truncated_skill_ids": truncated_skill_ids,
                 },
             },
             priority=DEFAULT_PRIORITY,

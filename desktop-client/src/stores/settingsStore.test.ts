@@ -12,7 +12,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 import { parsePersistedSettings, useSettingsStore } from './settingsStore';
-import { MODEL_OPTIONS, PROVIDER_LABELS } from '../pages/Settings/modelOptions';
+import { PROVIDER_LABELS } from '../pages/Settings/modelOptions';
 
 describe('parsePersistedSettings（持久化数据是不可信输入）', () => {
   it('数组不得展开成 "0"/"1" 伪键', () => {
@@ -120,23 +120,14 @@ describe('settingsStore 持久化语义', () => {
   });
 });
 
-describe('Settings 页供应商/模型候选', () => {
+describe('Settings 页供应商标签', () => {
   it('包含后端 canonical 的 claude 供应商（修复前缺失，无法添加 Claude）', () => {
-    expect(Object.keys(MODEL_OPTIONS)).toContain('claude');
+    expect(Object.keys(PROVIDER_LABELS)).toContain('claude');
     expect(PROVIDER_LABELS.claude).toBeTruthy();
   });
 
-  it('每个供应商至少有一个候选模型（下拉不会为空）', () => {
-    for (const [provider, models] of Object.entries(MODEL_OPTIONS)) {
-      expect(models.length, `${provider} 无候选模型`).toBeGreaterThan(0);
-    }
-  });
-
-  it('不使用后端 canonical 之外的 provider 别名（anthropic → claude）', () => {
-    expect(Object.keys(MODEL_OPTIONS)).not.toContain('anthropic');
-  });
-
-  it('claude 候选使用后端目录中的真实模型名', () => {
-    expect(MODEL_OPTIONS.claude).toContain('claude-3-5-sonnet-20241022');
+  it('不在前端维护模型版本清单，provider 别名也不进入标签表', () => {
+    expect(Object.keys(PROVIDER_LABELS)).not.toContain('anthropic');
+    expect(Object.values(PROVIDER_LABELS).join(' ')).not.toContain('gpt-');
   });
 });

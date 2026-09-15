@@ -24,6 +24,12 @@ class Skill(Base, TimestampMixin):
     tags: Mapped[str] = mapped_column(Text, nullable=True)  # JSON array
     config_json: Mapped[str] = mapped_column(Text, nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    # JSON array containing word/excel/ppt/chat/all.  Kept explicit instead of
+    # overloading generic tags so resolution stays deterministic.
+    target_agents: Mapped[str] = mapped_column(Text, default='["all"]')
+    priority: Mapped[int] = mapped_column(Integer, default=100, index=True)
+    source: Mapped[str] = mapped_column(String(32), default="ui")
+    owner_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     usage_count: Mapped[int] = mapped_column(Integer, default=0)
     rating: Mapped[int] = mapped_column(Integer, default=0)
 

@@ -10,6 +10,7 @@ from urllib.request import Request, urlopen
 from .base import BaseModelClient
 from ...models.model_schemas import ModelConfig, ModelResponse
 from ...vision_gateway.clients.claude_client import ClaudeVisionClient
+from ...security.endpoint_policy import join_api_endpoint, request_json
 
 
 class ClaudeClient(BaseModelClient):
@@ -19,7 +20,7 @@ class ClaudeClient(BaseModelClient):
 
     def __init__(self, config: ModelConfig):
         super().__init__(config)
-        self.api_url = f"{self.base_url}/messages"
+        self.api_url = join_api_endpoint(self.base_url, "messages")
         self.api_version = "2023-06-01"
     
     def chat(self, messages: list[dict[str, str]],
@@ -59,11 +60,21 @@ class ClaudeClient(BaseModelClient):
         }
         
         try:
-            data = json.dumps(payload).encode("utf-8")
-            req = Request(self.api_url, data=data, headers=headers, method="POST")
-            
-            with urlopen(req, timeout=self.config.timeout) as resp:
-                result = json.loads(resp.read().decode("utf-8"))
+            custom_meta = self.config.extra_params or {}
+            if getattr(self.config, "provider", None) and self.config.provider.value == "custom":
+                result = request_json(
+                    self.api_url,
+                    method="POST",
+                    headers=headers,
+                    payload=payload,
+                    timeout=self.config.timeout,
+                    allow_local=bool(custom_meta.get("allow_local_endpoint", False)),
+                )
+            else:
+                data = json.dumps(payload).encode("utf-8")
+                req = Request(self.api_url, data=data, headers=headers, method="POST")
+                with urlopen(req, timeout=self.config.timeout) as resp:
+                    result = json.loads(resp.read().decode("utf-8"))
             
             # 解析响应
             content = ""

@@ -59,7 +59,7 @@ class PPTOrchestrator:
     """
 
     def __init__(self, model_gateway=None, image_gateway=None,
-                 max_generated_images: int = 3):
+                 max_generated_images: int = 3, skill_context: str = ""):
         self.model_gateway = model_gateway
         self.image_gateway = image_gateway
         self.max_generated_images = max(0, min(int(max_generated_images), 8))
@@ -70,7 +70,7 @@ class PPTOrchestrator:
             "errors": [],
         }
         self._generated_temp_images: list[str] = []
-        self.planner = ContentPlanner(model_gateway=model_gateway)
+        self.planner = ContentPlanner(model_gateway=model_gateway, skill_context=skill_context)
         self.template_analyzer = TemplateAnalyzer()
         self.service = PPTService()
         self.quality_checker = PPTQualityChecker()

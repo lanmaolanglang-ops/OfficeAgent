@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import type { ChatMessage, AgentType, ChatResponse } from '../types';
-import { sendChatMessage, getTask, getFileUrl } from '../services/api';
+import { sendChatMessage, getTask } from '../services/api';
+import { downloadOutputFile } from '../services/download';
 import { sendNotification } from '../services/tauri';
 import { useFileStore } from './fileStore';
 import { useSettingsStore } from './settingsStore';
@@ -23,19 +24,6 @@ function generateId(): string {
 
 // 轮询代际令牌：新消息/清空会话时自增，使旧轮询链失效（定时器仍触发但立即空转）
 let pollGeneration = 0;
-
-// 触发浏览器/WebView 下载，用于「完成后自动打开结果」
-function triggerDownload(url: string, filename?: string) {
-  const a = document.createElement('a');
-  a.href = url;
-  if (filename) a.download = filename;
-  // download 对跨源 URL 可能被浏览器忽略；新窗口可避免 WebView 离开应用。
-  a.target = '_blank';
-  a.rel = 'noopener';
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-}
 
 // ============ 会话持久化：刷新后对话不丢，进行中任务可续接 ============
 const CHAT_STORAGE_KEY = 'officeagent_chat_v1';
@@ -384,10 +372,9 @@ function startPollLoop(initialTaskId: string, assistantId: string, generation: n
           }
           if (settings.auto_open_results && task.output_files?.length) {
             const first = task.output_files[0];
-            // 后端返回的 download_url 是相对 API 路径；Tauri/Web 开发环境的
-            // 页面源与 Backend 不同，直接使用会请求到前端服务器。
-            const url = getFileUrl(first.file_id);
-            triggerDownload(url, first.filename);
+            void downloadOutputFile(first.file_id, first.filename).catch(() => {
+              // 自动保存失败不改变任务成功状态；结果卡片仍可手动重试。
+            });
           }
           set({ sending: false });
         } else {

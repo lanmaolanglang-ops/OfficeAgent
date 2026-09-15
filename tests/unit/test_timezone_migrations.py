@@ -102,7 +102,7 @@ class TestMigrationChainIntegrity:
         engine = sa.create_engine(f"sqlite:///{db_path}")
         with engine.connect() as conn:
             version = conn.execute(sa.text("SELECT version_num FROM alembic_version")).scalar()
-            assert version == "016_task_revision_unique"
+            assert version == "017_agent_skills"
             # 链尾可正常写入 aware 时间（ORM 默认值 utc_now）
             conn.execute(sa.text(
                 "INSERT INTO execution_log (id, task_id, agent, action, status, start_time)"
@@ -110,7 +110,7 @@ class TestMigrationChainIntegrity:
             ), {"ts": datetime.now(timezone.utc)})
 
     def test_chain_downgrade_one_step_and_reupgrade(self, tmp_path, monkeypatch):
-        """验证链尾 upgrade/downgrade 可逆（016 <-> 015）。"""
+        """验证链尾 upgrade/downgrade 可逆（017 <-> 016）。"""
         db_path = tmp_path / "chain2.db"
         monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
         monkeypatch.setenv("OFFICE_AGENT_DATA_DIR", str(tmp_path / "data"))
@@ -126,8 +126,8 @@ class TestMigrationChainIntegrity:
         engine = sa.create_engine(f"sqlite:///{db_path}")
         with engine.connect() as conn:
             version = conn.execute(sa.text("SELECT version_num FROM alembic_version")).scalar()
-            assert version == "015_role_version"
+            assert version == "016_task_revision_unique"
         command.upgrade(cfg, "head")
         with engine.connect() as conn:
             version = conn.execute(sa.text("SELECT version_num FROM alembic_version")).scalar()
-            assert version == "016_task_revision_unique"
+            assert version == "017_agent_skills"

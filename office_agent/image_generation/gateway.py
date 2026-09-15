@@ -19,6 +19,7 @@ from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
 
 from .config import normalize_image_model_config
+from ..security.endpoint_policy import join_api_endpoint, request_json
 
 
 class ImageGenerationError(RuntimeError):
@@ -34,8 +35,10 @@ DEFAULT_IMAGE_SIZE = "1024x768"
 _ResolvedEndpoint = tuple[int, int, int, str, tuple]
 
 
-def _validate_remote_url(url: str) -> tuple[SplitResult, tuple[_ResolvedEndpoint, ...]]:
-    """解析 URL 一次，并返回仅含公网地址的固定连接端点。"""
+def _validate_remote_url(
+    url: str, *, allow_local: bool = False
+) -> tuple[SplitResult, tuple[_ResolvedEndpoint, ...]]:
+    """Resolve an image URL once and validate every pinned address."""
     try:
         parsed = urlsplit(url)
         if parsed.scheme not in {"http", "https"}:
@@ -43,7 +46,7 @@ def _validate_remote_url(url: str) -> tuple[SplitResult, tuple[_ResolvedEndpoint
         if not parsed.hostname or parsed.username or parsed.password:
             raise ImageGenerationError("图像下载 URL 主机无效")
         host = parsed.hostname.rstrip(".").lower()
-        if host == "localhost" or host.endswith(".localhost"):
+        if (host == "localhost" or host.endswith(".localhost")) and not allow_local:
             raise ImageGenerationError("拒绝下载内网图像地址")
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
         endpoints = tuple(cast(
@@ -56,7 +59,16 @@ def _validate_remote_url(url: str) -> tuple[SplitResult, tuple[_ResolvedEndpoint
             cast(str, item[4][0]).split("%", 1)[0]
             for item in endpoints
         }
-        if any(not ipaddress.ip_address(address).is_global for address in addresses):
+        rfc1918 = tuple(ipaddress.ip_network(value) for value in (
+            "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7",
+        ))
+        for value in addresses:
+            address = ipaddress.ip_address(value)
+            if address.is_link_local or address.is_unspecified or address.is_multicast:
+                raise ImageGenerationError("拒绝下载链路本地、元数据或保留地址上的图像")
+            explicitly_local = address.is_loopback or any(address in network for network in rfc1918)
+            if address.is_global or (allow_local and explicitly_local):
+                continue
             raise ImageGenerationError("拒绝下载内网或保留地址上的图像")
         return parsed, endpoints
     except ImageGenerationError:
@@ -146,9 +158,9 @@ def _read_limited_response(response: http.client.HTTPResponse,
     return b"".join(chunks)
 
 
-def _download_once(url: str, timeout: float,
-                   max_bytes: int) -> tuple[bytes | None, str | None]:
-    parsed, endpoints = _validate_remote_url(url)
+def _download_once(url: str, timeout: float, max_bytes: int,
+                   *, allow_local: bool = False) -> tuple[bytes | None, str | None]:
+    parsed, endpoints = _validate_remote_url(url, allow_local=allow_local)
     host = _ascii_host(cast(str, parsed.hostname).rstrip(".").lower())
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
     request_target = parsed.path or "/"
@@ -282,11 +294,14 @@ def _post_json(url: str, payload: dict, headers: dict, timeout: float = 120.0) -
 
 
 def _get_bytes(url: str, timeout: float = 120.0,
-               max_bytes: int = MAX_IMAGE_DOWNLOAD_BYTES) -> bytes:
+               max_bytes: int = MAX_IMAGE_DOWNLOAD_BYTES,
+               *, allow_local: bool = False) -> bytes:
     """GET binary content with DNS results pinned to the actual socket."""
     current_url = url
     for _ in range(6):
-        content, redirect = _download_once(current_url, timeout, max_bytes)
+        content, redirect = _download_once(
+            current_url, timeout, max_bytes, allow_local=allow_local
+        )
         if content is not None:
             return content
         if redirect is None:
@@ -297,7 +312,8 @@ def _get_bytes(url: str, timeout: float = 120.0,
 
 class ImageGenerationGateway:
     def __init__(self, api_key: str = "", base_url: str = "", model: str = "",
-                 provider: str = "", mcp_url: str = ""):
+                 provider: str = "", mcp_url: str = "",
+                 allow_local_endpoint: bool = False):
         normalized = normalize_image_model_config({
             "provider": provider or os.getenv("IMAGE_PROVIDER", "agnes"),
             "api_key": api_key or os.getenv("AGNES_API_KEY") or os.getenv("CODEX_ENV_AGNES_API_KEY", ""),
@@ -311,6 +327,7 @@ class ImageGenerationGateway:
         self.api_key = normalized["api_key"]
         self.base_url = normalized["base_url"]
         self.model = normalized["model"]
+        self.allow_local_endpoint = bool(allow_local_endpoint)
 
     def available(self) -> bool:
         return bool(self.mcp_url) if self.provider == "mcp" else bool(self.api_key)
@@ -321,25 +338,33 @@ class ImageGenerationGateway:
         if self.provider == "mcp":
             _assert_public_api_url(self.mcp_url, label="图像 MCP 端点")
             return self._generate_mcp(prompt, size, output_dir)
-        _assert_public_api_url(self.base_url, label="图像服务 base_url")
-        data = _post_json(
-            f"{self.base_url.rstrip('/')}/images/generations",
-            {"model": self.model, "prompt": prompt, "size": size,
-             "response_format": "url"},
-            {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
-        )
+        payload = {"model": self.model, "prompt": prompt, "size": size,
+                   "response_format": "url"}
+        headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+        if self.provider == "agnes":
+            _assert_public_api_url(self.base_url, label="图像服务 base_url")
+            data = _post_json(join_api_endpoint(self.base_url, "images/generations"), payload, headers)
+        else:
+            data = request_json(
+                join_api_endpoint(self.base_url, "images/generations"),
+                method="POST", headers=headers, payload=payload, timeout=120,
+                allow_local=self.allow_local_endpoint,
+            )
         items = data.get("data", [])
         if not items:
             raise ImageGenerationError("图像服务未返回图片")
         item = items[0]
         target_dir = Path(output_dir or tempfile.gettempdir())
         target_dir.mkdir(parents=True, exist_ok=True)
-        target = target_dir / f"agnes_ppt_image_{uuid.uuid4().hex[:8]}.png"
+        target = target_dir / f"ppt_generated_image_{uuid.uuid4().hex[:8]}.png"
         if item.get("b64_json"):
             # 原子落盘：进程中断不留半张图片冒充成品
             atomic_write_bytes(target, _decode_image_b64(item["b64_json"]))
         elif item.get("url"):
-            atomic_write_bytes(target, _get_bytes(item["url"]))
+            atomic_write_bytes(
+                target,
+                _get_bytes(item["url"], allow_local=self.allow_local_endpoint),
+            )
         else:
             raise ImageGenerationError("图像服务返回内容为空")
         return str(target)

@@ -3,7 +3,7 @@ import { getBackendUrl } from '../../services/api';
 import { NavLink } from 'react-router-dom';
 import {
   House, FileText, Presentation, Sheet,
-  FolderOpen, History, Settings,
+  FolderOpen, History, Settings, Cable, BookOpen,
 } from 'lucide-react';
 
 const navGroups = [
@@ -18,6 +18,8 @@ const navGroups = [
   { label: '资产与系统', items: [
     { to: '/files', icon: FolderOpen, label: '文件管理' },
     { to: '/history', icon: History, label: '任务记录' },
+    { to: '/providers', icon: Cable, label: '模型服务' },
+    { to: '/skills', icon: BookOpen, label: 'Skills' },
     { to: '/settings', icon: Settings, label: '设置' },
   ] },
 ];

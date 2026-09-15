@@ -271,6 +271,16 @@ async def _create_task_impl(req: TaskCreateRequest, request: Request | None = No
         # Server-controlled key: a client-supplied value must never choose the
         # owner of generated output files.
         task_options["_owner_id"] = user_id
+    try:
+        from ...database.session import session_scope as skill_session_scope
+        from ...skills import resolve_skills
+        with skill_session_scope() as skill_session:
+            resolution = resolve_skills(skill_session, agent_name or "chat", owner_id=user_id)
+        task_options["_skill_context"] = resolution.context
+        task_options["_skill_ids"] = list(resolution.applied_ids)
+        task_options["_truncated_skill_ids"] = list(resolution.truncated_ids)
+    except Exception:
+        logger.exception("Skill 解析失败，本任务不注入 Skill")
 
     input_files = list(req.file_ids or [])
     input_paths = []

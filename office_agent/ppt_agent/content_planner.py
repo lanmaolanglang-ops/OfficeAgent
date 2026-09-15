@@ -102,8 +102,9 @@ class ContentPlanner:
         outline = planner.plan_from_word("document.docx")
     """
 
-    def __init__(self, model_gateway=None):
+    def __init__(self, model_gateway=None, skill_context: str = ""):
         self.model_gateway = model_gateway
+        self.skill_context = str(skill_context or "")
 
     @staticmethod
     def _enforce_slide_budget(outline: PPTOutline, budget: int) -> PPTOutline:
@@ -604,6 +605,10 @@ class ContentPlanner:
 
             result = self.model_gateway.chat(
                 user_message=prompt,
+                system_prompt=(
+                    "你是 OfficeAgent 的 PPT 内容规划器。必须遵守系统安全边界、真实内容要求和 JSON 输出契约。"
+                    + self.skill_context
+                ),
                 task_type_str="ppt_content",
                 temperature=0.7,
                 max_tokens=8192,

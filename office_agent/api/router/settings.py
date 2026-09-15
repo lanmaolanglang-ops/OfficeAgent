@@ -12,7 +12,7 @@ import asyncio
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ...models.model_schemas import ModelProvider, DEFAULT_MODEL_CONFIGS
 from ...image_generation.config import ImageModelConfigManager
@@ -40,6 +40,28 @@ class SetDefaultModelRequest(BaseModel):
     model_id: str
 
 
+class CustomProviderRequest(BaseModel):
+    id: str = ""
+    name: str
+    protocol: str = "openai_compatible"
+    base_url: str
+    api_key: str = ""
+    models: list[str] = Field(default_factory=list)
+    default_model: str = ""
+    enabled: bool = True
+    allow_local_endpoint: bool = False
+    clear_api_key: bool = False
+
+
+class ProviderProbeRequest(BaseModel):
+    protocol: str = "openai_compatible"
+    base_url: str
+    api_key: str = ""
+    model: str = ""
+    provider_id: str = ""
+    allow_local_endpoint: bool = False
+
+
 class ImageModelRequest(BaseModel):
     """生图模型配置请求"""
     provider: str = "agnes"  # agnes | mcp
@@ -47,6 +69,28 @@ class ImageModelRequest(BaseModel):
     base_url: Optional[str] = None
     model: str = ""
     mcp_url: Optional[str] = None
+
+
+class ImageProviderRequest(BaseModel):
+    id: str = ""
+    name: str
+    protocol: str = "openai_image_compatible"
+    base_url: str = ""
+    api_key: str = ""
+    models: list[str] = Field(default_factory=list)
+    default_model: str = ""
+    enabled: bool = True
+    allow_local_endpoint: bool = False
+    clear_api_key: bool = False
+    mcp_url: str = ""
+
+
+class ImageProviderProbeRequest(BaseModel):
+    provider_id: str = ""
+    base_url: str = ""
+    api_key: str = ""
+    model: str = ""
+    allow_local_endpoint: bool = False
 
 
 class EmbeddingModelRequest(BaseModel):
@@ -70,6 +114,15 @@ def _mask_key(api_key: str) -> str:
 def _get_gateway():
     from ...model_gateway import ModelGateway
     return ModelGateway()
+
+
+def _effective_probe_key(req: ProviderProbeRequest) -> str:
+    key = (req.api_key or "").strip()
+    if key or not req.provider_id:
+        return key
+    from ...model_gateway.provider_registry import ProviderRegistry
+    saved = ProviderRegistry().get(req.provider_id, include_secret=True)
+    return str(saved.get("api_key") or "") if saved else ""
 
 
 def _model_test_error(error: str) -> str:
@@ -221,6 +274,121 @@ async def test_model_connection(model_id: str):
     }
 
 
+@router.get("/providers")
+def list_provider_settings():
+    """List native presets and custom provider records without plaintext keys."""
+    from ...model_gateway.provider_registry import ProviderRegistry
+
+    native = []
+    gateway = _get_gateway()
+    configured = {model.id: model for model in gateway.manager.list_models()}
+    for provider, default in DEFAULT_MODEL_CONFIGS.items():
+        current = configured.get(default.id)
+        native.append({
+            "id": default.id,
+            "name": default.display_name,
+            "provider": provider.value,
+            "protocol": "native",
+            "base_url": (current or default).base_url,
+            "models": [(current or default).model],
+            "default_model": (current or default).model,
+            "enabled": bool(current and current.enabled and current.api_key),
+            "api_key_mask": _mask_key(current.api_key) if current else "",
+        })
+    return {
+        "native_presets": native,
+        "custom_providers": ProviderRegistry(gateway.manager).list_custom(),
+    }
+
+
+@router.post("/providers")
+def save_custom_provider(req: CustomProviderRequest):
+    from ...model_gateway.provider_registry import ProviderRegistry
+
+    try:
+        return ProviderRegistry().save(
+            provider_id=(req.id or "").strip(),
+            name=req.name,
+            protocol=req.protocol,
+            base_url=req.base_url,
+            api_key=req.api_key,
+            models=req.models,
+            default_model=req.default_model,
+            enabled=req.enabled,
+            allow_local_endpoint=req.allow_local_endpoint,
+            clear_api_key=req.clear_api_key,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception:
+        logger.exception("保存 Custom Provider 失败")
+        raise HTTPException(status_code=500, detail="保存 Provider 失败，请检查配置后重试")
+
+
+@router.delete("/providers/{provider_id}")
+def delete_custom_provider(provider_id: str):
+    from ...model_gateway.provider_registry import ProviderRegistry
+
+    try:
+        if not ProviderRegistry().delete(provider_id):
+            raise HTTPException(status_code=404, detail="Provider 不存在")
+        return {"deleted": True, "id": provider_id}
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("删除 Custom Provider 失败")
+        raise HTTPException(status_code=500, detail="删除 Provider 失败")
+
+
+@router.post("/providers/discover")
+async def discover_provider_models(req: ProviderProbeRequest):
+    from ...model_gateway.provider_registry import discover_models
+
+    key = _effective_probe_key(req)
+    if not key:
+        raise HTTPException(status_code=400, detail="请填写 API Key，或先保存 Provider")
+    try:
+        models = await asyncio.to_thread(
+            discover_models,
+            protocol=req.protocol,
+            base_url=req.base_url,
+            api_key=key,
+            allow_local_endpoint=req.allow_local_endpoint,
+        )
+        return {
+            "success": True,
+            "models": models,
+            "message": f"发现 {len(models)} 个模型" if models else "连接成功，但没有发现模型",
+        }
+    except Exception as exc:
+        from ...model_gateway.provider_registry import test_provider_connection
+        result = await asyncio.to_thread(
+            test_provider_connection,
+            protocol=req.protocol,
+            base_url=req.base_url,
+            api_key=key,
+            allow_local_endpoint=req.allow_local_endpoint,
+        )
+        if result.code == "authentication_failed":
+            raise HTTPException(status_code=401, detail=result.message) from exc
+        raise HTTPException(status_code=400, detail=result.message) from exc
+
+
+@router.post("/providers/test")
+async def test_custom_provider(req: ProviderProbeRequest):
+    from ...model_gateway.provider_registry import test_provider_connection
+
+    result = await asyncio.to_thread(
+        test_provider_connection,
+        protocol=req.protocol,
+        base_url=req.base_url,
+        api_key=_effective_probe_key(req),
+        model=req.model,
+        allow_local_endpoint=req.allow_local_endpoint,
+    )
+    return result.to_dict()
+
+
 @router.get("/image-model")
 def get_image_model_settings():
     """获取生图模型配置（不回传 API Key）"""
@@ -304,6 +472,112 @@ async def test_image_model_connection():
             "latency_ms": 0,
             "message": _image_test_error(str(exc)),
         }
+
+
+@router.get("/image-providers")
+def list_image_providers():
+    manager = ImageModelConfigManager()
+    return {
+        "default_provider_id": next(
+            (item["id"] for item in manager.list_providers() if item["is_default"]), None
+        ),
+        "providers": manager.list_providers(),
+    }
+
+
+@router.post("/image-providers")
+def save_image_provider(req: ImageProviderRequest):
+    manager = ImageModelConfigManager()
+    try:
+        saved = manager.save_provider(
+            provider_id=(req.id or "").strip(), name=req.name,
+            protocol=req.protocol, api_key=req.api_key,
+            base_url=req.base_url, models=req.models,
+            default_model=req.default_model, enabled=req.enabled,
+            allow_local_endpoint=req.allow_local_endpoint,
+            clear_api_key=req.clear_api_key, mcp_url=req.mcp_url,
+        )
+        return next(item for item in manager.list_providers() if item["id"] == saved["id"])
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception:
+        logger.exception("保存 Image Provider 失败")
+        raise HTTPException(status_code=500, detail="保存 Image Provider 失败")
+
+
+@router.post("/image-providers/{provider_id}/default")
+def set_default_image_provider(provider_id: str):
+    manager = ImageModelConfigManager()
+    try:
+        manager.set_default_provider(provider_id)
+        return {"default_provider_id": provider_id, "providers": manager.list_providers()}
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.delete("/image-providers/{provider_id}")
+def delete_image_provider(provider_id: str):
+    manager = ImageModelConfigManager()
+    if not manager.delete_provider(provider_id):
+        raise HTTPException(status_code=400, detail="Provider 不存在，或 Agnes 原生 Provider 不能删除")
+    return {"deleted": True, "id": provider_id}
+
+
+def _effective_image_probe_key(req: ImageProviderProbeRequest) -> str:
+    if req.api_key.strip() or not req.provider_id:
+        return req.api_key.strip()
+    manager = ImageModelConfigManager()
+    saved = next((item for item in manager.list_providers(include_secret=True)
+                  if item["id"] == req.provider_id), None)
+    return str(saved.get("api_key") or "") if saved else ""
+
+
+@router.post("/image-providers/discover")
+async def discover_image_provider_models(req: ImageProviderProbeRequest):
+    from ...model_gateway.provider_registry import discover_models
+
+    key = _effective_image_probe_key(req)
+    if not key:
+        raise HTTPException(status_code=400, detail="请填写 API Key，或先保存 Image Provider")
+    try:
+        models = await asyncio.to_thread(
+            discover_models,
+            protocol="openai_compatible",
+            base_url=req.base_url,
+            api_key=key,
+            allow_local_endpoint=req.allow_local_endpoint,
+        )
+        return {
+            "success": True,
+            "models": models,
+            "message": f"发现 {len(models)} 个模型" if models else "连接成功，但没有发现模型；可以手工添加",
+        }
+    except Exception as exc:
+        from ...security.endpoint_policy import ProviderHTTPError
+        if isinstance(exc, ProviderHTTPError) and exc.status in {401, 403}:
+            raise HTTPException(status_code=401, detail="认证失败，请检查 API Key") from exc
+        raise HTTPException(status_code=400, detail="模型发现失败；可以继续手工添加模型 ID") from exc
+
+
+@router.post("/image-providers/test")
+async def test_image_provider(req: ImageProviderProbeRequest):
+    key = _effective_image_probe_key(req)
+    if not key:
+        return {"success": False, "code": "missing_key", "message": "请填写 API Key"}
+    gateway = ImageGenerationGateway(
+        provider="custom", api_key=key, base_url=req.base_url,
+        model=req.model, allow_local_endpoint=req.allow_local_endpoint,
+    )
+    try:
+        result = await asyncio.wait_for(
+            asyncio.to_thread(gateway.test_connection, output_dir=tempfile.gettempdir()),
+            timeout=180,
+        )
+        return {**result, "code": "connected", "message": "连接成功，测试图已生成并清理"}
+    except asyncio.TimeoutError:
+        return {"success": False, "code": "timeout", "message": "连接超时，请检查网络或服务地址"}
+    except Exception as exc:
+        return {"success": False, "code": "generation_failed", "message": _image_test_error(str(exc))}
 
 
 @router.get("/embedding-model")

@@ -53,6 +53,7 @@ def _llm_format_config(instruction: str, input_path: str, options: dict,
             UNTRUSTED_DATA_SYSTEM_RULE,
             render_untrusted_data,
         )
+        from ...skills import append_skill_context
         from docx import Document
         doc = Document(input_path)
         structure = {
@@ -74,6 +75,7 @@ def _llm_format_config(instruction: str, input_path: str, options: dict,
                   "space_before,space_after,headings。headings的键只能是1到4，值可含font,size,bold,italic,"
                   "alignment,line_spacing,numbering。只输出用户明确要求或合理修正所需字段；若无法确定输出{}。"
                   + UNTRUSTED_DATA_SYSTEM_RULE)
+        system = append_skill_context(system, str(options.get("_skill_context") or ""))
         response = ModelGateway(
             cancel_event=getattr(progress, "cancel_event", None)
         ).chat(user_message=prompt, system_prompt=system,

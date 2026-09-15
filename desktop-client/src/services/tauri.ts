@@ -43,13 +43,9 @@ export async function saveFileDialog(
 ): Promise<string | null> {
   const core = await getTauriCore();
   if (!core) return null;
-  try {
-    const dialog = await import('@tauri-apps/plugin-dialog');
-    const result = await dialog.save({ defaultPath, filters });
-    return result as string | null;
-  } catch {
-    return null;
-  }
+  const dialog = await import('@tauri-apps/plugin-dialog');
+  const result = await dialog.save({ defaultPath, filters });
+  return result as string | null;
 }
 
 // ========== 文件操作 ==========
@@ -62,6 +58,13 @@ export async function readLocalFile(path: string): Promise<Uint8Array | null> {
   } catch {
     return null;
   }
+}
+
+export async function writeLocalFile(path: string, data: Uint8Array): Promise<void> {
+  const core = await getTauriCore();
+  if (!core) throw new Error('当前环境不支持原生文件写入');
+  const fs = await import('@tauri-apps/plugin-fs');
+  await fs.writeFile(path, data);
 }
 
 export async function readTextFile(path: string): Promise<string | null> {
