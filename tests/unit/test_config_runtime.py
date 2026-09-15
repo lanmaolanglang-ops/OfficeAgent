@@ -100,7 +100,7 @@ def test_config_manager_initialization_queries_and_hot_updates(tmp_path, monkeyp
     manager_module._config_manager = None
     manager = manager_module.ConfigManager(config_dir=str(tmp_path))
     assert manager.initialize(strict=False) is True
-    assert manager.global_config.version == "0.51.4"
+    assert manager.global_config.version == "0.52.0"
     assert manager.get_enabled_models()[0]["priority"] >= manager.get_enabled_models()[-1]["priority"]
     assert manager.get_models_by_provider("openai")
     assert manager.get_agent("WordAgent")["enabled"] is True
