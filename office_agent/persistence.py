@@ -14,9 +14,11 @@
 """
 from __future__ import annotations
 
+import errno
 import json
 import logging
 import os
+import shutil
 import tempfile
 import threading
 import weakref
@@ -63,6 +65,61 @@ def _lock_for(path: Path) -> threading.RLock:
     return lock
 
 
+def _copy_replace_for_cross_device_temp(temp_path: str, target: Path,
+                                        *, mode: int | None) -> None:
+    """Commit a complete temp file when Windows refuses an in-directory rename.
+
+    Some EFS-encrypted Windows profile directories return ``ERROR_NOT_SAME_DEVICE``
+    (WinError 17 / ``EXDEV``) for ``os.replace`` even though ``temp_path`` was
+    created in ``target.parent``.  A clean desktop install then cannot create
+    ``master.key`` or ``models.json`` at all.  Keep the normal atomic path as the
+    default and use this durable-copy fallback only for that specific error.
+
+    The fallback cannot make the final copy atomic, but it writes from an
+    already-fsynced temp file and keeps a complete backup of an existing target
+    so an ordinary I/O failure can be rolled back before the exception escapes.
+    """
+    backup_path: str | None = None
+    target_existed = target.exists()
+
+    def copy_and_sync(source: str | Path, destination: Path) -> None:
+        with open(source, "rb") as src, open(destination, "wb") as dst:
+            shutil.copyfileobj(src, dst)
+            dst.flush()
+            os.fsync(dst.fileno())
+
+    try:
+        if target_existed:
+            backup_fd, backup_path = tempfile.mkstemp(
+                prefix=f".{target.name}.", suffix=".bak", dir=str(target.parent)
+            )
+            os.close(backup_fd)
+            copy_and_sync(target, Path(backup_path))
+
+        try:
+            copy_and_sync(temp_path, target)
+            if mode is not None:
+                try:
+                    os.chmod(target, mode)
+                except OSError:
+                    logger.warning("无法收紧文件权限 %s: %s", target, mode)
+        except Exception:
+            if target_existed and backup_path is not None:
+                copy_and_sync(backup_path, target)
+            else:
+                try:
+                    target.unlink()
+                except OSError:
+                    pass
+            raise
+    finally:
+        if backup_path is not None:
+            try:
+                os.unlink(backup_path)
+            except OSError:
+                pass
+
+
 def atomic_write(path: PathLike, writer: Callable[[IO[Any]], Any], *,
                  binary: bool = False, encoding: str = "utf-8",
                  mode: int | None = None) -> None:
@@ -103,7 +160,16 @@ def atomic_write(path: PathLike, writer: Callable[[IO[Any]], Any], *,
                     os.chmod(temp_path, mode)
                 except OSError:
                     logger.warning("无法收紧文件权限 %s: %s", temp_path, mode)
-            os.replace(temp_path, target)
+            try:
+                os.replace(temp_path, target)
+            except OSError as exc:
+                if not (exc.errno == errno.EXDEV or getattr(exc, "winerror", None) == 17):
+                    raise
+                logger.warning(
+                    "原子替换被文件系统拒绝，改用已同步临时文件提交: %s", target
+                )
+                _copy_replace_for_cross_device_temp(temp_path, target, mode=mode)
+                os.unlink(temp_path)
             replaced = True
         finally:
             if not replaced:

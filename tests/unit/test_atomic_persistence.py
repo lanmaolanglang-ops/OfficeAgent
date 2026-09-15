@@ -5,6 +5,7 @@
 - 3.2 尚未抽取全项目共用的「临时文件 + fsync + replace + 锁」持久化工具
 - 3.2 YamlLoader 及其他直接覆写文件仍未统一使用原子写工具
 """
+import errno
 import json
 import os
 import threading
@@ -59,6 +60,31 @@ def test_atomic_write_text_and_bytes_honour_mode(tmp_path):
     if os.name != "nt":  # POSIX 才真正按位收紧权限
         assert oct(os.stat(text_path).st_mode & 0o777) == "0o600"
         assert oct(os.stat(blob_path).st_mode & 0o777) == "0o600"
+
+
+def test_cross_device_replace_fallback_creates_and_updates_complete_file(
+        tmp_path, monkeypatch):
+    """EFS 把同目录 replace 报成 EXDEV 时，仍提交完整文件并清理临时件。"""
+    target = tmp_path / "models.json"
+    real_replace = os.replace
+
+    def reject_replace(_source, _target):
+        error = OSError(errno.EXDEV, "cross-device replacement")
+        error.winerror = 17
+        raise error
+
+    monkeypatch.setattr(os, "replace", reject_replace)
+    atomic_write_text(target, '{"version": 1}')
+    assert target.read_text(encoding="utf-8") == '{"version": 1}'
+
+    atomic_write_text(target, '{"version": 2, "完整": true}')
+    assert json.loads(target.read_text(encoding="utf-8")) == {
+        "version": 2, "完整": True,
+    }
+    assert list(tmp_path.iterdir()) == [target]
+
+    # 测试结束前恢复，避免 monkeypatch 清理阶段之外的路径操作受影响。
+    monkeypatch.setattr(os, "replace", real_replace)
 
 
 def test_concurrent_writes_are_serialised(tmp_path):
