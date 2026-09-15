@@ -1,349 +1,366 @@
 # OfficeAgent
 
-> 面向 Windows 本地桌面的 AI 办公自动化工作台
+> 面向 Windows 的本地优先 AI 办公桌面应用，用自然语言处理 Word、Excel 和 PowerPoint 工作流。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-%3E%3D3.10-3776AB.svg?logo=python&logoColor=white)](pyproject.toml)
-[![Tauri](https://img.shields.io/badge/Desktop-Tauri%202-24C8DB.svg?logo=tauri&logoColor=white)](desktop-client/)
+[![Desktop](https://img.shields.io/badge/Desktop-Tauri%202-24C8DB.svg?logo=tauri&logoColor=white)](desktop-client/)
 
-OfficeAgent 将自然语言、Office 文件和可配置的多模型能力组合成一套本地优先的办公工作流。它覆盖 Word 文档处理、PPT 演示文稿生成、Excel 数据分析与图表、知识库检索（RAG），并提供任务队列、文件版本管理、质量检查、运行日志和 Windows 桌面应用。
+OfficeAgent 把本地 Office 文件、自然语言任务、可配置 AI Provider 和可复用 Skills 放进同一个桌面工作台。你可以上传文档或表格、描述目标、跟踪任务状态，并通过 Windows 原生保存对话框下载生成的 DOCX、XLSX 和 PPTX。
 
-当前代码版本：0.51.4
+**当前源码版本：OfficeAgent 0.52.0**
 
-## 项目定位
+## 核心功能
 
-OfficeAgent 的核心原则是“本地管理文件，模型连接可配置”。上传文件、生成结果、SQLite 数据库、日志和模型配置默认写入本机应用数据目录；当你配置 OpenAI、Claude、Gemini、豆包、通义、DeepSeek、Agnes 或其他兼容服务时，相关提示词、文档文本或多模态内容会按任务需要发送给对应服务商。
-
-因此，项目适合：
-
-- 需要用自然语言处理 Word、PPT、Excel 文件的个人用户；
-- 希望在本机统一管理模型、文件、任务和生成结果的桌面应用场景；
-- 需要多模型路由、失败转移、审计日志和可验证发布产物的开发团队；
-- 想把 Office 自动化能力作为后端服务或桌面应用基础设施进行二次开发的项目。
-
-## 核心能力
-
-| 能力 | 主要功能 | 主要模块 |
-| --- | --- | --- |
-| Word Agent | 文档解析、排版规范化、字体/段落/表格检查、原文保留检查、质量报告 | office_agent/services/、office_agent/quality/ |
-| PPT Agent | 从主题、文本或 Word 内容生成 PPTX；支持模板、主题、版式、配图与页数控制；支持视觉检查 | office_agent/ppt_agent/、office_agent/vision_gateway/ |
-| Excel Agent | 数据画像、自然语言分析、公式生成、图表生成、模板填充、公式与数据质量检查 | office_agent/excel_agent/ |
-| 知识库 / RAG | 文档解析、分块、语义 embedding、向量索引、检索和知识库刷新 | office_agent/knowledge_base/、office_agent/task_queue/tasks/rag_tasks.py |
-| 多模型网关 | 多提供商统一接口、任务能力路由、优先级和故障转移、视觉/文档能力标记 | office_agent/model_gateway/、office_agent/models/ |
-| 文件与任务 | 文件上传、分片上传、版本、回收站、任务状态、取消、反馈、历史记录 | office_agent/api/router/、office_agent/database/ |
-| 可观测性 | Prometheus 指标、执行日志、模型调用日志、错误日志、Trace 查询 | office_agent/logging_system/、office_agent/api/main.py |
-| Windows 桌面 | Tauri 2 + React 工作台，内嵌后端启动、健康检查、任务轮询和发布打包 | desktop-client/、desktop/ |
-
-## 工作流概览
-
-~~~
-React / Tauri 桌面端
-        │  上传文件、发送对话、创建任务、查看结果
-        ▼
-FastAPI 本地 API（默认 127.0.0.1:8765）
-        │
-        ├── 意图路由：Word / PPT / Excel / RAG
-        ├── 任务队列：pending → queued → running → success / failed
-        ├── 安全边界：认证、权限、输入限制、文件扫描、Prompt 检查
-        └── 模型网关：模型选择、能力匹配、优先级、失败转移
-                │
-                ├── Word / PPT / Excel Service
-                ├── 视觉与文档理解
-                ├── Embedding 与向量检索
-                └── 本地 SQLite、文件存储、日志与审计
-~~~
-
-## 快速开始
-
-### 环境要求
-
-| 用途 | 要求 |
+| 能力 | 可以完成的工作 |
 | --- | --- |
-| 后端开发 | Python >=3.10 |
-| 桌面前端开发 | Node.js 22、pnpm 11（CI 使用 pnpm 11.7.0） |
-| Windows 安装包 | Windows、Python 生产依赖、pnpm、Rust/Cargo |
-| 语义 RAG（可选） | sentence-transformers；首次使用本地模型时需要下载模型 |
+| Word Agent | 文档排版、标题层级、字体与段落规范、表格处理、Markdown/文本转 DOCX、输出文件登记 |
+| Excel Agent | XLSX/CSV 数据处理、汇总、公式、图表、多工作表分析、模板填充和 CSV 公式注入防护 |
+| PPT Agent | 从主题、文本或 DOCX 生成 PPTX，使用模板、表格、图表和可选 AI 配图，并在配图失败时保留可用的演示文稿 |
+| Chat / Task | 自然语言路由、异步任务、进度与结果、取消、上下文续改、revision 链和文件输出 |
+| Provider | 原生模型预设、自定义 LLM/Image Provider、动态模型发现、连接测试、默认模型和故障转移 |
+| Skills | 创建、导入、编辑和启停可复用指令；按 Agent 与 priority 确定性注入上下文 |
+| Knowledge Base / RAG | 文档解析、分块、语义 Embedding、向量索引与检索；不可用时明确报错，不用伪结果掩盖失败 |
+| Local data | SQLite、上传文件、输出文件、日志和加密模型配置默认保存在本机应用数据目录 |
 
-### 1. 安装后端依赖
+## What's New in 0.52.0
 
-PowerShell：
+### Custom LLM Providers
 
-~~~powershell
+除原生 Provider 外，现在可以添加自己的模型服务：
+
+- 自定义 Provider 名称、Base URL、API Key、模型列表和默认模型；
+- 支持 **OpenAI Compatible** 与 **Anthropic Compatible** 协议；
+- 保存前执行 **Test Connection**；
+- 自动发现模型，也可手工添加未公开的 Model ID；
+- API Key 留空时保留现有密钥，也可以显式清除；
+- 可显式允许由用户控制的 localhost 或私网兼容端点。
+
+这让兼容的第三方网关或自建服务无需逐个硬编码到 OfficeAgent。兼容性仍取决于目标服务是否实现对应协议。
+
+### Dynamic Model Discovery
+
+OfficeAgent 会优先请求 Provider 的 `GET /models` 并解析模型列表。若服务没有开放该端点、响应格式不同或当前 Key 无权限读取，仍可使用 **Manual Add Model** 填写实际 Model ID，不会因为发现失败而阻止保存兼容配置。
+
+### Custom Image Providers
+
+PPT 配图不再只绑定 Agnes：
+
+- 保留内置 Agnes 配置；
+- 支持 **OpenAI Image Compatible** Provider；
+- 支持模型发现、手工模型和默认图片 Provider；
+- 接受图片 URL 与 `b64_json` 两种响应；
+- Provider 不可用、超时或限流时，PPT 任务保留模板/内容布局，并返回明确的配图状态和警告。
+
+### Native Desktop Download
+
+桌面端下载不再依赖浏览器新窗口。点击“下载”后，OfficeAgent 获取后端文件内容、打开 Windows 原生 **Save As** 对话框，再写入用户选择的位置。
+
+该流程适用于 DOCX、XLSX、PPTX 和中文文件名，并提供取消、写入失败、打开文件及打开所在文件夹等状态。
+
+### Skills
+
+Skill 是一组**可复用的 Agent 指令和工作偏好**，例如极简商务 PPT、学术报告格式、财务分析规则或团队文档风格。
+
+0.52.0 支持：
+
+- 在 Skills 页面创建、编辑、删除和启用/禁用；
+- 导入 UTF-8 Markdown Skill；
+- 指定 `word`、`excel`、`ppt`、`chat` 或 `all`；
+- 使用 `priority` 控制稳定的应用顺序；
+- 对单个 Skill 和合并上下文执行长度限制。
+
+Skill 当前是 instruction-based 能力，不是 Shell、Python 或任意代码插件，也不会授予额外的文件、网络、工具或凭据权限。
+
+## 架构
+
+```mermaid
+graph TD
+    UI[Tauri 2 / React Desktop]
+    API[FastAPI Local API]
+    Task[Task Manager / Local Worker]
+    Agents[Word / Excel / PPT / Chat]
+    Skills[Skill Store / Resolver]
+    LLM[Model Gateway]
+    Providers[Native & Custom LLM Providers]
+    Images[Image Generation Gateway]
+    ImageProviders[Agnes & Custom Image Providers]
+    Storage[SQLite / Local File Storage / Logs]
+
+    UI --> API
+    API --> Task
+    Task --> Agents
+    Skills --> Agents
+    Agents --> LLM
+    LLM --> Providers
+    Agents --> Images
+    Images --> ImageProviders
+    API --> Storage
+    Task --> Storage
+```
+
+桌面端默认连接 `127.0.0.1:8765`。安装版由 Tauri 管理 frozen backend 生命周期；开发版使用同一 FastAPI 和任务处理主链。
+
+## Supported Office Workflows
+
+### Word Agent
+
+- 读取和生成 DOCX；
+- 将 TXT、Markdown 等文本内容转换为 DOCX 工作流；
+- 应用标题、正文、字体、字号、段落、缩进和表格规则；
+- 通过结构检查与质量结果确认输出；
+- 将生成结果登记为独立文件，保留原始上传文件。
+
+### Excel Agent
+
+- 读取 XLSX 和常见编码的 CSV；
+- 分析数据结构、工作表、区域和字段；
+- 生成或应用公式、汇总和图表；
+- 支持多 Sheet 与模板结构；
+- CSV 转 XLSX 时对可能触发公式执行的文本做防护。
+
+### PPT Agent
+
+- 根据主题、文本或 DOCX 内容生成 PPTX；
+- 支持业务模板、颜色、字体、版式、表格和图表；
+- 可调用所选 Image Provider 生成配图；
+- 配图失败时记录 `image_generation` 状态并降级，不把失败静默伪装成已生成图片；
+- 对页数和生成图片数量设有边界。
+
+### Chat / Task System
+
+- 根据自然语言和附件自动选择合适的 Agent；
+- 使用 `queued`、`running`、`success`、`failed`、`cancelled` 等状态展示任务生命周期；
+- 支持取消、历史记录、同一 conversation 的 follow-up 和 revision；
+- 任务完成后返回可保存的输出文件。
+
+## AI Provider Configuration
+
+### Built-in Providers
+
+原生预设继续支持 OpenAI、DeepSeek、Anthropic Claude、豆包、通义千问、Google Gemini 和 Agnes。原生预设提供少量默认模型，实际可用模型取决于你的账号、区域和 Provider 服务。
+
+### Custom OpenAI-Compatible Provider
+
+```text
+Provider Name: My API
+Protocol: OpenAI Compatible
+Base URL: https://example.com/v1
+API Key: ********
+```
+
+配置步骤：
+
+1. 点击 **Test Connection** 检查地址、认证和协议；
+2. 点击 **Detect Models** 请求 `/models`；
+3. 选择默认模型；
+4. 如果发现失败，使用 **Manual Add Model** 填写 Model ID；
+5. 保存并启用 Provider。
+
+Anthropic-compatible 服务使用相同流程，但聊天端点和认证头按 Anthropic 协议处理。
+
+### Local Compatible Endpoints
+
+Custom Provider 可以连接用户显式允许的 localhost 或私网兼容端点，适用于自行管理的本地 OpenAI/Anthropic-compatible 服务。该开关不代表对 Ollama、LM Studio 或任一具体产品的完整兼容承诺；请使用 Test Connection 验证实际端点。
+
+链路本地、元数据、未指定、多播和保留地址仍受安全策略限制。
+
+### Custom Image Provider
+
+```text
+Provider Name: My Image API
+Protocol: OpenAI Image Compatible
+Base URL: https://images.example.com/v1
+API Key: ********
+Model: my-image-model
+```
+
+图片 Provider 同样支持 Test Connection、模型发现和手工 Model ID。兼容端点应实现 `/images/generations`，并返回图片 URL 或 `b64_json`。
+
+## Skills
+
+下面的文件可直接作为 Markdown Skill 导入：
+
+```markdown
+---
+name: 极简商务PPT
+description: 用于商务汇报
+agents:
+  - ppt
+priority: 100
+---
+
+# Instructions
+
+- 每页只表达一个核心观点
+- 每页不超过 5 个要点
+- 优先使用图表
+- 避免大段文字
+- 最后一页输出 3 条结论
+```
+
+当前 parser 识别 `name`、`description`、`agents` 和 `priority`。导入文件必须为 UTF-8 `.md`、包含闭合 frontmatter，且不能超过 256 KB。UI 创建的 Instructions 最长 24000 字符；运行时单个 Skill 最多注入 6000 字符，全部 Skill context 最多 12000 字符。
+
+Skill 的优先级低于系统安全策略和 Agent 核心约束，高于当前用户文件中的不可信内容。较小的 `priority` 数字会更早应用。
+
+## Installation
+
+### 普通用户
+
+OfficeAgent 面向 Windows 桌面环境。安装包会在可用时通过 GitHub Releases 提供；当前开发构建不会自动发布，也不应把仓库中的调试产物当作正式安装包。
+
+Windows 桌面端使用 WebView2；正式 NSIS 配置采用 WebView2 offline installer 模式。核心 DOCX/XLSX/PPTX 生成由 Python Office 文件库完成，不强制安装 Microsoft Office。Word、WPS 或 PowerPoint 可用于人工查看和继续编辑结果；LibreOffice 是增强文档/PPT 视觉渲染与检查的可选依赖，缺失时相关检查会降级。
+
+## Quick Start
+
+1. 安装并打开 OfficeAgent；
+2. 进入“模型与生图服务”或“设置”；
+3. 配置至少一个可用的 Model Provider 并选择默认模型；
+4. 可选：配置 Image Provider 或创建 Skills；
+5. 上传 Word、Excel、PPT、CSV 或文本文件；
+6. 用自然语言描述目标并等待任务完成；
+7. 点击“下载”，通过 Windows Save As 保存生成结果。
+
+应用数据默认保存在 `%APPDATA%\OfficeAgent`。使用云端 Provider 时，任务所需的提示词、文档内容或图片请求可能发送给该 Provider。
+
+## Development
+
+### Requirements
+
+- Python 3.10 或更高版本；
+- Node.js 22；
+- pnpm（CI 使用 pnpm 11）；
+- Rust/Cargo（开发 Tauri 桌面端时需要）。
+
+### Backend
+
+```powershell
 py -3.12 -m venv .venv
 ./.venv/Scripts/Activate.ps1
 python -m pip install --upgrade pip
 python -m pip install -e ".[dev]"
-~~~
-
-如果希望使用本地 sentence-transformers embedding：
-
-~~~powershell
-python -m pip install -e ".[dev,semantic]"
-~~~
-
-### 2. 启动本地 API
-
-~~~powershell
 python -m office_agent.api.main
-~~~
+```
 
-启动后可访问：
+本地 API 默认地址为 `http://127.0.0.1:8765`，Swagger UI 位于 `/docs`，就绪检查位于 `/ready`。
 
-- Swagger UI：<http://127.0.0.1:8765/docs>
-- ReDoc：<http://127.0.0.1:8765/redoc>
-- 就绪探针：<http://127.0.0.1:8765/ready>
-- 详细健康检查：<http://127.0.0.1:8765/api/health>
-- Prometheus 指标：<http://127.0.0.1:8765/metrics>
+如需本地 sentence-transformers embedding，可安装可选依赖：
 
-### 3. 启动桌面前端开发服务器
+```powershell
+python -m pip install -e ".[dev,semantic]"
+```
 
-在另一个终端执行：
+### Frontend and Tauri
 
-~~~powershell
+```powershell
 pnpm --dir desktop-client install --frozen-lockfile
 pnpm --dir desktop-client run dev
-~~~
+```
 
-打开 Vite 输出的本地地址，通常为 <http://127.0.0.1:5173>。桌面端包含工作台、Word、PPT、Excel、任务历史、文件管理和设置页面。
+启动完整桌面开发实例：
 
-## 第一次配置模型
+```powershell
+pnpm --dir desktop-client tauri dev
+```
 
-启动后进入“设置”，按用途配置语言模型、生图模型和 Embedding 模型。语言模型提供商包括：
+## Production Build
 
-~~~text
-openai       OpenAI
-deepseek     DeepSeek（OpenAI 兼容接口）
-doubao       豆包 / 火山引擎
-qwen         通义千问（OpenAI 兼容接口）
-claude       Anthropic Claude
-gemini       Google Gemini
-agnes        Agnes AI（OpenAI 兼容接口）
-custom       自定义 OpenAI 兼容服务
-~~~
+Windows 统一发布入口是 [desktop/build_windows.bat](desktop/build_windows.bat)。它按顺序执行 frozen backend、完整 SHA-256 release manifest 校验、Tauri 2 和 NSIS 构建：
 
-也可以通过环境变量提供 API Key，例如：
+```powershell
+python -m pip install -r requirements-production.txt
+pnpm --dir desktop-client install --frozen-lockfile
+desktop\build_windows.bat
+```
 
-~~~powershell
-$env:OPENAI_API_KEY = "your-key"
-$env:DEEPSEEK_API_KEY = "your-key"
-$env:ANTHROPIC_API_KEY = "your-key"
-$env:GEMINI_API_KEY = "your-key"
-$env:DOUBAO_API_KEY = "your-key"
-$env:DASHSCOPE_API_KEY = "your-key"
-$env:AGNES_API_KEY = "your-key"
-~~~
+发布入口要求已跟踪工作树干净，并将 frozen backend manifest 绑定到当前完整 Git SHA。构建安装包并不等同于已经创建 GitHub Release、完成代码签名或通过 SmartScreen 声誉检查。
 
-不要把真实密钥写入源代码、.env 并提交到仓库，也不要把密钥放进任务指令、Issue 或日志。通过设置页保存的模型 API Key 使用 Fernet 加密后写入本地配置；前端本地持久化设置不会保存 API Key。
+## Project Structure
 
-## 数据目录
+```text
+OfficeAgent/
+├── office_agent/
+│   ├── api/                    # FastAPI、路由和中间件
+│   ├── database/               # SQLite、SQLAlchemy、Alembic 和 Repository
+│   ├── model_gateway/          # 模型路由、原生/自定义 Provider 和故障转移
+│   ├── image_generation/       # Agnes/自定义图片 Provider 统一网关
+│   ├── skills/                 # Markdown parser、Skill Resolver 和 prompt 注入
+│   ├── services/               # Word 与通用文档服务
+│   ├── excel_agent/            # Excel 分析、公式、图表和模板
+│   ├── ppt_agent/              # PPT 规划、生成、配图和质量检查
+│   ├── knowledge_base/         # 文档分块、Embedding、索引和检索
+│   ├── task_queue/             # Local Worker、调度器和任务实现
+│   └── security/               # 认证、SSRF、Prompt、文件和审计边界
+├── desktop-client/             # React 19、Vite 和 Tauri 2 桌面端
+├── desktop/                    # Windows launcher 与发布链
+├── tests/                      # 单元、集成、迁移、E2E 和发布链测试
+├── docs/architecture/          # 架构决策与运行时说明
+└── pyproject.toml              # Python 包与开发工具配置
+```
 
-所有入口（开发后端、任务 Worker、桌面启动器和 Windows 服务）使用同一套数据目录解析规则：
+## Security and Privacy
 
-1. OFFICE_AGENT_DATA_DIR：显式指定，优先级最高；
-2. frozen/安装版 Windows：%APPDATA%/OfficeAgent；
-3. 源码开发：~/.office_agent。
+- API 默认绑定 `127.0.0.1`；
+- 模型 API Key 使用本地主密钥加密落盘，API 只返回掩码；
+- 自定义 Provider URL 经过协议、地址、DNS、重定向和响应大小检查；
+- localhost/私网访问必须显式开启，敏感元数据地址仍会拒绝；
+- 文件上传、下载和任务选项执行 owner、路径和大小边界检查；
+- CSV 转换包含公式注入防护；
+- Skill 不能授权代码执行或绕过系统安全策略；
+- 错误信息和日志经过凭据、路径等敏感内容脱敏。
 
-常见内容包括：
+这些措施用于降低风险，不构成绝对安全保证。安全设计说明见 [Security README](office_agent/security/README.md) 和 [Accepted Design Decisions](docs/architecture/accepted_design_decisions.md)。
 
-~~~text
-<data-root>/
-├── db/                    SQLite 数据库
-├── uploads/               上传文件
-├── outputs/               生成结果
-├── logs/                  日志与审计相关数据
-├── models.json            加密的模型连接配置
-├── embedding_config.json  Embedding 配置
-├── master.key             模型密钥加密主密钥
-└── key_salt.bin           历史配置兼容所需的盐值（如存在）
-~~~
+OfficeAgent 默认将数据库、文件和配置保存在本机。发送给已配置 AI Provider 的内容受相应 Provider 的服务条款和隐私政策约束；因此不能把“本地优先”理解为所有任务数据永不离开设备。
 
-可以使用以下变量调整目录：
+## Testing
 
-~~~powershell
-$env:OFFICE_AGENT_DATA_DIR = "D:/OfficeAgentData"
-$env:OFFICE_AGENT_UPLOAD_DIR = "D:/OfficeAgentData/uploads"
-$env:OFFICE_AGENT_OUTPUT_DIR = "D:/OfficeAgentData/outputs"
-$env:OFFICE_AGENT_LOG_DIR = "D:/OfficeAgentData/logs"
-~~~
+项目测试覆盖：
 
-## API 使用示例
+- backend 单元、集成和回归测试；
+- Alembic fresh/upgrade/downgrade/re-upgrade；
+- Provider 配置、模型发现、连接、密钥加密和 SSRF 边界；
+- Skill CRUD、Markdown 导入、预算和 Agent 注入；
+- DOCX/XLSX/PPTX 生成与重新打开；
+- React/Vitest、TypeScript、Oxlint 和 Vite production build；
+- Rust/Tauri check、test 和 build；
+- frozen backend manifest 与 Windows 发布链检查。
 
-### 对话入口
+常用命令：
 
-对话接口会根据文字和附件类型自动路由到 Word、PPT 或 Excel Agent：
-
-~~~powershell
-curl.exe -X POST http://127.0.0.1:8765/api/chat -H "Content-Type: application/json" -d '{"message":"请分析这份 Excel，找出异常趋势并给出结论"}'
-~~~
-
-### 文件上传
-
-~~~powershell
-curl.exe -X POST http://127.0.0.1:8765/api/file/upload -F "file=@C:/path/to/report.xlsx"
-~~~
-
-上传返回的 file_id 可以用于后续对话或异步任务。
-
-### 创建异步任务
-
-~~~powershell
-curl.exe -X POST http://127.0.0.1:8765/api/task/create -H "Content-Type: application/json" -d '{"task_type":"excel_analyze","instruction":"分析销售趋势并生成摘要","file_ids":["<file_id>"]}'
-~~~
-
-返回 task_id 后，通过 GET /api/task/{task_id} 查询进度和结果。主要任务类型包括：
-
-| 任务类型 | 用途 |
-| --- | --- |
-| word_format / word_process | Word 排版或处理 |
-| ppt_generate / ppt_process | PPT 生成（ppt_process 为兼容别名） |
-| ppt_design | PPT 设计处理 |
-| excel_analyze | Excel 数据分析 |
-| excel_chart | Excel 图表生成 |
-| file_convert / file_process | 文件转换或处理 |
-| general | 根据指令自动路由 |
-| rag_index / rag_search | 知识库索引或检索 |
-
-## RAG 与 Embedding
-
-RAG 默认使用真正的 semantic embedding，不会静默把哈希词袋当作语义检索，也不会混合不同语义空间的旧向量。
-
-### 桌面版
-
-frozen 桌面构建不打包 torch 和 transformers。请在设置页配置一个 OpenAI-compatible Embedding Provider：
-
-- provider：OpenAI、火山引擎、通义或其他兼容服务；
-- base_url：服务地址；
-- model：embedding 模型名称；
-- api_key：访问密钥。
-
-Embedding 配置写入本地统一数据目录的 embedding_config.json，API Key 与其他模型密钥一样加密保存。
-
-### 本地开发版
-
-安装 .[semantic] 后，运行时优先使用本地 sentence-transformers，默认模型为 paraphrase-multilingual-MiniLM-L12-v2。首次使用可能需要联网下载模型，之后可以离线复用缓存。
-
-如果既没有配置 Embedding Provider，也没有安装 semantic extra，RAG 任务会明确失败并提示配置方式，而不是返回看似成功的空结果。
-
-## 配置参考
-
-| 环境变量 | 默认值 | 作用 |
-| --- | --- | --- |
-| OFFICE_AGENT_HOST | 127.0.0.1 | API 监听地址 |
-| OFFICE_AGENT_PORT | 8765 | API 监听端口 |
-| OFFICE_AGENT_DEBUG | false | 调试模式 |
-| OFFICE_AGENT_DATA_DIR | 按运行模式决定 | 统一应用数据根目录 |
-| OFFICE_AGENT_UPLOAD_DIR | <data-root>/uploads | 上传目录 |
-| OFFICE_AGENT_OUTPUT_DIR | <data-root>/outputs | 生成结果目录 |
-| OFFICE_AGENT_LOG_DIR | <data-root>/logs | 日志目录 |
-| OFFICE_AGENT_AUTH_ENABLED | false | 是否启用 API 认证 |
-| OFFICE_AGENT_API_KEYS | 空 | 逗号分隔的 API Key |
-| OFFICE_AGENT_JWT_SECRET | 空 | JWT 密钥，启用时至少 32 字节 |
-| OFFICE_AGENT_TRUSTED_PROXIES | 127.0.0.1,::1 | 可信代理地址或 CIDR |
-| OFFICE_AGENT_FONT | 自动选择 | 文档/PPT 视觉渲染使用的字体路径 |
-| OFFICE_AGENT_EMBEDDING_BACKEND | auto | Embedding 后端选择 |
-| OFFICE_AGENT_EMBEDDING_MODEL | 自动选择 | 本地 Embedding 模型名 |
-
-默认 API 只绑定回环地址，认证默认关闭，适合本机桌面模式。如果要监听局域网或其他非回环地址，必须同时设计认证、CORS、可信代理、HTTPS 和文件存储边界；启用认证但没有凭据时，服务会在启动阶段失败，而不是带错误配置运行。
-
-## 安全边界
-
-- API 默认绑定 127.0.0.1，降低桌面应用被局域网直接访问的风险；
-- API Key 使用 Fernet 加密落盘，旧版密文仅用于兼容读取并在成功读取后迁移；
-- 密码哈希使用 PBKDF2-HMAC-SHA256，支持旧版密码在登录时安全升级；
-- 请求模型会过滤敏感字段，任务选项拒绝客户端伪造服务端路径、凭据和网络能力；
-- 文件上传包含扩展名、大小、路径和生命周期控制，并支持文件隔离、版本和回收站；
-- Prompt 安全层会对模型控制符、可疑指令和外部/文件内容做分级处理；
-- 认证、RBAC、速率限制、审计日志、错误脱敏和请求大小限制属于 API 安全层；
-- 默认不把“本地子进程 + 临时目录 + 关键词过滤”宣称为操作系统级沙箱。生产环境在接入具备网络禁用、只读文件系统、CPU/内存配额和独立身份的外部执行器前，应保持危险执行能力关闭。
-
-安全设计记录见 [office_agent/security/README.md](office_agent/security/README.md) 和 [docs/architecture/accepted_design_decisions.md](docs/architecture/accepted_design_decisions.md)。RAG 运行时边界见 [docs/architecture/rag_embedding_runtime.md](docs/architecture/rag_embedding_runtime.md)。
-
-## 测试与质量检查
-
-后端全量测试：
-
-~~~powershell
-python -m pytest tests/ -m "not slow" --tb=short
-~~~
-
-常用静态检查：
-
-~~~powershell
-mypy
-ruff check office_agent/ --select=E,F --ignore=E501
-~~~
-
-前端检查：
-
-~~~powershell
+```powershell
+python -m pytest -q
+python -m mypy office_agent
+# 与 CI 一致的 Ruff advisory 扫描
+python -m ruff check office_agent/ --select=E,F --ignore=E501
 pnpm --dir desktop-client run lint
 pnpm --dir desktop-client run typecheck
 pnpm --dir desktop-client run test
 pnpm --dir desktop-client run build
-~~~
-
-Tauri/Rust 检查：
-
-~~~powershell
-cargo fmt --manifest-path desktop-client/src-tauri/Cargo.toml -- --check
 cargo check --manifest-path desktop-client/src-tauri/Cargo.toml --locked
-cargo test --manifest-path desktop-client/src-tauri/Cargo.toml --locked
-~~~
+cargo build --manifest-path desktop-client/src-tauri/Cargo.toml --locked
+```
 
-## Windows 发布构建
+README 不固定宣传某一次测试数量；当前状态以仓库 CI 和对应提交的验收记录为准。
 
-Windows 发布入口是 [desktop/build_windows.bat](desktop/build_windows.bat)：
+## Known Limitations
 
-~~~powershell
-python -m pip install -r requirements-production.txt
-pnpm --dir desktop-client install --frozen-lockfile
-desktop/build_windows.bat
-~~~
+- 复杂或内容极密的 PPT 仍可能需要人工调整分页、图表和视觉层级；
+- 图片生成依赖用户配置的 Provider、模型、额度和网络，失败时会降级并报告状态；
+- `.doc` 和 `.xls` 旧格式不在当前主处理链内，请先另存为 `.docx` 或 `.xlsx`；
+- 未安装 LibreOffice 时，部分文档/PPT 视觉检查会降级为结构或文本检查；
+- Custom Provider 只保证所列兼容协议边界，不保证每个第三方服务的私有扩展；
+- Skills 是指令型扩展，不是可执行插件。
 
-发布脚本会：
+## Roadmap
 
-1. 检查 Python、PyInstaller、pnpm 和 Cargo；
-2. 要求已跟踪工作区干净，并记录当前 Git HEAD；
-3. 用 PyInstaller 构建 dist/OfficeAgent/；
-4. 生成并校验包含源码 SHA、文件大小和 SHA-256 的完整 release manifest；
-5. 通过 Tauri 构建 Windows 安装包，并在构建前后执行来源守卫。
+- 更丰富、可分享的 Skill 生态；
+- 更多经过验证的兼容 Provider；
+- 更完善的 PPT 布局与复杂内容续页；
+- Windows 安装包签名与分发体验完善。
 
-如果 manifest 缺失、源码 SHA 不一致、文件被篡改、出现未记录文件或构建输入被修改，发布链会以非零状态终止。该流程是 Windows 发布校验链，不等同于代码签名、SmartScreen 或真实 Office GUI 打开/编辑/保存验收。
+Roadmap 表示方向，不承诺具体版本或日期。
 
-## 项目结构
+## License
 
-~~~text
-OfficeAgent/
-├── office_agent/                 # Python 后端与领域能力
-│   ├── api/                      # FastAPI、路由、中间件、OpenAPI
-│   ├── database/                 # SQLite、SQLAlchemy、Alembic、Repository
-│   ├── model_gateway/            # 文本模型客户端、路由与故障转移
-│   ├── vision_gateway/           # 图片、PDF、PPT 与扫描文档理解
-│   ├── services/                 # Word 等通用文档服务
-│   ├── ppt_agent/                # PPT 编排、生成与质量检查
-│   ├── excel_agent/              # Excel 分析、公式、图表与模板
-│   ├── knowledge_base/           # 解析、分块、Embedding、向量检索
-│   ├── task_queue/               # 本地 Worker、调度器和任务实现
-│   ├── security/                 # 认证、RBAC、Prompt、文件、审计、安全边界
-│   ├── quality/                  # 文档与视觉质量检查
-│   └── quality_scoring/          # Word/PPT/Excel 质量评分
-├── desktop-client/               # React 19 + Vite + Tauri 2
-│   └── src-tauri/                # Rust 桌面壳和后端生命周期管理
-├── desktop/                      # Windows 启动器、服务和发布脚本
-├── tests/                        # 后端单元、集成、回归和发布链测试
-├── docs/architecture/            # 架构决策与运行时说明
-├── pyproject.toml                # Python 包、开发依赖和 mypy 配置
-└── requirements-production.txt   # Windows 发布依赖
-~~~
-
-## 开发约定
-
-- 任何模型密钥、用户文件、数据库和构建产物都不应提交到 Git；
-- 修改 API、任务映射、配置来源或数据模型时，同时补充对应测试；
-- 处理外部输入时保持显式失败、错误脱敏和边界校验，不要用“看起来成功”的空结果掩盖失败；
-- 发布前使用统一的 desktop/build_windows.bat，不要绕过 SHA manifest 和来源守卫；
-- 涉及安全能力时，区分应用层策略和真正的 OS/容器隔离，不夸大防护强度。
-
-## 许可证
-
-本项目使用 MIT License。
+OfficeAgent 使用 [MIT License](LICENSE)。
